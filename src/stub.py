@@ -460,8 +460,9 @@ class StubInstaller(PackageInstaller):
         col = MultitouchFWCollection("fud_firmware/")
         pkg.add_files(sorted(col.files()))
         logging.info("Collecting ISP firmware")
-        col = ISPFWCollection("recovery/usr/sbin/")
+        col = ISPFWCollection("recovery")
         pkg.add_files(sorted(col.files()))
+        camera_sources = col.sources
         logging.info("Collecting Kernel firmware")
         col = KernelFWCollection(kernel_path)
         pkg.add_files(sorted(col.files()))
@@ -477,13 +478,16 @@ class StubInstaller(PackageInstaller):
             os.makedirs(f"{tmpdir}/apple")
             for name, fwf in als_files:
                 open(f"{tmpdir}/{name}", "wb").write(fwf.data)
+            for name, data in camera_sources.items():
+                with open(os.path.join(tmpdir, name), "wb") as fd:
+                    fd.write(data)
             extra = [FALLBACK_DIR] if tuning.write_fallback(tmpdir) else []
             subprocess.run(["tar", "czf", "all_firmware.tar.gz",
                             "fud_firmware",
                             "-C", "recovery/usr/share", "firmware",
-                            "-C", "../../usr/sbin", "appleh13camerad",
                             "-C", os.path.dirname(FACTORY_DIR), os.path.basename(FACTORY_DIR),
                             "-C", tmpdir, "apple", *extra,
+                            *sorted(camera_sources),
                             ], check=True)
         self.copy_idata.append(("all_firmware.tar.gz", "all_firmware.tar.gz"))
         logging.info("Detaching recovery ramdisk")

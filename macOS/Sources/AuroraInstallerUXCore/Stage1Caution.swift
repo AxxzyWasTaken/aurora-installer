@@ -12,9 +12,7 @@
     private static let untriedChip =
       "aura 1.0.0b1 runs the M3 Ultra (T6032) CPU-only, and neither its Stage 1 nor this Mac’s iBoot has been tried, so Aurora may not start."
 
-    static let reasons: [String: String] = [
-      "apple,j575d": untriedChip,
-    ]
+    static let reasons: [String: String] = ["apple,j575d": untriedChip]
 
     public static func reason(for deviceIdentifier: String) -> String? {
       reasons[deviceIdentifier.lowercased()]

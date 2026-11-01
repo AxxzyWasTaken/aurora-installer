@@ -6,7 +6,10 @@
   final class Stage1CautionTests: XCTestCase {
     func testOnlyTheUntriedM3UltraIsWarnedAndNotBlocked() {
       XCTAssertNotNil(Stage1Caution.reason(for: "apple,j575d"))
-      for board in ["j274", "j413", "j616s", "j700", "j314s", "j316s", "j314c", "j316c", "j375c", "j375d"] {
+      let others = [
+        "j274", "j413", "j616s", "j700", "j314s", "j316s", "j314c", "j316c", "j375c", "j375d",
+      ]
+      for board in others {
         XCTAssertNil(Stage1Caution.reason(for: "apple," + board), board)
       }
     }

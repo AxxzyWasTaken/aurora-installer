@@ -1,175 +1,106 @@
 {
  "cells": {
   "j575d-synthetic/fresh/arch": {
-   "failing": [
-    "stage1",
-    "stage1 caution",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j575d-synthetic/fresh/fedora": {
-   "failing": [
-    "stage1",
-    "stage1 caution",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j575d-synthetic/fresh/nixos": {
-   "failing": [
-    "stage1",
-    "stage1 caution",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j575d-synthetic/side-by-side/arch": {
-   "failing": [
-    "stage1",
-    "stage1 caution",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j575d-synthetic/side-by-side/fedora": {
-   "failing": [
-    "stage1",
-    "stage1 caution",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j575d-synthetic/side-by-side/nixos": {
-   "failing": [
-    "stage1",
-    "stage1 caution",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s-shrunk-synthetic/fresh/arch": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s-shrunk-synthetic/fresh/fedora": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s-shrunk-synthetic/fresh/nixos": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s-shrunk-synthetic/side-by-side/arch": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s-shrunk-synthetic/side-by-side/fedora": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s-shrunk-synthetic/side-by-side/nixos": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s/fresh/arch": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s/fresh/fedora": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s/fresh/nixos": {
-   "failing": [
-    "stage1",
-    "supported"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "j616s/side-by-side/arch": {
    "failing": [
-    "plan",
-    "stage1",
-    "supported"
+    "plan"
    ],
    "verdict": "FAIL"
   },
   "j616s/side-by-side/fedora": {
    "failing": [
-    "plan",
-    "stage1",
-    "supported"
+    "plan"
    ],
    "verdict": "FAIL"
   },
   "j616s/side-by-side/nixos": {
    "failing": [
-    "plan",
-    "stage1",
-    "supported"
+    "plan"
    ],
    "verdict": "FAIL"
   },
   "m1pro/fresh/arch": {
-   "failing": [
-    "stage1"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m1pro/fresh/fedora": {
-   "failing": [
-    "stage1"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m1pro/fresh/nixos": {
-   "failing": [
-    "stage1"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m1pro/side-by-side/arch": {
-   "failing": [
-    "stage1"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m1pro/side-by-side/fedora": {
-   "failing": [
-    "stage1"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m1pro/side-by-side/nixos": {
-   "failing": [
-    "stage1"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m2-shrunk-synthetic/fresh/arch": {
    "failing": [],
@@ -254,6 +185,6 @@
    "verdict": "UNTESTED-ON-HW"
   }
  },
- "note": "At-pin verdicts recorded 2026-11-01 against the live signed catalogs and the distro branches that pin kernel 052924773992, aura 32dccf02 and U-Boot 01f255b6 (fedora-aurora PR 97, alarm-aurora PR 79, nixos-aurora PR 82). The J616s and J575d stay FAIL until the release train re-signs catalogs that enable them, and the M1 Pro until payloads built from these pins qualify its Stage 1. CI fails when a cell does worse; when one improves, update it here with the run that shows it.",
+ "note": "At-pin verdicts recorded 2026-11-01 against the live Alpha 14 catalogs (37 Macs, J616s and J575d enabled, every board qualified for Stage 1) and the distro branches that pin kernel f41ac3de (fleet14c), aura a9cad94e and U-Boot d30213ea. The remaining FAIL cells are disk space for side by side (M2: Chloe's macOS; J616s without shrinking its Linux root). CI fails when a cell does worse; when one improves, update it here with the run that shows it.",
  "schema": 1
 }

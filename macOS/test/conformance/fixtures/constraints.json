@@ -70,13 +70,16 @@
  "pinned_stage1_bytes_note": "The raw Stage 1 size of a pinned aura commit, measured from a build, so the iBoot size limits apply to the pin before its payloads exist. Ignored for any other commit.",
  "proven_kernels": {
   "j316sap": {
-   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01"
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots 3cadf377 / a067d4f1), kernel -p3 0"
   },
   "j413ap": {
-   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01"
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots f4520628 / 9822ad34), kernel -p3 0"
   },
   "j700ap": {
-   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01"
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots a3fd8e8c / 17d9eb5d), kernel -p3 0"
   },
   "j616sap": {
    "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01"

@@ -716,6 +716,7 @@ def tip_lag(branches, pins):
                     'https://api.github.com/repos/aurora-silicon/%s/compare/%s...%s?per_page=1' % (
                         repo, pinned[label], head), headers=github_headers()), 120).read())
                 row['behind'] = compare['ahead_by'] if compare.get('status') in ('ahead', 'identical') else None
+                row['ahead'] = compare['behind_by'] if compare.get('status') == 'behind' else None
                 row['diverged'] = compare.get('status') == 'diverged'
         except (urllib.error.URLError, KeyError, ValueError) as error:
             row['error'] = str(error)
@@ -912,7 +913,8 @@ def markdown(report):
                   '| Component | Branch | Pin | Head | Behind |', '| --- | --- | --- | --- | --- |']
         for row in report['tips']:
             behind = row.get('error') and 'unknown (%s)' % row['error'] or (
-                'diverged' if row.get('diverged') else '%s commits' % row.get('behind'))
+                'diverged' if row.get('diverged') else
+                'ahead by %s (not merged yet)' % row['ahead'] if row.get('ahead') else '%s commits' % row.get('behind'))
             lines.append('| %s | %s | %s | %s | %s |' % (row['component'], row['branch'], (row['pin'] or '?')[:12],
                                                       (row.get('head') or '?')[:12], behind))
         lines.append('')

@@ -80,6 +80,17 @@ def installer_pins():
             'u_boot_label': label.group(1) if label else None}
 
 
+def aura_label(version, commit, cache):
+    """The version marker an aura build of `commit` carries: the bare release
+    label only when the commit is that release's tag (the packaging passes
+    AURA_VERSION_TAG then), otherwise VERSION-g<8 hex>."""
+    tags = json.loads(fetch('https://api.github.com/repos/aurora-silicon/aura/tags?per_page=100', cache,
+                            github_headers()))
+    if any(t['name'] == 'v' + version and t['commit']['sha'] == commit for t in tags):
+        return version
+    return '%s-g%s' % (version, commit[:8])
+
+
 def distro_sources(path):
     data = json.loads((Path(path) / 'sources.json').read_text())
     uboot = data.get('uboot-aurora') or data.get('uboot-asahi') or {}
@@ -432,7 +443,7 @@ def evaluate(machine, mode, distro, dry, context):
     if limit and fw['version'] in limit['stub_os'] and size and size >= min(limit['rejected_bytes']):
         problems.append('iBoot on %s (%s stub) rejects the pinned %d B aura Stage 1: %s' % (
             board, fw['version'], size, limit['evidence']))
-    proven = context['constraints']['proven_stage1'].get(board)
+    proven = context['pins']['aura_label'] in context['constraints']['proven_stage1'].get(board, {}).get('aura', [])
     caution = stage1_caution(machine, dry, context)
     if caution and caution['ok'] and problems:
         problems.append('the installer warns and goes ahead, so this install would not start')
@@ -508,6 +519,9 @@ def evaluate(machine, mode, distro, dry, context):
     kernel = context['kernels'][distro]
     checks.append(check('kernel', kernel['has_board'].get(machine['device_identifier'], False) and kernel['ok'],
                         kernel['detail'] % {'board': machine['device_identifier']}))
+    ran = context['constraints'].get('proven_kernels', {}).get(board, {}).get(kernel['commit'])
+    checks.append(check('kernel on hardware', True, ran or 'this board has not run kernel %s' % kernel['commit'][:12],
+                        None if ran else 'boot the pinned kernel on this board'))
 
     # 8. partition plan for this mode
     if machine['disk'] is None:
@@ -679,6 +693,37 @@ def stage1_caution_list():
     return manifest.get('stage1_caution', {})
 
 
+TIP_BRANCHES = (('aura', 'aura', 'main'), ('U-Boot', 'u-boot', 'aurora-wip'), ('kernel', 'linux', 'aurora-wip'))
+
+
+def tip_lag(branches, pins):
+    """How far each pin sits behind the branch it ships from. Read live (branch
+    heads move), and reported beside the matrix rather than failing a cell."""
+    pinned = {'aura': pins['aura'], 'U-Boot': pins['u_boot'],
+              'kernel': next((b['kernel'] for b in branches.values() if b and b.get('kernel')), None)}
+    rows = []
+    for label, repo, branch in TIP_BRANCHES:
+        row = {'component': label, 'branch': '%s %s' % (repo, branch), 'pin': pinned[label]}
+        try:
+            head = json.loads(urlopen(urllib.request.Request(
+                'https://api.github.com/repos/aurora-silicon/%s/branches/%s' % (repo, branch),
+                headers=github_headers()), 60).read())['commit']['sha']
+            row['head'] = head
+            if pinned[label] == head:
+                row['behind'] = 0
+            elif pinned[label]:
+                compare = json.loads(urlopen(urllib.request.Request(
+                    'https://api.github.com/repos/aurora-silicon/%s/compare/%s...%s?per_page=1' % (
+                        repo, pinned[label], head), headers=github_headers()), 120).read())
+                row['behind'] = compare['ahead_by'] if compare.get('status') in ('ahead', 'identical') else None
+                row['ahead'] = compare['behind_by'] if compare.get('status') == 'behind' else None
+                row['diverged'] = compare.get('status') == 'diverged'
+        except (urllib.error.URLError, KeyError, ValueError) as error:
+            row['error'] = str(error)
+        rows.append(row)
+    return rows
+
+
 def github_headers():
     token = os.environ.get('GITHUB_TOKEN')
     return {'Authorization': 'Bearer ' + token} if token else {}
@@ -705,10 +750,13 @@ def main():
     Path(args.cache).mkdir(parents=True, exist_ok=True)
     constraints = json.loads((HERE / 'fixtures/constraints.json').read_text())
     pins = installer_pins()
-    pins['aura_label'] = fetch('https://raw.githubusercontent.com/aurora-silicon/aura/%s/VERSION' % pins['aura'],
-                               args.cache).decode().strip()
+    version = fetch('https://raw.githubusercontent.com/aurora-silicon/aura/%s/VERSION' % pins['aura'],
+                    args.cache).decode().strip()
+    pins['aura_label'] = aura_label(version, pins['aura'], args.cache)
     if args.stage1:
         pins['stage1_bytes'] = Path(args.stage1).stat().st_size
+    else:
+        pins['stage1_bytes'] = constraints.get('pinned_stage1_bytes', {}).get(pins['aura'], {}).get('bytes')
     branches = {name: None for name in DISTROS}
     for item in args.distro:
         name, path = item.split('=', 1)
@@ -779,7 +827,7 @@ def main():
                 cells.append({'machine': machine['name'], 'device': machine['device_identifier'], 'mode': mode,
                               'distro': distro, 'verdict': verdict(checks), 'at_pin': verdict(checks, True),
                               'checks': checks})
-    report = {'pins': pins, 'branches': branches, 'built': built,
+    report = {'pins': pins, 'branches': branches, 'built': built, 'tips': tip_lag(branches, pins),
               'images': {d: {k: {'payload': v['payload_name'], 'source': v['image_source']} for k, v in p.items()}
                          for d, p in profiles.items()},
               'cells': cells}
@@ -860,6 +908,16 @@ def markdown(report):
                                      for d in DISTROS]
             lines.append('| ' + ' | '.join(row) + ' |')
     lines.append('')
+    if report.get('tips'):
+        lines += ['Pins against the branches they ship from (live; reported, not a cell failure):', '',
+                  '| Component | Branch | Pin | Head | Behind |', '| --- | --- | --- | --- | --- |']
+        for row in report['tips']:
+            behind = row.get('error') and 'unknown (%s)' % row['error'] or (
+                'diverged' if row.get('diverged') else
+                'ahead by %s (not merged yet)' % row['ahead'] if row.get('ahead') else '%s commits' % row.get('behind'))
+            lines.append('| %s | %s | %s | %s | %s |' % (row['component'], row['branch'], (row['pin'] or '?')[:12],
+                                                      (row.get('head') or '?')[:12], behind))
+        lines.append('')
     for cell in report['cells']:
         lines.append('### %s, %s, %s: %s today, %s at the pin' % (
             cell['machine'], cell['mode'], cell['distro'], cell['verdict'], cell['at_pin']))

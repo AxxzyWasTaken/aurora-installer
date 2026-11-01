@@ -1,6 +1,6 @@
 {
- "captured": "2026-10-30",
- "description": "MacBook Pro 16-inch M1 Pro (J316s, T6000), 1 TB, one Aurora Fedora install next to macOS, booting m1n1 1.5.2 as Stage 1",
+ "captured": "2026-11-01",
+ "description": "MacBook Pro 16-inch M1 Pro (J316s, T6000), 1 TB, one Aurora Fedora install next to macOS, booting the aura 1.0.0b1-g88c78e46 heap build as Stage 1",
  "device_identifier": "apple,j316s",
  "disk": {
   "block_size": 4096,
@@ -8,11 +8,11 @@
    {
     "apfs": {
      "capacity": 524288000,
-     "free": 498974720,
+     "free": 499040256,
      "uuid": "00000000-0000-4000-8000-000000000002",
      "volumes": [
       {
-       "alloc_bytes": 5881856,
+       "alloc_bytes": 5885952,
        "files": 18,
        "group": null,
        "name": "iSCPreboot",
@@ -28,7 +28,7 @@
        "uuid": "00000000-0000-4000-8000-000000000004"
       },
       {
-       "alloc_bytes": 8056832,
+       "alloc_bytes": 8019968,
        "files": 59,
        "group": null,
        "name": "Hardware",
@@ -116,12 +116,12 @@
    {
     "apfs": {
      "capacity": 2499805184,
-     "free": 1469272064,
+     "free": 1467568128,
      "uuid": "00000000-0000-4000-8000-000000000010",
      "volumes": [
       {
-       "alloc_bytes": 1880064,
-       "files": 198,
+       "alloc_bytes": 1871872,
+       "files": 196,
        "group": "00000000-0000-4000-8000-000000000011",
        "name": "Aurora - Data",
        "role": "Data",
@@ -136,8 +136,8 @@
        "uuid": "00000000-0000-4000-8000-000000000012"
       },
       {
-       "alloc_bytes": 207753216,
-       "files": 97,
+       "alloc_bytes": 209461248,
+       "files": 98,
        "group": null,
        "name": "Preboot",
        "role": "Preboot",
@@ -193,10 +193,10 @@
  "model": "Apple MacBook Pro (16-inch, M1 Pro, 2021)",
  "name": "m1pro",
  "running": {
-  "kernel": "7.3.0-aurora-fleet10",
-  "stage1": "v1.5.2",
+  "kernel": "7.3.0-aurora-tt3",
+  "stage1": "1.0.0b1-g88c78e46",
   "stage2": "1.0.0b1",
-  "u_boot": "2026.07-g2409ad5a25f8"
+  "u_boot": "2026.07-g368465ece17f"
  },
  "schema": 1,
  "soc": "t6000",

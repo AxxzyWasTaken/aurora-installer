@@ -4,11 +4,12 @@
   @testable import AuroraInstallerUXCore
 
   final class Stage1CautionTests: XCTestCase {
-    func testM1ProMaxAndUltraAreWarnedNotBlocked() {
-      for board in ["j314s", "j316s", "j314c", "j316c", "j375c", "j375d", "j575d"] {
-        XCTAssertNotNil(Stage1Caution.reason(for: "apple," + board), board)
-      }
-      for board in ["j274", "j413", "j616s", "j700"] {
+    func testOnlyTheUntriedM3UltraIsWarnedAndNotBlocked() {
+      XCTAssertNotNil(Stage1Caution.reason(for: "apple,j575d"))
+      let others = [
+        "j274", "j413", "j616s", "j700", "j314s", "j316s", "j314c", "j316c", "j375c", "j375d",
+      ]
+      for board in others {
         XCTAssertNil(Stage1Caution.reason(for: "apple," + board), board)
       }
     }

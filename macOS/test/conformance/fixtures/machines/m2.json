@@ -1,5 +1,5 @@
 {
- "captured": "2026-10-30",
+ "captured": "2026-11-01",
  "description": "MacBook Air 13-inch M2 (J413, T8112), 256 GB, one Aurora Fedora install next to macOS",
  "device_identifier": "apple,j413",
  "disk": {
@@ -8,7 +8,7 @@
    {
     "apfs": {
      "capacity": 524288000,
-     "free": 502022144,
+     "free": 501370880,
      "uuid": "00000000-0000-4000-8000-000000000002",
      "volumes": [
       {
@@ -28,8 +28,8 @@
        "uuid": "00000000-0000-4000-8000-000000000004"
       },
       {
-       "alloc_bytes": 4894720,
-       "files": 49,
+       "alloc_bytes": 5529600,
+       "files": 50,
        "group": null,
        "name": "Hardware",
        "role": "Hardware",
@@ -116,12 +116,12 @@
    {
     "apfs": {
      "capacity": 2499805184,
-     "free": 1468887040,
+     "free": 1460113408,
      "uuid": "00000000-0000-4000-8000-000000000010",
      "volumes": [
       {
-       "alloc_bytes": 2277376,
-       "files": 241,
+       "alloc_bytes": 2260992,
+       "files": 237,
        "group": "00000000-0000-4000-8000-000000000011",
        "name": "Aurora - Data",
        "role": "Data",
@@ -136,8 +136,8 @@
        "uuid": "00000000-0000-4000-8000-000000000012"
       },
       {
-       "alloc_bytes": 207212544,
-       "files": 102,
+       "alloc_bytes": 216002560,
+       "files": 104,
        "group": null,
        "name": "Preboot",
        "role": "Preboot",
@@ -223,8 +223,8 @@
  "model": "Apple MacBook Air (13-inch, M2, 2022)",
  "name": "m2",
  "running": {
-  "kernel": "7.3.0-aurora-fleet10",
-  "stage1": "1.0.0b1",
+  "kernel": "7.3.0-aurora-fleet14",
+  "stage1": "1.0.0b1-g81814363",
   "stage2": "1.0.0b1",
   "u_boot": "2026.07-g2409ad5a25f8"
  },

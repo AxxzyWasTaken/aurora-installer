@@ -48,172 +48,212 @@
    ],
    "verdict": "FAIL"
   },
+  "j616s-shrunk-synthetic/fresh/arch": {
+   "failing": [
+    "stage1",
+    "supported"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s-shrunk-synthetic/fresh/fedora": {
+   "failing": [
+    "stage1",
+    "supported"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s-shrunk-synthetic/fresh/nixos": {
+   "failing": [
+    "stage1",
+    "supported"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s-shrunk-synthetic/side-by-side/arch": {
+   "failing": [
+    "stage1",
+    "supported"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s-shrunk-synthetic/side-by-side/fedora": {
+   "failing": [
+    "stage1",
+    "supported"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s-shrunk-synthetic/side-by-side/nixos": {
+   "failing": [
+    "stage1",
+    "supported"
+   ],
+   "verdict": "FAIL"
+  },
   "j616s/fresh/arch": {
    "failing": [
+    "stage1",
     "supported"
    ],
    "verdict": "FAIL"
   },
   "j616s/fresh/fedora": {
    "failing": [
+    "stage1",
     "supported"
    ],
    "verdict": "FAIL"
   },
   "j616s/fresh/nixos": {
    "failing": [
+    "stage1",
     "supported"
    ],
    "verdict": "FAIL"
   },
   "j616s/side-by-side/arch": {
    "failing": [
+    "plan",
+    "stage1",
     "supported"
    ],
    "verdict": "FAIL"
   },
   "j616s/side-by-side/fedora": {
    "failing": [
+    "plan",
+    "stage1",
     "supported"
    ],
    "verdict": "FAIL"
   },
   "j616s/side-by-side/nixos": {
    "failing": [
+    "plan",
+    "stage1",
     "supported"
    ],
    "verdict": "FAIL"
   },
   "m1pro/fresh/arch": {
    "failing": [
-    "branch pins",
-    "distro parity",
     "stage1"
    ],
    "verdict": "FAIL"
   },
   "m1pro/fresh/fedora": {
    "failing": [
-    "branch pins",
     "stage1"
    ],
    "verdict": "FAIL"
   },
   "m1pro/fresh/nixos": {
    "failing": [
-    "branch pins",
-    "distro parity",
     "stage1"
    ],
    "verdict": "FAIL"
   },
   "m1pro/side-by-side/arch": {
    "failing": [
-    "branch pins",
-    "distro parity",
     "stage1"
    ],
    "verdict": "FAIL"
   },
   "m1pro/side-by-side/fedora": {
    "failing": [
-    "branch pins",
     "stage1"
    ],
    "verdict": "FAIL"
   },
   "m1pro/side-by-side/nixos": {
    "failing": [
-    "branch pins",
-    "distro parity",
     "stage1"
    ],
    "verdict": "FAIL"
   },
-  "m2/fresh/arch": {
+  "m2-shrunk-synthetic/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/side-by-side/arch": {
    "failing": [
-    "branch pins",
-    "distro parity"
+    "plan"
    ],
    "verdict": "FAIL"
+  },
+  "m2-shrunk-synthetic/side-by-side/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/side-by-side/nixos": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "m2/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m2/fresh/fedora": {
-   "failing": [
-    "branch pins"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m2/fresh/nixos": {
-   "failing": [
-    "branch pins",
-    "distro parity"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "m2/side-by-side/arch": {
    "failing": [
-    "branch pins",
-    "distro parity",
     "plan"
    ],
    "verdict": "FAIL"
   },
   "m2/side-by-side/fedora": {
    "failing": [
-    "branch pins",
     "plan"
    ],
    "verdict": "FAIL"
   },
   "m2/side-by-side/nixos": {
    "failing": [
-    "branch pins",
-    "distro parity",
     "plan"
    ],
    "verdict": "FAIL"
   },
   "neo/fresh/arch": {
-   "failing": [
-    "branch pins",
-    "distro parity"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "neo/fresh/fedora": {
-   "failing": [
-    "branch pins"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "neo/fresh/nixos": {
-   "failing": [
-    "branch pins",
-    "distro parity"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "neo/side-by-side/arch": {
-   "failing": [
-    "branch pins",
-    "distro parity"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "neo/side-by-side/fedora": {
-   "failing": [
-    "branch pins"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   },
   "neo/side-by-side/nixos": {
-   "failing": [
-    "branch pins",
-    "distro parity"
-   ],
-   "verdict": "FAIL"
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
   }
  },
- "note": "At-pin verdicts recorded 2026-10-30 against the main branches of fedora-aurora, alarm-aurora and nixos-aurora (before the aura 1.0.0b1 pin PRs merged). CI fails when a cell does worse; when one improves, update it here with the run that shows it.",
+ "note": "At-pin verdicts recorded 2026-11-01 against the live signed catalogs and the distro branches that pin kernel 052924773992, aura 32dccf02 and U-Boot 01f255b6 (fedora-aurora PR 97, alarm-aurora PR 79, nixos-aurora PR 82). The J616s and J575d stay FAIL until the release train re-signs catalogs that enable them, and the M1 Pro until payloads built from these pins qualify its Stage 1. CI fails when a cell does worse; when one improves, update it here with the run that shows it.",
  "schema": 1
 }

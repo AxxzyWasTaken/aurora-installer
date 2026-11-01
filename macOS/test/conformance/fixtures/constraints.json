@@ -3,16 +3,46 @@
  "note": "Hardware facts a dry run cannot derive. Each entry records evidence; the harness fails a plan that hits a known rejection.",
  "stage1_iboot": {
   "j316sap": {
-   "stub_os": ["13.5"],
-   "booted_bytes": [1050000],
-   "rejected_bytes": [4063232, 4390912],
-   "evidence": "2026-10-29/30: iBoot reports that macOS needs to be reinstalled for the 4,390,912 B aura 1.0.0b1 raw Stage 1 and the 4,063,232 B slimmed build; m1n1 1.5.2 (about 1.05 MB) boots, and the same aura image chainloaded from it reaches the hand-off"
+   "stub_os": [
+    "13.5"
+   ],
+   "booted_bytes": [
+    1050000,
+    1703936
+   ],
+   "rejected_bytes": [
+    4063232,
+    4390912
+   ],
+   "evidence": "2026-10-29/30: iBoot reports that macOS needs to be reinstalled for the 4,390,912 B aura 1.0.0b1 raw Stage 1 and the 4,063,232 B slimmed build. 2026-10-31: the 1,703,936 B heap build (aura 1.0.0b1-g88c78e46, the aura PR 31 heap change now on main) was accepted through kmutil, booted, survived a warm reboot and matched Touch ID. m1n1 1.5.2 (about 1.05 MB) boots too"
   }
  },
  "proven_stage1": {
-  "j413ap": "aura 1.0.0b1 raw Stage 1 boots on the 13.5 stub (fleet, 2026-10-30)",
-  "j700ap": "aura 1.0.0b1 raw Stage 1 boots on the 26.6.2 stub (fleet, 2026-10-30)",
-  "j616sap": "aura 1.0.0b1 raw Stage 1 boots on the 26.6.2 stub (fleet, 2026-10-30)"
+  "j413ap": {
+   "aura": [
+    "1.0.0b1",
+    "1.0.0b1-g81814363"
+   ],
+   "evidence": "aura 1.0.0b1 raw Stage 1 boots on the 13.5 stub (fleet, 2026-10-30); the M2 runs the 1.0.0b1-g81814363 debugusb build since 2026-10-31"
+  },
+  "j700ap": {
+   "aura": [
+    "1.0.0b1"
+   ],
+   "evidence": "aura 1.0.0b1 raw Stage 1 boots on the 26.6.2 stub (fleet, 2026-10-30, still installed 2026-11-01)"
+  },
+  "j616sap": {
+   "aura": [
+    "1.0.0b1"
+   ],
+   "evidence": "aura 1.0.0b1 raw Stage 1 boots on the 26.6.2 stub (fleet, 2026-10-30, still installed 2026-11-01)"
+  },
+  "j316sap": {
+   "aura": [
+    "1.0.0b1-g88c78e46"
+   ],
+   "evidence": "the 1,703,936 B heap build boots on the 13.5 stub (kmutil 2026-10-31, still installed 2026-11-01)"
+  }
  },
  "recovery_long_versions": {
   "13.5": "22.7.74.0.0,0",
@@ -23,5 +53,38 @@
   "27.0": "26.1.0.0.0,0"
  },
  "recovery_long_versions_note": "The paired recoveryOS version the installer reads on the Mac, by system macOS. 27.0 is a lower bound: 27A builds are Darwin 26 and the exact build is not readable from Linux. Any 27.0 recovery is above the 26.6.2 stub's 25.7.83 minimum. 26.2 (the M1 Pro's system firmware) is a lower bound the same way: any 26.2 recovery is Darwin 25.2 or later, above the 13.5 stub's 22.7.74 minimum.",
- "chip_ids": {"t6000": 24576, "t8112": 33042, "t8140": 33088, "t6040": 24640, "t6032": 24626}
+ "chip_ids": {
+  "t6000": 24576,
+  "t8112": 33042,
+  "t8140": 33088,
+  "t6040": 24640,
+  "t6032": 24626
+ },
+ "proven_stage1_note": "A Stage 1 counts as proven on a board only for the aura build (its ##aura_ver## label) that booted there as the installed Stage 1. A newer pin needs its own boot through a real 1TR install.",
+ "pinned_stage1_bytes": {
+  "32dccf0297e90e66deac7cf252478b2af9e71d27": {
+   "bytes": 1638400,
+   "evidence": "aura main 32dccf02 built 2026-11-01 with RELEASE=1 CHAINLOADING=1 USE_CLANG=1 BUILTIN_LOGO=aurora BUILDSTD=1 (the packaging flags); build/aura.bin sha256 4ae49fe99459d4cf5f2f2f7cb05e98034f7f943180d816c3f11acac7c6837557, marker 1.0.0b1-g32dccf02"
+  }
+ },
+ "pinned_stage1_bytes_note": "The raw Stage 1 size of a pinned aura commit, measured from a build, so the iBoot size limits apply to the pin before its payloads exist. Ignored for any other commit.",
+ "proven_kernels": {
+  "j316sap": {
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots 3cadf377 / a067d4f1), kernel -p3 0"
+  },
+  "j413ap": {
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots f4520628 / 9822ad34), kernel -p3 0"
+  },
+  "j700ap": {
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots a3fd8e8c / 17d9eb5d), kernel -p3 0"
+  },
+  "j616sap": {
+   "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
+   "437edfa194947b4fca833f3f23226e9cff7652d3": "fleet14b = aurora-silicon/linux aurora-wip 437edfa19494 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-01 (boots 361b7b94 / eec67924), kernel -p3 0"
+  }
+ },
+ "proven_kernels_note": "Kernel source commits each board has booted as its default kernel. The distribution build uses its own configuration, so an image boot is still a hardware step."
 }

@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import struct
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('conformance', HERE / 'conformance.py')
@@ -179,6 +180,30 @@ class UrlopenRetryTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError):
                 conformance.urlopen('u', timeout=1)
         self.assertEqual(len(calls), 1)
+
+
+class PinLabelTests(unittest.TestCase):
+    TAG = '0ca7bf85c9946a7ec90a5701c126b70ed144bd34'
+    MAIN = '32dccf0297e90e66deac7cf252478b2af9e71d27'
+
+    def label(self, commit):
+        tags = json.dumps([{'name': 'v1.0.0b1', 'commit': {'sha': self.TAG}}]).encode()
+        with mock.patch.object(conformance, 'fetch', lambda url, cache, headers=None: tags):
+            return conformance.aura_label('1.0.0b1', commit, '/nonexistent')
+
+    def test_only_the_tagged_commit_carries_the_bare_release_label(self):
+        self.assertEqual(self.label(self.TAG), '1.0.0b1')
+        self.assertEqual(self.label(self.MAIN), '1.0.0b1-g32dccf02')
+
+    def test_stage1_proofs_name_the_build_that_booted(self):
+        constraints = json.loads((HERE / 'fixtures/constraints.json').read_text())
+        for board, proof in constraints['proven_stage1'].items():
+            self.assertTrue(proof['aura'] and proof['evidence'], board)
+        for commit, record in constraints['pinned_stage1_bytes'].items():
+            self.assertRegex(commit, r'\A[0-9a-f]{40}\Z')
+            self.assertGreater(record['bytes'], 0)
+        limit = constraints['stage1_iboot']['j316sap']
+        self.assertLess(max(limit['booted_bytes']), min(limit['rejected_bytes']))
 
 
 if __name__ == '__main__':

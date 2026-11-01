@@ -44,12 +44,6 @@
   },
   "developer": {},
   "stage1_caution": {
-    "apple,j314s": "The 16-inch M1 Pro (J316s, T6000) iBoot refuses aura 1.0.0b1's 4,390,912 B raw Stage 1 (\"macOS needs to be reinstalled\"); a 4,063,232 B build is refused too. Installs go ahead after a warning with the recovery steps.",
-    "apple,j316s": "The 16-inch M1 Pro (J316s, T6000) iBoot refuses aura 1.0.0b1's 4,390,912 B raw Stage 1 (\"macOS needs to be reinstalled\"); a 4,063,232 B build is refused too. Installs go ahead after a warning with the recovery steps.",
-    "apple,j314c": "Same iBoot generation as the J316s, where aura 1.0.0b1's 4,390,912 B raw Stage 1 is refused; not tried on this board. Installs go ahead after a warning with the recovery steps.",
-    "apple,j316c": "Same iBoot generation as the J316s, where aura 1.0.0b1's 4,390,912 B raw Stage 1 is refused; not tried on this board. Installs go ahead after a warning with the recovery steps.",
-    "apple,j375c": "Same iBoot generation as the J316s, where aura 1.0.0b1's 4,390,912 B raw Stage 1 is refused; not tried on this board. Installs go ahead after a warning with the recovery steps.",
-    "apple,j375d": "Same iBoot generation as the J316s, where aura 1.0.0b1's 4,390,912 B raw Stage 1 is refused; not tried on this board. Installs go ahead after a warning with the recovery steps.",
     "apple,j575d": "Mac Studio M3 Ultra (T6032): aura 1.0.0b1 runs CPU-only on this chip and neither its Stage 1 nor this iBoot has been tried. Installs go ahead after a warning with the recovery steps."
   }
 }

@@ -202,6 +202,10 @@
             "expert": false,
             "minimum": "14.8.3"
           },
+          "j614s": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
           "j616s": {
             "expert": false,
             "minimum": "26.6.2"
@@ -230,6 +234,7 @@
             "minimumRecovery": "25.7.83.0.0,0",
             "models": [
               "j613",
+              "j614s",
               "j615",
               "j616s",
               "j700"

@@ -15,19 +15,40 @@
     public static let redaction = EngineStandardErrorRedactor.redaction
     static let maximumSourceCharacters = 48
 
-    /// The message as lines safe to keep and show; empty lines are dropped.
+    #if DEBUG
+      /// Told each time a message is redacted; for tests.
+      nonisolated(unsafe) static var willRedact: (() -> Void)?
+    #endif
+
+    /// The message as lines safe to keep and show; empty lines are dropped,
+    /// and each line is cut to `InstallerLogBuffer.maximumMessageBytes`.
     public static func lines(_ message: String, secrets: [Data]) -> [String] {
+      #if DEBUG
+        willRedact?()
+      #endif
       var text = EngineStandardErrorRedactor.redact(
         Data(message.utf8), truncated: false, secrets: secrets)
       text = urls(in: text)
       text = homePaths(in: text)
       return text.split(whereSeparator: \.isNewline).compactMap { line in
-        let cleaned = String(
-          line.replacingOccurrences(of: "\t", with: " ")
-            .prefix(InstallerLogBuffer.maximumMessageCharacters)
+        let cleaned = bounded(
+          line.replacingOccurrences(of: "\t", with: " "),
+          bytes: InstallerLogBuffer.maximumMessageBytes
         ).trimmingCharacters(in: .whitespaces)
         return cleaned.isEmpty ? nil : cleaned
       }
+    }
+
+    /// At most `bytes` of UTF-8, never splitting a character's encoding.
+    static func bounded(_ text: String, bytes: Int) -> String {
+      var result = String.UnicodeScalarView()
+      var count = 0
+      for scalar in text.unicodeScalars {
+        count += UTF8.width(scalar)
+        guard count <= bytes else { break }
+        result.append(scalar)
+      }
+      return String(result)
     }
 
     /// One redacted line, or the empty string.
@@ -46,44 +67,64 @@
       return cleaned.isEmpty ? "unknown" : cleaned
     }
 
-    /// A command line as the log shows it. The value after a flag that names
-    /// an account or credential, and any credential-named `key=value`
-    /// argument, is withheld. Secrets never travel in arguments here, as
-    /// native stages hand them to tools on stdin; this is defense in depth.
+    /// A command line as the log shows it. Known secrets are removed from
+    /// each argument before it is quoted. Everything after a flag that names
+    /// a password, passphrase, secret or token, or `-p`, is withheld, since
+    /// some tools take several values there (`dscl -passwd user old new`);
+    /// the value after an account flag such as `--user` is withheld; so is a
+    /// credential-named `key=value`. Native stages hand secrets to tools on
+    /// stdin, so this is defense in depth.
     public static func command(
       _ executable: String, _ arguments: [String], secrets: [Data] = []
     ) -> String {
-      var shown = [quoted(executable)]
+      let texts = secrets.compactMap { String(data: $0, encoding: .utf8) }.filter { !$0.isEmpty }
+      func hidden(_ argument: String) -> String {
+        texts.reduce(argument) { $0.replacingOccurrences(of: $1, with: redaction) }
+      }
+      var shown = [quoted(hidden(executable))]
       var withholdNext = false
-      for argument in arguments {
+      for (index, argument) in arguments.enumerated() {
         if withholdNext {
           shown.append(redaction)
           withholdNext = false
-          continue
-        }
-        if isValueFlag(argument) {
-          withholdNext = true
-          shown.append(argument)
         } else if let separator = argument.firstIndex(of: "="),
           isCredentialName(String(argument[..<separator]))
         {
-          shown.append(String(argument[...separator]) + redaction)
+          shown.append(hidden(String(argument[...separator])) + redaction)
+        } else if withholdsRest(argument) {
+          shown.append(hidden(argument))
+          if index + 1 < arguments.count { shown.append(redaction) }
+          break
         } else {
-          shown.append(quoted(argument))
+          withholdNext = isValueFlag(argument)
+          shown.append(quoted(hidden(argument)))
         }
       }
       return line(shown.joined(separator: " "), secrets: secrets)
     }
 
     private static let valueFlagNames: Set<String> = [
-      "user", "username", "password", "passwd", "pass", "passphrase", "secret", "token",
-      "key", "pin", "credential", "credentials", "auth", "authorization",
+      "user", "username", "pass", "key", "pin", "credential", "credentials", "auth",
+      "authorization",
+    ]
+    private static let secretFlagWords = ["password", "passwd", "passphrase", "secret", "token"]
+    /// Flags that say a secret comes on stdin and take no value.
+    private static let stdinFlagNames: Set<String> = [
+      "stdinpass", "stdinpassphrase", "stdinpassword",
     ]
 
+    static func flagName(_ argument: String) -> String? {
+      guard argument.hasPrefix("-"), !argument.contains("=") else { return nil }
+      return argument.drop { $0 == "-" }.lowercased()
+    }
+
     static func isValueFlag(_ argument: String) -> Bool {
-      guard argument.hasPrefix("-") else { return false }
-      let name = argument.drop { $0 == "-" }.lowercased()
-      return valueFlagNames.contains(name)
+      flagName(argument).map(valueFlagNames.contains) ?? false
+    }
+
+    static func withholdsRest(_ argument: String) -> Bool {
+      guard let name = flagName(argument), !stdinFlagNames.contains(name) else { return false }
+      return name == "p" || secretFlagWords.contains { name.contains($0) }
     }
 
     static func isCredentialName(_ name: String) -> Bool {

@@ -12,6 +12,12 @@
 
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 
+    /// A level this build doesn't know, such as one a newer helper sends,
+    /// reads as detail.
+    public init(from decoder: any Decoder) throws {
+      self = Self(rawValue: try decoder.singleValueContainer().decode(Int.self)) ?? .debug
+    }
+
     /// The word written in saved logs.
     public var label: String {
       switch self {
@@ -56,25 +62,46 @@
   /// the buffer before the reader asked for them.
   public struct InstallerLogBatch: Codable, Equatable, Sendable {
     public static let maximumEntries = 512
+    /// The most a batch adds to a reply, as JSON.
+    public static let maximumBytes = 512 * 1_024
 
     public let entries: [InstallerLogEntry]
     public let missed: UInt64
     /// The cursor to ask with next time.
     public let cursor: UInt64
+    /// The buffer the lines came from; a cursor only means something there.
+    public var ring: UUID? = nil
+    /// Whether lines after this batch were left for the next request.
+    public var more: Bool? = nil
 
-    public init(entries: [InstallerLogEntry], missed: UInt64, cursor: UInt64) {
+    public init(
+      entries: [InstallerLogEntry], missed: UInt64, cursor: UInt64, ring: UUID? = nil,
+      more: Bool? = nil
+    ) {
       self.entries = entries
       self.missed = missed
       self.cursor = cursor
+      self.ring = ring
+      self.more = more
+    }
+
+    /// An upper bound on an entry's size as JSON, where every `/` may be
+    /// escaped and any byte may need escaping.
+    static func encodedBytes(_ entry: InstallerLogEntry) -> Int {
+      2 * (entry.message.utf8.count + entry.source.utf8.count + (entry.activity?.utf8.count ?? 0))
+        + 160
     }
   }
 
   /// A bounded, thread-safe ring of log lines. Appending never blocks on a
   /// reader: when the ring is full the oldest line is dropped and counted.
   public final class InstallerLogBuffer: @unchecked Sendable {
-    public static let maximumMessageCharacters = 2_000
+    /// Each line's message is cut to this many UTF-8 bytes.
+    public static let maximumMessageBytes = 2_000
 
     public let capacity: Int
+    /// Names this buffer, so a reader can tell a restarted helper's apart.
+    public let identity = UUID()
     private let lock = NSLock()
     private var ring: [InstallerLogEntry] = []
     private var head = 0
@@ -114,23 +141,37 @@
     }
 
     /// Stores lines read from another process, such as the helper's. Their
-    /// fields are cleaned again here: the sender is never trusted to have.
-    public func ingest(_ entries: [InstallerLogEntry], sourcePrefix: String) {
+    /// fields are cleaned again here, without `secrets`: the sender is never
+    /// trusted to have. Cleaning happens before the lock is taken.
+    public func ingest(
+      _ entries: [InstallerLogEntry], sourcePrefix: String, secrets: [Data] = []
+    ) {
       let prefix = InstallerLogRedactor.source(sourcePrefix)
-      lock.withLock {
-        for entry in entries.prefix(InstallerLogBatch.maximumEntries) {
-          let source = InstallerLogRedactor.source(entry.source)
-          for line in InstallerLogRedactor.lines(entry.message, secrets: []) {
-            store(
-              InstallerLogEntry(
-                sequence: 0, time: entry.time, level: entry.level,
-                source: source == prefix ? prefix : prefix + "/" + source, message: line,
-                activity: entry.activity.map { prefix + "/" + InstallerLogRedactor.source($0) },
-                closesActivity: entry.closesActivity))
-          }
+      var cleaned: [InstallerLogEntry] = []
+      for entry in entries.prefix(InstallerLogBatch.maximumEntries) {
+        let source = InstallerLogRedactor.source(entry.source)
+        for line in InstallerLogRedactor.lines(entry.message, secrets: secrets) {
+          cleaned.append(
+            InstallerLogEntry(
+              sequence: 0, time: entry.time, level: entry.level,
+              source: source == prefix ? prefix : prefix + "/" + source, message: line,
+              activity: entry.activity.map { prefix + "/" + InstallerLogRedactor.source($0) },
+              closesActivity: entry.closesActivity))
         }
       }
+      lock.withLock {
+        for entry in cleaned { store(entry) }
+      }
     }
+
+    #if DEBUG
+      /// Whether this thread could take the lock now; for tests.
+      var isLocked: Bool {
+        guard lock.try() else { return true }
+        lock.unlock()
+        return false
+      }
+    #endif
 
     @discardableResult
     private func store(_ entry: InstallerLogEntry) -> UInt64 {
@@ -161,24 +202,35 @@
       lock.withLock { ordered() }
     }
 
-    /// Lines newer than `cursor`, at most `limit` of them.
-    public func entries(after cursor: UInt64, limit: Int = InstallerLogBatch.maximumEntries)
-      -> InstallerLogBatch
-    {
+    /// Lines newer than `cursor`, at most `limit` of them and `maximumBytes`
+    /// of JSON. A cursor read from another `ring` starts from the beginning.
+    public func entries(
+      after cursor: UInt64, ring reader: UUID? = nil,
+      limit: Int = InstallerLogBatch.maximumEntries,
+      maximumBytes: Int = InstallerLogBatch.maximumBytes
+    ) -> InstallerLogBatch {
       lock.withLock {
-        // A cursor past the newest line came from an earlier buffer, such as
-        // a helper that has since restarted: read this one from its start.
-        let cursor = cursor < nextSequence ? cursor : 0
+        // A cursor past the newest line, or from another ring, came from an
+        // earlier buffer, such as a helper that has since restarted.
+        let cursor = cursor < nextSequence && (reader == nil || reader == identity) ? cursor : 0
         let oldest = nextSequence - UInt64(ring.count)
         let start = max(cursor + 1, oldest)
         let missed = start > cursor + 1 ? start - (cursor + 1) : 0
         guard start < nextSequence, limit > 0 else {
-          return InstallerLogBatch(entries: [], missed: missed, cursor: max(cursor, start - 1))
+          return InstallerLogBatch(
+            entries: [], missed: missed, cursor: max(cursor, start - 1), ring: identity)
         }
-        let available = ordered().dropFirst(Int(start - oldest))
-        let taken = Array(available.prefix(limit))
+        var taken: [InstallerLogEntry] = []
+        var bytes = 0
+        for entry in ordered().dropFirst(Int(start - oldest)).prefix(limit) {
+          bytes += InstallerLogBatch.encodedBytes(entry)
+          guard bytes <= maximumBytes else { break }
+          taken.append(entry)
+        }
+        let next = taken.last?.sequence ?? max(cursor, start - 1)
         return InstallerLogBatch(
-          entries: taken, missed: missed, cursor: taken.last?.sequence ?? cursor)
+          entries: taken, missed: missed, cursor: next, ring: identity,
+          more: next + 1 < nextSequence)
       }
     }
 
@@ -227,13 +279,21 @@
     }
 
     /// Runs `body` with the account's password removed from every line it
-    /// logs. The password itself stays out of reach of the caller.
+    /// logs. The password itself stays out of reach of the caller. When
+    /// `body` throws, `failure` may describe the error in an error line,
+    /// logged inside the same scope so it is redacted too.
     public static func redacting<T>(
       _ authorization: MachineOwnerAuthorization,
+      failure: ((any Error) -> String?)? = nil,
       isolation: isolated (any Actor)? = #isolation,
       _ body: () async throws -> T
-    ) async rethrows -> T {
-      try await $secrets.withValue(Self.secrets + [authorization.password]) { try await body() }
+    ) async throws -> T {
+      try await $secrets.withValue(Self.secrets + [authorization.password]) {
+        do { return try await body() } catch {
+          if let line = failure?(error) { Self.error(line) }
+          throw error
+        }
+      }
     }
 
     private static let firmwareObserver: @Sendable (FirmwareTransferLog.Level, String) -> Void = {

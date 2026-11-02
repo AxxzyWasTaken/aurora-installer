@@ -42,11 +42,11 @@
 
     func testEachLineIsItsOwnEntryBoundedAndPrintable() {
       let buffer = InstallerLogBuffer(capacity: 10)
-      let long = String(repeating: "x", count: InstallerLogBuffer.maximumMessageCharacters + 50)
+      let long = String(repeating: "x", count: InstallerLogBuffer.maximumMessageBytes + 50)
       buffer.append(.error, source: "tool\u{7}\n", "first\n\n\u{1B}[31msecond\u{0}\n" + long)
       let entries = buffer.snapshot()
       XCTAssertEqual(entries.map(\.message).prefix(2), ["first", "second"])
-      XCTAssertEqual(entries.last?.message.count, InstallerLogBuffer.maximumMessageCharacters)
+      XCTAssertEqual(entries.last?.message.count, InstallerLogBuffer.maximumMessageBytes)
       XCTAssertEqual(Set(entries.map(\.source)), ["tool"])
       XCTAssertTrue(entries.allSatisfy { $0.level == .error })
     }
@@ -100,11 +100,11 @@
             "apfs", "unlockVolume", "disk3s5", "-user", "ABCD", "-passphrase", "pw",
             "-stdinpassphrase",
           ]),
-        "/usr/sbin/diskutil apfs unlockVolume disk3s5 -user [redacted] -passphrase [redacted] -stdinpassphrase"
+        "/usr/sbin/diskutil apfs unlockVolume disk3s5 -user [redacted] -passphrase [redacted]"
       )
       XCTAssertEqual(
-        InstallerLogRedactor.command("/bin/tool", ["--token", "t", "a b", "SECRET_KEY=v", "tail"]),
-        "/bin/tool --token [redacted] 'a b' SECRET_KEY= [redacted]")
+        InstallerLogRedactor.command("/bin/tool", ["a b", "SECRET_KEY=v", "--token", "t", "tail"]),
+        "/bin/tool 'a b' SECRET_KEY= [redacted]")
       XCTAssertEqual(
         InstallerLogRedactor.command("/bin/tool", ["value"], secrets: [Data("value".utf8)]),
         "/bin/tool [redacted]")

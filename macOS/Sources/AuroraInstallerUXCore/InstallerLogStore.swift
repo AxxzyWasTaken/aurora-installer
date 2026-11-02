@@ -106,6 +106,7 @@
     private var pendingBytes = 0
     private var dropped = 0
     private var descriptor: Int32 = -1
+    private var folder: Int32 = -1
     private var size = 0
     private var failed = false
 
@@ -114,7 +115,10 @@
       self.maximumFileBytes = maximumFileBytes
     }
 
-    deinit { if descriptor >= 0 { Darwin.close(descriptor) } }
+    deinit {
+      if descriptor >= 0 { Darwin.close(descriptor) }
+      if folder >= 0 { Darwin.close(folder) }
+    }
 
     /// `~/Library/Logs/<app name>/`, beside the app's failure notices.
     public static func defaultDirectory() -> URL? { EngineFailureUserLog.defaultDirectory() }
@@ -136,10 +140,12 @@
       guard admitted else { return }
       queue.async { [self] in
         write(data)
+        // Report drops once the queue is empty, and only then forget them.
         let missed = lock.withLock {
           pendingBytes -= data.count
+          guard pendingBytes == 0 else { return 0 }
           defer { dropped = 0 }
-          return pendingBytes == 0 ? dropped : 0
+          return dropped
         }
         if missed > 0 {
           write(Data("\(missed) log lines were not written: the disk fell behind\n".utf8))
@@ -169,23 +175,36 @@
       if written > 0 { size += written }
     }
 
+    /// Opens the folder, never through a link, and the file in it. Anything
+    /// unexpected stops writing: the log never writes through a link.
     private func open() {
-      do {
-        try FileManager.default.createDirectory(
-          at: directory, withIntermediateDirectories: true,
-          attributes: [.posixPermissions: 0o700])
-      } catch {
-        failed = true
-        return
+      if folder < 0 {
+        do {
+          try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        } catch {
+          failed = true
+          return
+        }
+        let opened = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var info = stat()
+        guard opened >= 0, fstat(opened, &info) == 0, info.st_uid == geteuid() else {
+          if opened >= 0 { Darwin.close(opened) }
+          failed = true
+          return
+        }
+        folder = opened
       }
-      let opened = Darwin.open(
-        url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+      let opened = openat(
+        folder, Self.fileName, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+        S_IRUSR | S_IWUSR)
       var info = stat()
       guard opened >= 0, fstat(opened, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-        info.st_uid == geteuid(), info.st_nlink == 1
+        info.st_uid == geteuid(), info.st_nlink == 1,
+        info.st_mode & 0o777 == 0o600 || fchmod(opened, S_IRUSR | S_IWUSR) == 0
       else {
         if opened >= 0 { Darwin.close(opened) }
-        // Something unexpected sits at the path: never write through it.
         failed = true
         return
       }
@@ -194,13 +213,12 @@
     }
 
     private func rotate() {
-      func name(_ index: Int) -> URL {
-        directory.appendingPathComponent(
-          index == 0 ? Self.fileName : "installer.\(index).log")
+      func name(_ index: Int) -> String {
+        index == 0 ? Self.fileName : "installer.\(index).log"
       }
-      try? FileManager.default.removeItem(at: name(Self.retainedFiles))
+      unlinkat(folder, name(Self.retainedFiles), 0)
       for index in stride(from: Self.retainedFiles - 1, through: 0, by: -1) {
-        Darwin.rename(name(index).path, name(index + 1).path)
+        renameat(folder, name(index), folder, name(index + 1))
       }
     }
   }
@@ -255,11 +273,14 @@
     /// Reads the lines logged since the last refresh. Called on the main
     /// queue soon after a line is logged; tests call it directly.
     public func refresh() {
-      let batch = buffer.entries(after: cursor, limit: .max)
+      let batch = buffer.entries(after: cursor, limit: .max, maximumBytes: .max)
       guard !batch.entries.isEmpty || batch.cursor != cursor else { return }
       cursor = batch.cursor
       entries.append(contentsOf: batch.entries)
-      if entries.count > buffer.capacity { entries.removeFirst(entries.count - buffer.capacity) }
+      // Trim a quarter at a time, so the window rebuilds rarely, not per line.
+      if entries.count > buffer.capacity + buffer.capacity / 4 {
+        entries.removeFirst(entries.count - buffer.capacity)
+      }
       var changed = false
       for entry in batch.entries {
         guard let activity = entry.activity else { continue }

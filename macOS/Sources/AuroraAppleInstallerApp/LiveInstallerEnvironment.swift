@@ -671,14 +671,10 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     InstallerLog.progress(
       "Making the installation service ready (now \(helperStatus.status))"
         + (reenablingSwitchedOff ? "; turning it back on in Login Items" : ""))
-    do {
-      try await InstallerLog.redacting(authorization) {
-        try await InstallerHelperSetup.ensure(
-          authorization, reenablingSwitchedOff: reenablingSwitchedOff)
-      }
-    } catch {
-      InstallerLog.error("The installation service isn’t ready: \(error)")
-      throw error
+    let failure: (any Error) -> String? = { "The installation service isn’t ready: \($0)" }
+    try await InstallerLog.redacting(authorization, failure: failure) {
+      try await InstallerHelperSetup.ensure(
+        authorization, reenablingSwitchedOff: reenablingSwitchedOff)
     }
     InstallerLog.progress("The installation service is ready")
   }
@@ -900,8 +896,10 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     // helper checks it again. A job an earlier build of this installer
     // started is then bound to this build's helper, which installing the
     // newer build put in place.
-    let snapshot = try await client.retryRecoveryJob(
-      hint, store: store, authorization: authorization, adoptingOtherBuild: true)
+    let snapshot = try await InstallerLog.redacting(authorization) {
+      try await client.retryRecoveryJob(
+        hint, store: store, authorization: authorization, adoptingOtherBuild: true)
+    }
     let (bytes, handoff) = try snapshot.requireResult()
     let completion = try completionFromJob(snapshot, bytes: bytes, handoff: handoff)
     try store.clear()
@@ -969,9 +967,14 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     InstallerLog.progress(
       "Handing the approved plan \(prepared.review.identity.bindingDigest.prefix(12)) to the "
         + "installation service (\(operation))")
+    // Nothing logged while the password is in hand can carry it, the
+    // failure line included. An engine failure is logged by the helper.
+    let failure: (any Error) -> String? = { error in
+      if case .engineFailed = error as? EngineXPCSubmissionError { return nil }
+      return "The installation service reported: \(error)"
+    }
     do {
-      // Nothing logged while the password is in hand can carry it.
-      progress = try await InstallerLog.redacting(authorization) {
+      progress = try await InstallerLog.redacting(authorization, failure: failure) {
         switch operation {
         case .install:
           try await coordinator.execute(
@@ -998,9 +1001,6 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     } catch let EngineXPCSubmissionError.engineFailed(notice) {
       EngineFailureUserLog.write(notice, operation: String(describing: operation))
       throw EngineXPCSubmissionError.engineFailed(notice)
-    } catch {
-      InstallerLog.error("The installation service reported: \(error)")
-      throw error
     }
     InstallerLog.progress("The installation service finished: next \(progress.nextAction)")
     let installConf = jobContext.installConfHandoff ?? .notRecorded

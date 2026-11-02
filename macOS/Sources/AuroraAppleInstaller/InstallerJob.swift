@@ -312,6 +312,36 @@
     }
   }
 
+  extension InstallerJobSnapshot {
+    enum CodingKeys: String, CodingKey {
+      case identifier, bindingDigest, selection, phase, plan, transcript, installConf, failure
+      case journal, journalOffset, recoveryAttempt, recoveryRetryAvailable, startOverAvailable
+      case preparationStep, log
+    }
+
+    /// As synthesized, except that the log is display only: a log this build
+    /// can't read, such as a newer helper's, is left out rather than failing
+    /// the whole job.
+    public init(from decoder: any Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      identifier = try container.decode(UUID.self, forKey: .identifier)
+      bindingDigest = try container.decode(String.self, forKey: .bindingDigest)
+      selection = try container.decode(AuroraInstallationSelection.self, forKey: .selection)
+      phase = try container.decode(InstallerJobPhase.self, forKey: .phase)
+      plan = try container.decodeIfPresent(InstallerJobPlanIdentity.self, forKey: .plan)
+      transcript = try container.decodeIfPresent(Data.self, forKey: .transcript)
+      installConf = try container.decodeIfPresent(InstallConfHandoff.self, forKey: .installConf)
+      failure = try container.decodeIfPresent(InstallerJobFailure.self, forKey: .failure)
+      journal = try container.decode(Data.self, forKey: .journal)
+      journalOffset = try container.decode(UInt64.self, forKey: .journalOffset)
+      recoveryAttempt = try container.decodeIfPresent(UUID.self, forKey: .recoveryAttempt)
+      recoveryRetryAvailable = try container.decode(Bool.self, forKey: .recoveryRetryAvailable)
+      startOverAvailable = try container.decodeIfPresent(Bool.self, forKey: .startOverAvailable)
+      preparationStep = try container.decodeIfPresent(String.self, forKey: .preparationStep)
+      log = try? container.decodeIfPresent(InstallerLogBatch.self, forKey: .log)
+    }
+  }
+
   struct InstallerJobStartRequest: Codable, Sendable {
     let ticket: InstallerJobTicket
     let operation: String
@@ -321,9 +351,10 @@
   struct InstallerJobStatusRequest: Codable, Sendable {
     let ticket: InstallerJobTicket
     let journalOffset: UInt64
-    /// The last Installer Log line the app holds. Older apps never send it,
-    /// and older helpers ignore it.
+    /// The last Installer Log line the app holds, and the buffer it came
+    /// from. Older apps never send them, and older helpers ignore them.
     var logSequence: UInt64? = nil
+    var logRing: UUID? = nil
   }
 
   struct InstallerJobRecoveryRequest: Codable, Sendable {
@@ -388,6 +419,8 @@
     private var loadError: (any Error)?
     private static let maximumRecordBytes = 12 * 1_048_576
     private static let maximumRecords = 32
+    /// The largest status reply the app accepts.
+    static let maximumReplyBytes = 12 * 1_048_576
 
     init(
       workingDirectory: URL, work: HelperWorkState,
@@ -602,10 +635,15 @@
         let running = record.phase == .preparing || record.phase == .running
         return (record, running ? steps[record.identifier] : nil)
       }
-      let log = request.logSequence.flatMap { cursor in
-        lock.withLock { logs[record.identifier] }?.entries(after: cursor)
-      }
       let (journal, offset) = readJournal(record, offset: request.journalOffset)
+      // The app refuses a reply over 12 MB. A transcript can take most of
+      // that, as base64; the log gets what is left.
+      let used = ((record.transcript?.count ?? 0) + journal.count) * 4 / 3 + 65_536
+      let room = min(InstallerLogBatch.maximumBytes, max(0, Self.maximumReplyBytes - used))
+      let log = request.logSequence.flatMap { cursor in
+        lock.withLock { logs[record.identifier] }?.entries(
+          after: cursor, ring: request.logRing, maximumBytes: room)
+      }
       var snapshot = InstallerJobSnapshot(
         identifier: record.identifier, bindingDigest: record.bindingDigest,
         selection: record.selection, phase: record.phase, plan: record.plan,
@@ -963,7 +1001,9 @@
           if !snapshot.journal.isEmpty { journal?(snapshot.journal) }
           switch snapshot.phase {
           case .preparing, .running:
-            try await sleep(snapshot.journal.isEmpty ? .seconds(1) : .milliseconds(100))
+            // Come back soon while the journal or the log has more to give.
+            let busy = !snapshot.journal.isEmpty || snapshot.log?.more == true
+            try await sleep(busy ? .milliseconds(100) : .seconds(1))
           case .succeeded, .failed, .interrupted:
             if let transcript = snapshot.transcript { journal?(transcript) }
             return snapshot

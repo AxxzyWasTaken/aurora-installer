@@ -681,13 +681,14 @@
     /// `logSequence` asks for the job's Installer Log lines after that one.
     public func jobStatus(
       _ hint: PendingInstallerJob, journalOffset: UInt64 = 0, otherBuild: Bool = false,
-      logSequence: UInt64? = nil
+      logSequence: UInt64? = nil, logRing: UUID? = nil
     ) async throws -> InstallerJobSnapshot {
       try admit(hint, otherBuild: otherBuild)
       try hint.ticket.validate()
       let request = try JSONEncoder().encode(
         InstallerJobStatusRequest(
-          ticket: hint.ticket, journalOffset: journalOffset, logSequence: logSequence))
+          ticket: hint.ticket, journalOffset: journalOffset, logSequence: logSequence,
+          logRing: logRing))
       let snapshot = try await jobCall { proxy, reply in
         proxy.jobStatus(request: request, reply: reply)
       }
@@ -770,12 +771,26 @@
     public func observeJob(_ hint: PendingInstallerJob, otherBuild: Bool = false) async throws
       -> InstallerJobSnapshot
     {
-      let log = InstallerLog.current.map(HelperLogReader.init)
+      let log = InstallerLog.current.map {
+        HelperLogReader.reader(for: hint.ticket.identifier, into: $0)
+      }
       return try await InstallerJobObservation.wait(
         fetch: { offset in
           let snapshot = try await self.jobStatus(
-            hint, journalOffset: offset, otherBuild: otherBuild, logSequence: log?.cursor)
+            hint, journalOffset: offset, otherBuild: otherBuild, logSequence: log?.cursor,
+            logRing: log?.ring)
           log?.read(snapshot.log)
+          if let log, snapshot.phase != .preparing, snapshot.phase != .running {
+            // The job is over: fetch the lines still waiting, its failure
+            // among them, then end what it was running.
+            try await log.drain {
+              try await self.jobStatus(
+                hint, journalOffset: snapshot.journalOffset, otherBuild: otherBuild,
+                logSequence: log.cursor, logRing: log.ring
+              ).log
+            }
+            log.finish()
+          }
           return snapshot
         },
         journal: journalProgress, preparation: jobContext?.preparation)
@@ -1139,24 +1154,81 @@
   /// the cursor between polls. Lines the helper dropped before the app read
   /// them are counted in the log.
   final class HelperLogReader: @unchecked Sendable {
-    private let destination: InstallerLogBuffer
+    static let maximumDrainRequests = 64
+    private static let readersLock = NSLock()
+    nonisolated(unsafe) private static var readers: [(job: UUID, reader: HelperLogReader)] = []
+
+    /// One reader per job for the life of the app, so watching the job again,
+    /// as a Recovery retry does, continues where the last watch stopped.
+    static func reader(for job: UUID, into destination: InstallerLogBuffer) -> HelperLogReader {
+      readersLock.withLock {
+        if let known = readers.first(where: {
+          $0.job == job && $0.reader.destination === destination
+        }) {
+          return known.reader
+        }
+        let reader = HelperLogReader(destination)
+        readers = Array((readers + [(job, reader)]).suffix(8))
+        return reader
+      }
+    }
+
+    let destination: InstallerLogBuffer
     private let lock = NSLock()
     private var next: UInt64 = 0
+    private var source: UUID?
+    private var more = false
+    /// Helper commands and transfers that have started and not ended.
+    private var running: [String] = []
 
     init(_ destination: InstallerLogBuffer) { self.destination = destination }
 
     var cursor: UInt64 { lock.withLock { next } }
+    var ring: UUID? { lock.withLock { source } }
 
     func read(_ batch: InstallerLogBatch?) {
       guard let batch else { return }
       lock.withLock {
         next = batch.cursor
+        source = batch.ring ?? source
+        more = batch.more == true
         if batch.missed > 0 {
           destination.append(
             .progress, source: "Installer",
             "\(batch.missed) helper log lines were dropped before they could be read")
         }
-        destination.ingest(batch.entries, sourcePrefix: "helper")
+        destination.ingest(batch.entries, sourcePrefix: "helper", secrets: InstallerLog.secrets)
+        for entry in batch.entries {
+          guard let activity = entry.activity else { continue }
+          let name = "helper/" + InstallerLogRedactor.source(activity)
+          if entry.closesActivity {
+            running.removeAll { $0 == name }
+          } else if !running.contains(name) {
+            running.append(name)
+          }
+        }
+      }
+    }
+
+    /// Reads while the helper says lines remain, up to a bound.
+    func drain(_ fetch: () async throws -> InstallerLogBatch?) async throws {
+      for _ in 0..<Self.maximumDrainRequests {
+        guard lock.withLock({ more }) else { return }
+        guard let batch = try await fetch() else { return }
+        read(batch)
+      }
+    }
+
+    /// The job has ended, and with it anything it was still running.
+    func finish() {
+      let ended = lock.withLock {
+        defer { running.removeAll() }
+        return running
+      }
+      for name in ended {
+        destination.append(
+          .debug, source: "helper", "Ended with the installation job", activity: name,
+          closesActivity: true)
       }
     }
   }

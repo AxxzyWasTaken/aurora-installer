@@ -254,7 +254,9 @@ struct InstallerLogTextView: NSViewRepresentable {
       line[.foregroundColor] = NSColor.secondaryLabelColor
       result.append(NSAttributedString(string: time, attributes: line))
       line[.foregroundColor] = NSColor.tertiaryLabelColor
+      let sourceStart = result.length
       result.append(NSAttributedString(string: source, attributes: line))
+      highlight(needle, in: entry.source, at: sourceStart, of: result)
       var message = base
       switch entry.level {
       case .error:
@@ -267,20 +269,26 @@ struct InstallerLogTextView: NSViewRepresentable {
       }
       let start = result.length
       result.append(NSAttributedString(string: entry.message + "\n", attributes: message))
-      if !needle.isEmpty {
-        let body = entry.message as NSString
-        var range = body.range(of: needle, options: .caseInsensitive)
-        while range.location != NSNotFound {
-          result.addAttribute(
-            .backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.55),
-            range: NSRange(location: start + range.location, length: range.length))
-          let next = range.location + range.length
-          range = body.range(
-            of: needle, options: .caseInsensitive,
-            range: NSRange(location: next, length: body.length - next))
-        }
-      }
+      highlight(needle, in: entry.message, at: start, of: result)
     }
     return result
+  }
+
+  /// Marks each match of `needle` in `text`, which starts at `offset`.
+  private static func highlight(
+    _ needle: String, in text: String, at offset: Int, of result: NSMutableAttributedString
+  ) {
+    guard !needle.isEmpty else { return }
+    let body = text as NSString
+    var range = body.range(of: needle, options: .caseInsensitive)
+    while range.location != NSNotFound {
+      result.addAttribute(
+        .backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.55),
+        range: NSRange(location: offset + range.location, length: range.length))
+      let next = range.location + range.length
+      range = body.range(
+        of: needle, options: .caseInsensitive,
+        range: NSRange(location: next, length: body.length - next))
+    }
   }
 }

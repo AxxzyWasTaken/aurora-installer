@@ -178,6 +178,57 @@
       }
     #endif
 
+    func testDroppedLinesAreCountedWhenSeveralWritesAreQueued() throws {
+      let directory = try temporaryDirectory()
+      let file = InstallerLogFile(directory: directory)
+      let half = String(repeating: "y", count: InstallerLogFile.maximumPendingBytes / 2 + 1)
+      file.pause()
+      file.append(line: half)
+      file.append(line: half)  // dropped: it would pass the pending limit
+      file.append(line: "small")  // queued behind the first
+      file.resume()
+      file.flush()
+      let text = try String(contentsOf: file.url, encoding: .utf8)
+      XCTAssertTrue(text.hasSuffix("small\n1 log lines were not written: the disk fell behind\n"))
+    }
+
+    func testTheStoreTrimsInBatchesNotALinePerRefresh() {
+      let store = InstallerLogStore(capacity: 100)
+      for index in 0..<100 { store.buffer.append(.debug, source: "x", "\(index)") }
+      store.refresh()
+      let first = store.entries.first?.sequence
+      for index in 0..<20 {
+        store.buffer.append(.debug, source: "x", "more \(index)")
+        store.refresh()
+        XCTAssertEqual(store.entries.first?.sequence, first, "no trim before the batch")
+      }
+      for index in 0..<10 { store.buffer.append(.debug, source: "x", "last \(index)") }
+      store.refresh()
+      XCTAssertEqual(store.entries.count, 100)
+      XCTAssertEqual(store.entries.last?.message, "last 9")
+    }
+
+    func testThePersistedLogIsMadePrivateAndItsFolderMustNotBeALink() throws {
+      let directory = try temporaryDirectory()
+      let existing = directory.appendingPathComponent(InstallerLogFile.fileName)
+      FileManager.default.createFile(
+        atPath: existing.path, contents: Data(), attributes: [.posixPermissions: 0o644])
+      let file = InstallerLogFile(directory: directory)
+      file.append(line: "private")
+      file.flush()
+      var info = stat()
+      XCTAssertEqual(stat(existing.path, &info), 0)
+      XCTAssertEqual(info.st_mode & 0o777, 0o600)
+
+      let elsewhere = try temporaryDirectory()
+      let link = directory.appendingPathComponent("Linked")
+      try FileManager.default.createSymbolicLink(at: link, withDestinationURL: elsewhere)
+      let linked = InstallerLogFile(directory: link)
+      linked.append(line: "must not land")
+      linked.flush()
+      XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path), [])
+    }
+
     private func temporaryDirectory() throws -> URL {
       let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

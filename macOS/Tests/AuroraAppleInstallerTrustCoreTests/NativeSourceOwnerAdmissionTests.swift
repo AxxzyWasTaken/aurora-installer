@@ -21,11 +21,19 @@
       // This inspection never reads the password; authentication belongs to
       // the calling helper before admission. No disk or boot changes occur.
       let authorization = try MachineOwnerAuthorization(
-        username: NSUserName(), password: Data("unused-inspection-value".utf8))
-      let result = try NativeSourceOwnerAdmission().check(
-        package: package, authorization: authorization)
-      XCTAssertNotEqual(result.ownerUUID, "00000000-0000-0000-0000-000000000000")
-      print("Live source-owner admission passed on \(identity.deviceIdentifier)")
+        username: ProcessInfo.processInfo.environment["AURORA_LIVE_OWNER_PROBE_USER"]
+          ?? NSUserName(),
+        password: Data("unused-inspection-value".utf8))
+      do {
+        let result = try NativeSourceOwnerAdmission().check(
+          package: package, authorization: authorization)
+        XCTAssertNotEqual(result.ownerUUID, "00000000-0000-0000-0000-000000000000")
+        print("Live source-owner admission passed on \(identity.deviceIdentifier)")
+      } catch {
+        XCTFail(
+          "Live source-owner admission refused on \(identity.deviceIdentifier): "
+            + "\(PinnedAsahiEngineExecutor.sourceOwnerSummary(for: error)) [\(error)]")
+      }
     }
 
     func testBootstrapMatchesTheLockedBackendSourceOwnerVectors() throws {
@@ -132,11 +140,31 @@
     }
 
     func testChangedOwnerSourceGroupGraphOrMountedPrebootFailsClosed() throws {
-      for fault in [
-        "device", "store", "root-group", "source-system", "source-reference", "local-guid",
-        "volume-owner", "numeric-owner", "preboot-uuid", "preboot-path", "mount-device",
-        "duplicate-system", "missing-data", "duplicate-preboot", "layout-race",
-      ] {
+      // Each guard refuses with its own reason, so the shown summary names it.
+      let expected: [(String, (NativeSourceOwnerRefusal) -> Bool)] = [
+        ("device", { $0 == .otherMac }),
+        ("store", { $0 == .otherDisk }),
+        ("root-group", { $0 == .volumes(system: 0, data: 0, preboot: 1, recovery: 1) }),
+        ("source-system", { $0 == .systemVolume }),
+        ("source-reference", { $0 == .systemVolume }),
+        ("local-guid", { $0 == .notVolumeOwner }),
+        ("volume-owner", { $0 == .notVolumeOwner }),
+        ("numeric-owner", { $0 == .notVolumeOwner }),
+        ("preboot-uuid", { if case .preboot = $0 { true } else { false } }),
+        ("preboot-path", { if case .preboot = $0 { true } else { false } }),
+        ("mount-device", { if case .preboot = $0 { true } else { false } }),
+        ("duplicate-system", { $0 == .volumes(system: 2, data: 1, preboot: 1, recovery: 1) }),
+        ("missing-data", { $0 == .volumes(system: 1, data: 0, preboot: 1, recovery: 1) }),
+        ("duplicate-preboot", { $0 == .volumes(system: 1, data: 1, preboot: 2, recovery: 1) }),
+        ("missing-recovery", { $0 == .volumes(system: 1, data: 1, preboot: 1, recovery: 0) }),
+        ("unknown-account", { $0 == .unknownAccount }),
+        (
+          "users-unreadable",
+          { if case .diskQuery("APFS volume users", _) = $0 { true } else { false } }
+        ),
+        ("layout-race", { $0 == .layoutChanged }),
+      ]
+      for (fault, matches) in expected {
         let fixture = try OwnerFixture()
         defer { fixture.base.remove() }
         fixture.fault = fault
@@ -145,10 +173,111 @@
           fixture.updateVolumes { $0.removeAll { $0.roles == ["Data"] } }
         }
         if fault == "duplicate-preboot" { fixture.updateVolumes { $0.append($0[2]) } }
-        XCTAssertThrowsError(try fixture.admit(), fault)
+        if fault == "missing-recovery" {
+          fixture.updateVolumes { $0.removeAll { $0.roles == ["Recovery"] } }
+        }
+        XCTAssertThrowsError(try fixture.admit(), fault) {
+          let refusal = $0 as? NativeSourceOwnerRefusal
+          XCTAssertTrue(refusal.map(matches) ?? false, "\(fault): \($0)")
+        }
         XCTAssertTrue(fixture.commands.allSatisfy(fixture.permitted), fault)
         XCTAssertFalse(fixture.commands.contains { $0.first == "unmount" }, fault)
       }
+    }
+
+    func testEveryRefusalSummaryReachesTheNoticeWhole() {
+      let refusals: [NativeSourceOwnerRefusal] = [
+        .otherMac, .otherDisk, .diskQuery(step: "APFS volume users", detail: "x"),
+        .runningSystem, .volumes(system: 12, data: 12, preboot: 12, recovery: 12), .systemVolume,
+        .unknownAccount, .notVolumeOwner, .preboot(detail: "x"), .adminListMissing,
+        .adminListUnreadable(detail: "x"), .notInAdminList, .adminIdentityMismatch,
+        .layoutChanged,
+      ]
+      XCTAssertEqual(Set(refusals.map(\.summary)).count, refusals.count)
+      for refusal in refusals {
+        let summary = PinnedAsahiEngineExecutor.sourceOwnerSummary(for: refusal)
+        XCTAssertTrue(
+          summary.hasPrefix(PinnedAsahiEngineExecutor.sourceOwnerSummaryPrefix + ": "), summary)
+        // The notice keeps printable ASCII up to its limit and drops the rest.
+        XCTAssertEqual(EngineFailureNotice.sanitizedSummary(summary), summary)
+        XCTAssertFalse(String(describing: refusal).isEmpty)
+      }
+    }
+
+    /// The owner records as macOS writes them on a Mac with Touch ID and
+    /// FileVault on (measured on a Touch ID MacBook Pro, 2026-11-02): APFS
+    /// lists a Personal Recovery user beside the account, the account has an
+    /// Apple Account alias, and its Preboot entry carries SecureToken and
+    /// Kerberos authorities and its full name. None of that blocks the proof.
+    func testTouchIDMacOwnerRecordsAreAdmitted() throws {
+      let fixture = try OwnerFixture()
+      defer { fixture.base.remove() }
+      fixture.fault = "touch-id-mac"
+      try fixture.writeAdmins([
+        "mina": [
+          "AuthenticationAuthority": [
+            ";ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2,SRP-RFC5054-4096-SHA512-PBKDF2>",
+            ";SecureToken;",
+            ";Kerberosv5;;mina@LKDC:SHA1.0000;LKDC:SHA1.0000;",
+          ],
+          "GeneratedUID": fixture.owner, "RealName": "Mina",
+        ]
+      ])
+      let bootstrap = try fixture.admit()
+      XCTAssertEqual(bootstrap.ownerUUID, fixture.owner)
+    }
+
+    func testANameTypedInAnotherCaseIsLookedUpUnderTheAccountsShortName() throws {
+      // OpenDirectory authenticates "Mina" as "mina"; Preboot keys "mina".
+      let fixture = try OwnerFixture()
+      defer { fixture.base.remove() }
+      fixture.canonicalName = { $0.lowercased() }
+      let bootstrap = try fixture.admit(username: "Mina")
+      XCTAssertEqual(bootstrap.ownerUUID, fixture.owner)
+
+      let literal = try OwnerFixture()
+      defer { literal.base.remove() }
+      XCTAssertThrowsError(try literal.admit(username: "Mina")) {
+        XCTAssertEqual($0 as? NativeSourceOwnerRefusal, .notInAdminList)
+      }
+    }
+
+    func testOnlyTheAuthorizedAccountsAdminEntryIsRead() throws {
+      let fixture = try OwnerFixture()
+      defer { fixture.base.remove() }
+      try fixture.writeAdmins([
+        "mina": ["GeneratedUID": fixture.owner], "other": "not an account record", "count": 2,
+      ])
+      XCTAssertEqual(try fixture.admit().ownerUUID, fixture.owner)
+      try fixture.writeAdmins(["mina": "not an account record"])
+      XCTAssertThrowsError(try fixture.admit()) {
+        XCTAssertEqual($0 as? NativeSourceOwnerRefusal, .notInAdminList)
+      }
+      try fixture.writeAdmins(["mina", "other"])
+      XCTAssertThrowsError(try fixture.admit()) {
+        XCTAssertEqual(
+          $0 as? NativeSourceOwnerRefusal, .adminListUnreadable(detail: "not a dictionary"))
+      }
+    }
+
+    func testDiskQueriesReadOnlyStandardOutputWhenTheEnvironmentSeparatesIt() throws {
+      // AccountNativeCommand captures standard error with the output, so a
+      // single diskutil warning makes the property list unreadable.
+      let fixture = try OwnerFixture()
+      defer { fixture.base.remove() }
+      fixture.fault = "stderr-warning"
+      XCTAssertThrowsError(try fixture.admit()) {
+        guard case .diskQuery("running system", _) = $0 as? NativeSourceOwnerRefusal else {
+          return XCTFail("\($0)")
+        }
+      }
+      // The live environment answers queries from standard output alone.
+      let separated = try OwnerFixture()
+      defer { separated.base.remove() }
+      separated.fault = "stderr-warning"
+      separated.separateQueries = true
+      XCTAssertEqual(try separated.admit().ownerUUID, separated.owner)
+      XCTAssertTrue(separated.commands.contains(["apfs", "listUsers", separated.system, "-plist"]))
     }
 
     func testAStandaloneCheckReadsTheLayoutBeforeAndAfterResolvingTheOwner() throws {
@@ -185,6 +314,13 @@
     }
 
     func testProtectedPrebootMetadataRejectsMissingWrongWritableAndLinkedOwners() throws {
+      let expected: [String: (NativeSourceOwnerRefusal) -> Bool] = [
+        "missing": { $0 == .adminListMissing },
+        "wrong-guid": { $0 == .adminIdentityMismatch },
+        "wrong-user": { $0 == .notInAdminList },
+        "writable": { if case .adminListUnreadable = $0 { true } else { false } },
+        "symlink": { if case .adminListUnreadable = $0 { true } else { false } },
+      ]
       for fault in ["missing", "wrong-guid", "wrong-user", "writable", "symlink"] {
         let fixture = try OwnerFixture()
         defer { fixture.base.remove() }
@@ -199,7 +335,10 @@
           try FileManager.default.removeItem(at: fixture.admins)
           try FileManager.default.createSymbolicLink(at: fixture.admins, withDestinationURL: other)
         }
-        XCTAssertThrowsError(try fixture.admit(), fault)
+        XCTAssertThrowsError(try fixture.admit(), fault) {
+          let refusal = $0 as? NativeSourceOwnerRefusal
+          XCTAssertTrue(refusal.map(expected[fault]!) ?? false, "\(fault): \($0)")
+        }
       }
     }
 
@@ -252,6 +391,8 @@
     var fault = ""
     var prebootMounted = true
     var snapshots = 0
+    var canonicalName: @Sendable (String) -> String = { $0 }
+    var separateQueries = false
     let system: String, group: String, owner: String
     let bootSnapshot = "00000000-0000-0000-0000-000000000777"
     var admins: URL {
@@ -283,9 +424,14 @@
         uuid: container.uuid, storeUUID: container.storeUUID, volumes: volumes)
     }
 
-    func admit(layout: RemovalSnapshot? = nil) throws -> NativeSourceBootstrap {
+    func admit(layout: RemovalSnapshot? = nil, username: String = "mina") throws
+      -> NativeSourceBootstrap
+    {
       try NativeSourceOwnerAdmission(environment: environment()).check(
-        package: base.package, authorization: base.authorization(), layout: layout)
+        package: base.package,
+        authorization: MachineOwnerAuthorization(
+          username: username, password: Data("owner-password".utf8)),
+        layout: layout)
     }
 
     func writeAdmins(_ value: Any) throws {
@@ -301,7 +447,7 @@
 
     func environment() -> NativeHandoffEnvironment {
       let original = base.environment()
-      return NativeHandoffEnvironment(
+      var environment = NativeHandoffEnvironment(
         snapshot: {
           self.snapshots += 1
           if self.fault == "store" {
@@ -319,58 +465,17 @@
           return self.snapshot
         }, device: { self.fault == "device" ? "apple,j613" : self.base.package.deviceIdentifier },
         command: { executable, args in
-          guard executable == "/usr/sbin/diskutil", self.permitted(args) else {
-            throw NativeHandoffValidationError.invalidOwner
+          let reply = try self.answer(executable, args)
+          // What a runner that captures standard error with the output sees
+          // when diskutil writes a warning before its reply.
+          guard self.fault == "stderr-warning", !self.separateQueries, !reply.isEmpty else {
+            return reply
           }
-          self.commands.append(args)
-          func plist(_ value: Any) throws -> Data {
-            try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0)
-          }
-          if args == ["info", "-plist", "/"] {
-            if self.fault == "cancel-after-root" { withUnsafeCurrentTask { $0?.cancel() } }
-            return try plist([
-              "APFSVolumeGroupID": self.fault == "root-group" ? UUID().uuidString : self.group,
-              "APFSContainerReference": "disk4", "VolumeUUID": self.bootSnapshot,
-            ])
-          }
-          if args == ["info", "-plist", "disk4s1"] {
-            return try plist([
-              "VolumeUUID": self.fault == "source-system" ? UUID().uuidString : self.system,
-              "APFSVolumeGroupID": self.group,
-              "APFSContainerReference": self.fault == "source-reference" ? "disk9" : "disk4",
-            ])
-          }
-          if args == ["apfs", "listUsers", self.system, "-plist"] {
-            let flag: Any
-            if self.fault == "numeric-owner" {
-              flag = 1
-            } else {
-              flag = self.fault != "volume-owner"
-            }
-            return try plist(["Users": [["APFSCryptoUserUUID": self.owner, "VolumeOwner": flag]]])
-          }
-          if args == ["info", "-plist", "disk4s3"] {
-            return try plist([
-              "VolumeUUID": self.fault == "preboot-uuid"
-                ? UUID().uuidString
-                : self.snapshot.containers[0].volumes.first { $0.roles == ["Preboot"] }!.uuid,
-              "MountPoint": self.prebootMounted
-                ? (self.fault == "preboot-path" ? "/tmp/untrusted" : self.base.sourcePreboot.path)
-                : "",
-            ])
-          }
-          if args == ["mount", "readOnly", "disk4s3"] {
-            self.prebootMounted = true
-            return Data()
-          }
-          if args == ["unmount", "disk4s3"] {
-            self.prebootMounted = false
-            return Data()
-          }
-          throw NativeHandoffValidationError.invalidOwner
+          return Data("diskutil: warning: an unrelated notice\n".utf8) + reply
         },
         ownerUUID: { username in
-          XCTAssertEqual(username, "mina")
+          XCTAssertEqual(username.lowercased(), "mina")
+          if self.fault == "unknown-account" { throw NativeHandoffValidationError.invalidOwner }
           return self.fault == "local-guid" ? UUID().uuidString : self.owner
         }, rawDigest: original.rawDigest, verifyRecovery: original.verifyRecovery,
         owner: original.owner, mountRoot: original.mountRoot,
@@ -379,6 +484,78 @@
           if self.fault == "mount-device" { throw NativeHandoffValidationError.invalidOwner }
           try original.verifyMount(fd, url, device)
         })
+      environment.ownerName = { self.canonicalName($0) }
+      if separateQueries {
+        environment.query = { try self.answer("/usr/sbin/diskutil", $0) }
+      }
+      return environment
+    }
+
+    private func answer(_ executable: String, _ args: [String]) throws -> Data {
+      guard executable == "/usr/sbin/diskutil", permitted(args) else {
+        throw NativeHandoffValidationError.invalidOwner
+      }
+      commands.append(args)
+      func plist(_ value: Any) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0)
+      }
+      if args == ["info", "-plist", "/"] {
+        if fault == "cancel-after-root" { withUnsafeCurrentTask { $0?.cancel() } }
+        return try plist([
+          "APFSVolumeGroupID": fault == "root-group" ? UUID().uuidString : group,
+          "APFSContainerReference": "disk4", "VolumeUUID": bootSnapshot,
+        ])
+      }
+      if args == ["info", "-plist", "disk4s1"] {
+        return try plist([
+          "VolumeUUID": fault == "source-system" ? UUID().uuidString : system,
+          "APFSVolumeGroupID": group,
+          "APFSContainerReference": fault == "source-reference" ? "disk9" : "disk4",
+        ])
+      }
+      if args == ["apfs", "listUsers", system, "-plist"] {
+        if fault == "users-unreadable" { return try plist(["Volumes": []]) }
+        if fault == "touch-id-mac" {
+          return try plist([
+            "Users": [
+              [
+                "APFSCryptoUserType": "LocalOpenDirectory", "APFSCryptoUserUUID": owner,
+                "VolumeOwner": true,
+              ],
+              [
+                "APFSCryptoUserType": "PersonalRecovery",
+                "APFSCryptoUserUUID": "EBC6C064-0000-11AA-AA11-00306543ECAC", "VolumeOwner": true,
+              ],
+            ]
+          ])
+        }
+        let flag: Any
+        if fault == "numeric-owner" {
+          flag = 1
+        } else {
+          flag = fault != "volume-owner"
+        }
+        return try plist(["Users": [["APFSCryptoUserUUID": owner, "VolumeOwner": flag]]])
+      }
+      if args == ["info", "-plist", "disk4s3"] {
+        return try plist([
+          "VolumeUUID": fault == "preboot-uuid"
+            ? UUID().uuidString
+            : snapshot.containers[0].volumes.first { $0.roles == ["Preboot"] }!.uuid,
+          "MountPoint": prebootMounted
+            ? (fault == "preboot-path" ? "/tmp/untrusted" : base.sourcePreboot.path)
+            : "",
+        ])
+      }
+      if args == ["mount", "readOnly", "disk4s3"] {
+        prebootMounted = true
+        return Data()
+      }
+      if args == ["unmount", "disk4s3"] {
+        prebootMounted = false
+        return Data()
+      }
+      throw NativeHandoffValidationError.invalidOwner
     }
   }
 #endif

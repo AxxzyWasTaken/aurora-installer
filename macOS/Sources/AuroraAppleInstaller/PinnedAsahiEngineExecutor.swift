@@ -172,6 +172,7 @@
             operation: operation, journal: journal, package: package,
             password: authorization.password,
             summary: update ?? Self.preservedSummary(for: error)
+              ?? (error is NativeSourceOwnerRefusal ? Self.sourceOwnerSummary(for: error) : nil)
               ?? "The preserved installation did not complete.")
         }
       }
@@ -217,7 +218,7 @@
         throw preparationFailure(
           error, reason: .recoveryPreparation, operation: operation, journal: journal,
           package: package, password: authorization.password,
-          summary: "The current macOS volume owner could not be verified.")
+          summary: Self.sourceOwnerSummary(for: error))
       }
       do {
         try await InstallerPerformance.measuring("payload_preflight") {
@@ -429,6 +430,19 @@
 
     static let networkSummary =
       "The connection to Apple's servers was lost while the installer was downloading."
+
+    static let sourceOwnerSummaryPrefix = "The current macOS volume owner could not be verified"
+
+    /// The shown summary names the check that refused the owner, so one
+    /// sentence no longer stands for every guard of the proof.
+    static func sourceOwnerSummary(for error: any Error) -> String {
+      switch error {
+      case let refusal as NativeSourceOwnerRefusal:
+        "\(sourceOwnerSummaryPrefix): \(refusal.summary)"
+      case is CancellationError: "\(sourceOwnerSummaryPrefix): the check was canceled."
+      default: "\(sourceOwnerSummaryPrefix)."
+      }
+    }
 
     private func preparationFailure(
       _ error: any Error, reason: EngineFailureReason, operation: EngineHandoffOperation,

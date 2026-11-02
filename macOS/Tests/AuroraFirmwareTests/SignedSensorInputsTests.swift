@@ -31,6 +31,12 @@ final class SignedSensorInputsTests: XCTestCase {
       if vector.accepted {
         XCTAssertEqual(
           try SignedSensorInputs.calibration(in: vector.input), vector.expected, vector.name)
+        if let expected = vector.expected,
+          expected.range(of: Data("FSCl".utf8)) != nil
+        {
+          XCTAssertEqual(
+            try SignedSensorInputs.preparedCalibration(expected), expected, vector.name)
+        }
       } else {
         XCTAssertThrowsError(try SignedSensorInputs.calibration(in: vector.input), vector.name)
       }
@@ -84,6 +90,20 @@ final class SignedSensorInputsTests: XCTestCase {
     }
     XCTAssertThrowsError(
       try SignedSensorInputs.reseal(Self.record("FSC2"), seal: Self.seal, trust: Data()))
+  }
+
+  func testPreparedCalibrationPreservesTheResealedEnvelope() throws {
+    let prepared = try SignedSensorInputs.loadableCalibration(
+      Self.record("FSC2"), seal: Self.seal, trust: Self.trust)
+    // The raw source scanner finds the inner IMG4, losing the sealed envelope.
+    XCTAssertNotEqual(try SignedSensorInputs.calibration(in: prepared), prepared)
+    XCTAssertEqual(try SignedSensorInputs.preparedCalibration(prepared), prepared)
+    for candidate in [
+      Self.record("FSC2"), prepared.dropLast(), prepared + Data("trailing".utf8),
+      Self.sealed("MSRk"),
+    ] {
+      XCTAssertThrowsError(try SignedSensorInputs.preparedCalibration(Data(candidate)))
+    }
   }
 
   func testOnlyACompleteSealedFSC2CalibrationIsLoadable() throws {

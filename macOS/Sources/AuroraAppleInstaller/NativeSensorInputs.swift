@@ -19,7 +19,7 @@
     let factoryNames: @Sendable () throws -> [String]
     let factoryRead: @Sendable (String) throws -> Data
 
-    static var live: Self {
+    static func live(storeIdentifier: String) -> Self {
       Self(
         present: builtInSensor,
         snapshot: { try MacRemovalDiskOperator().snapshot(maximumPartitions: 4096) },
@@ -28,7 +28,10 @@
           try FileManager.default.contentsOfDirectory(atPath: factoryDirectory.path)
         },
         factoryRead: {
-          try NativeHandoffFileTree(factoryDirectory, protected: true).read($0, maximum: 16 << 20)
+          try NativeFactoryCalibrationInput.liveRecord(
+            name: $0,
+            storeIdentifier: storeIdentifier,
+            maximum: 16 << 20)
         })
     }
 

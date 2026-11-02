@@ -124,7 +124,8 @@
       let fixture = try InputFixture()
       defer { fixture.remove() }
       let sensor = NativeSensorInputs(
-        calibration: NativeSensorCalibrationTests.calibration(),
+        calibration: NativeSensorCalibrationTests.sealed(
+          NativeSensorCalibrationTests.calibrationPayload),
         rootKey: NativeSensorCalibrationTests.rootKey())
       let prepared = try await fixture.preparer(sensor: sensor).prepare(
         package: fixture.package, rawDirectory: fixture.raw)

@@ -222,8 +222,8 @@
     }
 
     /// Reads Apple's restore images the way planning does: the 13.5 figure
-    /// matches the recorded layout, and the 26.6 image's encrypted members
-    /// are found.
+    /// matches the recorded layout, the 26.6 image's encrypted members are
+    /// found, and the 14.8.3 update archive plans like a restore image.
     func testOptInLiveEstimatesMatchTheRecordedLayouts() async throws {
       guard ProcessInfo.processInfo.environment["AURORA_LIVE_STAGING_ESTIMATE"] == "1" else {
         throw XCTSkip("Explicit live restore-image probe only")
@@ -243,6 +243,19 @@
               + "UniversalMac_26.6_25G72_Restore.ipsw", "26.6", "apple,j700", 0x64, 0x8140,
             19_772_077_142, 1_140_850_688, 24_134_721_063
           ),
+          // The update archive every M3 Mac uses: nothing to decrypt.
+          (
+            "2025FallFCS/patches/089-71124/49AD260A-D47F-4B5E-A793-30446187196E/"
+              + "com_apple_MobileAsset_MacSoftwareUpdate/"
+              + "f6d1ac9149f6a06401ff87fae5b262c420bfc5f7.zip", "14.8.3", "apple,j613", 0x30,
+            0x8122, 13_637_436_385, 0, 12_480_289_559
+          ),
+          (
+            "2025FallFCS/patches/089-71124/49AD260A-D47F-4B5E-A793-30446187196E/"
+              + "com_apple_MobileAsset_MacSoftwareUpdate/"
+              + "f6d1ac9149f6a06401ff87fae5b262c420bfc5f7.zip", "14.8.3", "apple,j514s", 0x04,
+            0x6030, 13_637_436_385, 0, 12_475_888_172
+          ),
         ]
       {
         let url = try XCTUnwrap(URL(string: cdn + path))
@@ -257,7 +270,9 @@
         XCTAssertEqual(
           requirement.requiredFreeBytes + NativeStubStagingEstimator.planningMarginBytes, expected,
           version)
-        print("Live \(version) \(device) estimate in \(Date().timeIntervalSince(started)) s")
+        print(
+          "Live \(version) \(device) estimate: \(requirement.cacheBytes) bytes cached, "
+            + "in \(Date().timeIntervalSince(started)) s")
       }
     }
 
@@ -427,7 +442,7 @@
       XCTAssertEqual(counter.reads, [1 << 20, 1 << 20, 4 << 20])
     }
 
-    func testUpdateArchiveFirmwareIsRefusedBeforeApproval() async throws {
+    func testM3MacsPlanTheirStubFromTheUpdateArchiveAndRefuseOnlyADeltaImage() async throws {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
       defer { try? FileManager.default.removeItem(at: root) }
@@ -447,35 +462,51 @@
           fileName: "metadata.json", expectedDigest: SHA256Digest(hashing: data).rawValue,
           expectedSizeBytes: UInt64(data.count)),
         fileURL: url, reusedExistingFile: false)
-      // On older and current firmware alike, the last compatible entry for
-      // these boards is an update archive.
-      for (device, hardware) in [
+      // An M3 MacBook Air on macOS 15 and on macOS 26.6.2: the policy's last
+      // compatible firmware for both is 14.8.3, which Apple ships only as an
+      // update archive. Planning reads that archive like a restore image.
+      let vectors = try NativeUpdateArchiveTests.vectors()
+      let source = try NativeUpdateArchiveTests.updateArchive()
+      for (device, board, hardware) in [
         (
-          "apple,j504",
+          "apple,j615", UInt64(0x32),
           NativeInspectionHardware(
-            chipID: 0x6030, bootVersion: "iBoot-11881.1.1", macOSVersion: "15.1",
+            chipID: 0x8122, bootVersion: "iBoot-11881.1.1", macOSVersion: "15.1",
             recoveryVersion: "24.1.0.0.0,0")
         ),
         (
-          "apple,j613",
+          "apple,j613", UInt64(0x30),
           NativeInspectionHardware(
             chipID: 0x8122, bootVersion: "mBoot-18000.161.10", macOSVersion: "26.6.2",
             recoveryVersion: "25.7.83.0.0,0")
         ),
       ] {
-        let estimator = NativeStubStagingEstimator(
-          facts: { .init(deviceIdentifier: device, hardware: hardware) }, boardID: { 1 },
-          open: { _ in
-            XCTFail("An update archive must not be opened as a restore image")
-            throw URLError(.badURL)
-          })
-        do {
-          _ = try await estimator.requiredFreeBytes(deviceIdentifier: device, metadata: metadata)
-          XCTFail("\(device): an update-archive plan was admitted")
-        } catch {
-          XCTAssertEqual(
-            error as? InstallerPlanPreparationError,
-            .firmwareArchiveUnsupported(version: "14.8.3"), device)
+        for name in ["full", "delta"] {
+          let archive = try vectors.archive(name)
+          let estimator = NativeStubStagingEstimator(
+            facts: { .init(deviceIdentifier: device, hardware: hardware) }, boardID: { board },
+            open: { url in
+              XCTAssertEqual(url, source)
+              return NativeStubFileTests.Source(bytes: archive)
+            })
+          do {
+            let bytes = try await estimator.requiredFreeBytes(
+              deviceIdentifier: device, metadata: metadata)
+            XCTAssertEqual(name, "full", "\(device): a delta Recovery image was admitted")
+            let expected = try await NativeStubStagingRequirement.estimate(
+              source: NativeStubFileTests.Source(bytes: archive),
+              firmware: NativeUpdateArchiveTests.selection(source), deviceIdentifier: device,
+              boardID: board, chipID: 0x8122)
+            XCTAssertEqual(
+              bytes, expected.requiredFreeBytes + NativeStubStagingEstimator.planningMarginBytes,
+              device)
+            XCTAssertEqual(expected.largestDecodeBytes, 0, device)
+          } catch {
+            XCTAssertEqual(name, "delta", "\(device): \(error)")
+            XCTAssertEqual(
+              error as? InstallerPlanPreparationError,
+              .firmwareArchiveUnsupported(version: "14.8.3"), device)
+          }
         }
       }
     }

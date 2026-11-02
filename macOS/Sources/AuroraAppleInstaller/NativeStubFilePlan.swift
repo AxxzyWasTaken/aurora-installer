@@ -2,6 +2,50 @@
   import AuroraFirmware
   import Foundation
 
+  /// Where a firmware source keeps the files a stub needs. Both layouts
+  /// carry the same files under the same names; an update archive keeps
+  /// them under `AssetData`, selects its update identity, and stores its
+  /// Recovery image as a whole-image patch stream.
+  enum NativeRestoreSourceLayout: Equatable, Sendable {
+    /// A full restore image, `UniversalMac_*_Restore.ipsw`.
+    case restoreImage
+    /// A full OTA update archive, `com_apple_MobileAsset_MacSoftwareUpdate/*.zip`.
+    /// macOS 14.8.3, the firmware the M3 Macs use, ships only as one.
+    case updateArchive
+
+    /// The layout the sealed policy's source URL names, or nil for any
+    /// other kind of file.
+    init?(sourceURL: URL) {
+      let path = sourceURL.path.lowercased()
+      if path.hasSuffix(".ipsw") {
+        self = .restoreImage
+      } else if path.hasSuffix(".zip"),
+        sourceURL.pathComponents.contains("com_apple_MobileAsset_MacSoftwareUpdate")
+      {
+        self = .updateArchive
+      } else {
+        return nil
+      }
+    }
+
+    var variant: String {
+      self == .restoreImage ? "macOS Customer" : "macOS Customer Software Update"
+    }
+    var restoreBehavior: String { self == .restoreImage ? "Erase" : "Update" }
+
+    /// The archive member holding the restore file at `path`.
+    func member(_ path: String) -> String {
+      guard self == .updateArchive else { return path }
+      return (path.hasPrefix("BootabilityBundle/") ? "AssetData/Restore/" : "AssetData/boot/")
+        + path
+    }
+
+    /// The Recovery image an update archive keeps apart from its manifest,
+    /// whose BaseSystem entry names a file the archive doesn't carry.
+    static let updateRecoveryMember =
+      "AssetData/payloadv2/basesystem_patches/arm64eBaseSystem.dmg"
+  }
+
   struct NativeStubFilePlan: Sendable {
     struct Copy: Codable, Equatable, Sendable {
       let member: String
@@ -16,7 +60,12 @@
     let systemVersion: Data
     let stubInfo: Data
     let restorePath: String
+    let layout: NativeRestoreSourceLayout
     let recoveryMember: IPSWArchiveMember
+    /// How an update archive's Recovery member decodes to the image the stub
+    /// keeps. Nil for a restore image, whose member is the image itself or
+    /// an Apple Encrypted Archive of it.
+    let recoveryImage: UpdateArchiveFullImage.Header?
     let copies: [Copy]
     let linkTargets: [String: String]
 
@@ -30,9 +79,22 @@
       self.archive = archive
       self.source = source
       self.deviceClass = deviceClass
+      // The policy's URL names the layout, and the archive must have it:
+      // never read an update archive as a restore image, or the reverse.
+      guard let layout = NativeRestoreSourceLayout(sourceURL: source.sourceURL) else {
+        throw NativeFirmwareSelectionError.invalidSource
+      }
+      self.layout = layout
       let members = Dictionary(uniqueKeysWithValues: archive.members.map { ($0.name, $0) })
+      guard
+        (members["BuildManifest.plist"] != nil)
+          == (layout == .restoreImage)
+          && (members["AssetData/boot/BuildManifest.plist"] != nil) == (layout == .updateArchive)
+      else { throw NativeStubFileError.invalidPlan }
       func read(_ name: String) async throws -> Data {
-        guard let member = members[name] else { throw NativeStubFileError.invalidPlan }
+        guard let member = members[layout.member(name)] else {
+          throw NativeStubFileError.invalidPlan
+        }
         return try await archive.read(member, maximumBytes: 32 << 20)
       }
       func plist(_ data: Data) throws -> [String: Any] {
@@ -59,8 +121,8 @@
             && UInt64(board.dropFirst(2), radix: 16) == boardID
             && UInt64(chip.dropFirst(2), radix: 16) == chipID
             && info["DeviceClass"] as? String == deviceClass
-            && info["RestoreBehavior"] as? String == "Erase"
-            && info["Variant"] as? String == "macOS Customer"
+            && info["RestoreBehavior"] as? String == layout.restoreBehavior
+            && info["Variant"] as? String == layout.variant
         }),
         let info = identity["Info"] as? [String: Any],
         let buildNumber = info["BuildNumber"] as? String,
@@ -70,11 +132,29 @@
         let visible = version["ProductUserVisibleVersion"] as? String,
         version["ProductVersion"] as? String == source.version,
         let recovery = components["BaseSystem"]?["Info"] as? [String: Any],
-        let recoveryName = recovery["Path"] as? String, let recoveryMember = members[recoveryName],
-        recoveryMember.sizeBytes > 0, recoveryMember.sizeBytes <= 8 << 30
+        let recoveryName = recovery["Path"] as? String,
+        let recoveryMember = members[
+          layout == .restoreImage ? recoveryName : NativeRestoreSourceLayout.updateRecoveryMember],
+        !recoveryMember.isDirectory, recoveryMember.sizeBytes > 0,
+        recoveryMember.sizeBytes <= 8 << 30
       else { throw NativeStubFileError.invalidPlan }
       self.restorePath = restore
       self.recoveryMember = recoveryMember
+      if layout == .updateArchive {
+        do {
+          let header = try await archive.readPrefix(
+            recoveryMember, maximumBytes: UpdateArchiveFullImage.headerBytes)
+          recoveryImage = try UpdateArchiveFullImage.Header(
+            header, memberBytes: recoveryMember.sizeBytes)
+        } catch is UpdateArchiveImagePatchUnsupported {
+          // A patch of an earlier Recovery image: the stub has none to patch.
+          throw NativeFirmwareSelectionError.updateArchiveOnly(version: source.version)
+        } catch is RestoreFailure {
+          throw NativeStubFileError.invalidImage
+        }
+      } else {
+        recoveryImage = nil
+      }
       document["BuildIdentities"] = [identity]
       manifest = try PropertyListSerialization.data(
         fromPropertyList: document, format: .xml, options: 0)
@@ -85,7 +165,7 @@
         "system_version": version,
         "manifest_info": [
           "build_number": buildNumber,
-          "variant": "macOS Customer", "device_class": deviceClass,
+          "variant": layout.variant, "device_class": deviceClass,
           "board_id": board, "chip_id": chip,
         ],
       ]
@@ -96,7 +176,10 @@
         withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes])
 
       var copies = [Copy]()
-      func add(_ member: String, _ role: String, _ path: String, data: String? = nil) throws {
+      // `name` is the file's path in a restore image; `add` copies the
+      // member that holds it in this layout.
+      func add(_ name: String, _ role: String, _ path: String, data: String? = nil) throws {
+        let member = layout.member(name)
         guard NativeHandoffEvidence.safeRelative(member), NativeHandoffEvidence.safeRelative(path),
           let entry = members[member], !entry.isDirectory, entry.sizeBytes > 0,
           entry.sizeBytes <= 8 << 30
@@ -118,24 +201,21 @@
           data: name == "RestoreVersion.plist" ? name : nil)
       }
       func tree(_ prefix: String, at destination: String) throws {
-        let files = archive.members.filter { $0.name.hasPrefix(prefix + "/") && !$0.isDirectory }
+        let stored = layout.member(prefix) + "/"
+        let files = archive.members.filter { $0.name.hasPrefix(stored) && !$0.isDirectory }
         guard !files.isEmpty else { throw NativeStubFileError.invalidPlan }
         for file in files.sorted(by: { $0.name < $1.name }) {
-          try add(
-            file.name, "Preboot", destination + "/" + String(file.name.dropFirst(prefix.count + 1)))
+          let relative = String(file.name.dropFirst(stored.count))
+          try add(prefix + "/" + relative, "Preboot", destination + "/" + relative)
         }
       }
-      try tree("BootabilityBundle/Restore/Bootability", at: restore + "/Bootability")
+      let bootability = "BootabilityBundle/Restore/Bootability"
+      try tree(bootability, at: restore + "/Bootability")
       try add(
         "BootabilityBundle/Restore/Firmware/Bootability.dmg.trustcache", "Preboot",
         restore + "/Bootability/Bootability.trustcache")
-      try tree("Firmware/Manifests/restore/macOS Customer", at: restore)
-      let excluded: Set<String> = [
-        "BaseSystem", "OS", "Ap,SystemVolumeCanonicalMetadata", "RestoreRamDisk",
-        "RestoreTrustCache",
-      ]
-      for key in components.keys.sorted() where !excluded.contains(key) && !key.hasPrefix("Cryptex")
-      {
+      try tree("Firmware/Manifests/restore/" + layout.variant, at: restore)
+      for key in components.keys.sorted() where Self.restores(component: key) {
         guard let value = components[key]?["Info"] as? [String: Any],
           let path = value["Path"] as? String
         else {
@@ -147,8 +227,8 @@
       }
       guard copies.count <= 10000,
         copies.reduce(
-          UInt64(recoveryMember.sizeBytes), { $0 + UInt64(members[$1.member]!.sizeBytes) }) <= 16
-          << 30
+          UInt64(recoveryImage?.outputBytes ?? recoveryMember.sizeBytes),
+          { $0 + UInt64(members[$1.member]!.sizeBytes) }) <= 16 << 30
       else { throw NativeStubFileError.invalidPlan }
       // Admit every selected local record before disk preparation. Links are
       // confined to the selected framework tree and are never extraction paths.
@@ -157,7 +237,7 @@
       for name in selected.sorted() where admitRecords {
         let member = members[name]!
         if member.isSymbolicLink {
-          guard name.hasPrefix("BootabilityBundle/Restore/Bootability/"),
+          guard name.hasPrefix(layout.member(bootability) + "/"),
             !selected.contains(where: { $0.hasPrefix(name + "/") })
           else { throw NativeStubFileError.invalidPlan }
           links[name] = try await archive.symbolicLinkTarget(member)
@@ -191,6 +271,16 @@
       }
       self.copies = copies
       self.linkTargets = links
+    }
+
+    /// Whether the stub's restore directory gets a manifest component. The
+    /// rest are images the stub doesn't boot; in an update archive some
+    /// name files outside its boot directory, such as `../Restore/…dmg`.
+    static func restores(component key: String) -> Bool {
+      ![
+        "BaseSystem", "OS", "Ap,SystemVolumeCanonicalMetadata", "RestoreRamDisk",
+        "RestoreTrustCache",
+      ].contains(key) && !key.hasPrefix("Cryptex")
     }
 
     /// A file copied straight into the restore directory. Its member, like

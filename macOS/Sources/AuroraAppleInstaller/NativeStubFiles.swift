@@ -97,11 +97,6 @@
       self.facts = facts
     }
 
-    /// A full restore image. Update archives are OTA patch streams.
-    static func isRestoreImage(_ url: URL) -> Bool {
-      url.path.lowercased().hasSuffix(".ipsw")
-    }
-
     func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
       any NativeStubFilesExecuting
     )? {
@@ -117,10 +112,10 @@
         deviceIdentifier: package.deviceIdentifier,
         facts: facts, metadata: NativeInstallationMetadata(data: metadata),
         policy: NativeInspectionPolicy.sealed())
-      // OTA patch streams have no native decoder yet. Never interpret an
-      // update archive as a restore IPSW; name the firmware instead.
-      guard Self.isRestoreImage(firmware.sourceURL) else {
-        throw NativeFirmwareSelectionError.updateArchiveOnly(version: firmware.version)
+      // A restore image or a full update archive. The plan also requires the
+      // archive to have the layout its URL names.
+      guard NativeRestoreSourceLayout(sourceURL: firmware.sourceURL) != nil else {
+        throw NativeFirmwareSelectionError.invalidSource
       }
       let source = try await IPSWHTTPRangeReader.discover(url: firmware.sourceURL)
       let identity = try NativeStubRestoreCache.identity(
@@ -451,6 +446,15 @@
         if try file.containsEvidence("native-stub-file-" + String(installed.count)) {
           try await copy(role, path, dataName: dataName) { _, _ in
             throw NativeStubFileError.invalidPlan
+          }
+          return
+        }
+        // An update archive's Recovery image decodes as it streams, with no
+        // copy staged on macOS.
+        if member == plan.recoveryMember, let image = plan.recoveryImage {
+          try await copy(role, path, dataName: dataName) {
+            try await $0.updateImage(
+              member, image: image, archive: plan.archive, at: $1, compressed: compressed)
           }
           return
         }

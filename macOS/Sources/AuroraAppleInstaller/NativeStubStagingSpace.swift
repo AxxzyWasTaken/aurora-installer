@@ -134,9 +134,9 @@
       var members = plan.readMembers
       var extra: UInt64 = 0
       if includingPlanningReads {
-        let planning: Set<String> = [
-          "BuildManifest.plist", "usr/standalone/bootcaches.plist", "SystemVersion.plist",
-        ]
+        let planning = Set(
+          ["BuildManifest.plist", "usr/standalone/bootcaches.plist", "SystemVersion.plist"].map(
+            plan.layout.member))
         members += plan.archive.members.filter { planning.contains($0.name) }
         extra = Self.directoryBytes
       }
@@ -315,12 +315,18 @@
       } catch is NativeFirmwareSelectionError {
         throw InstallerPlanPreparationError.firmwareUnavailable
       }
-      guard NativeStubFilesPreparer.isRestoreImage(firmware.sourceURL) else {
-        throw InstallerPlanPreparationError.firmwareArchiveUnsupported(version: firmware.version)
+      guard NativeRestoreSourceLayout(sourceURL: firmware.sourceURL) != nil else {
+        throw InstallerPlanPreparationError.firmwareUnavailable
       }
-      let requirement = try await NativeStubStagingRequirement.estimate(
-        source: open(firmware.sourceURL), firmware: firmware,
-        deviceIdentifier: deviceIdentifier, boardID: boardID(), chipID: facts.hardware.chipID)
+      let requirement: NativeStubStagingRequirement
+      do {
+        requirement = try await NativeStubStagingRequirement.estimate(
+          source: open(firmware.sourceURL), firmware: firmware,
+          deviceIdentifier: deviceIdentifier, boardID: boardID(), chipID: facts.hardware.chipID)
+      } catch NativeFirmwareSelectionError.updateArchiveOnly(let version) {
+        // An update archive whose Recovery image patches an earlier one.
+        throw InstallerPlanPreparationError.firmwareArchiveUnsupported(version: version)
+      }
       return requirement.requiredFreeBytes + Self.planningMarginBytes
     }
   }

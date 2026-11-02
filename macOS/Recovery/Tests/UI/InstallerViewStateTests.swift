@@ -264,12 +264,17 @@ final class InstallerViewStateTests: XCTestCase {
     }
 
     XCTAssertTrue(validated() == ("Show Details", false), "nothing to show before any output")
+    model.operations = (1...6).map { "Step \($0) of the simulated installation — simulated" }
     model.stage = .complete
     XCTAssertTrue(validated() == ("Show Details", true))
 
     XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))
     let details = try XCTUnwrap(window.attachedSheet)
-    XCTAssertFalse(views(LogTextView.self, in: details.contentView).isEmpty)
+    let log = try XCTUnwrap(views(LogTextView.self, in: details.contentView).first)
+    spin(0.3)
+    // The log must not be wider than it shows, or each line's start is cut off.
+    XCTAssertEqual(log.textView.frame.width, log.contentSize.width)
+    XCTAssertEqual(log.contentView.bounds.origin.x, 0)
     XCTAssertTrue(validated() == ("Hide Details", true))
     XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))
     XCTAssertNil(window.attachedSheet)

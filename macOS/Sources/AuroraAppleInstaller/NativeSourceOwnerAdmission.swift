@@ -37,12 +37,108 @@
     }
   }
 
+  /// Which part of the source-owner proof failed. Every guard of the proof
+  /// has its own case, so a refusal names the check that stopped it instead
+  /// of one sentence for all of them. `summary` is shown to the person;
+  /// `description` adds the underlying error for the root-only diagnostics.
+  enum NativeSourceOwnerRefusal: Error, Equatable, Sendable, CustomStringConvertible {
+    /// The hardware identity differs from the one the plan was made on.
+    case otherMac
+    /// The internal disk differs from the one the plan was made on.
+    case otherDisk
+    /// A disk utility query failed or its reply could not be read.
+    case diskQuery(step: String, detail: String)
+    /// The running system's volume group or APFS container is unidentifiable.
+    case runningSystem
+    /// The running system's container lacks exactly one of the volumes.
+    case volumes(system: Int, data: Int, preboot: Int, recovery: Int)
+    /// The System volume's own record disagrees with the disk layout.
+    case systemVolume
+    /// OpenDirectory has no single local account for the name.
+    case unknownAccount
+    /// APFS does not list the account as a volume owner of the System volume.
+    case notVolumeOwner
+    /// The source Preboot volume could not be mounted or opened safely.
+    case preboot(detail: String)
+    /// macOS's Recovery administrator list is absent from Preboot.
+    case adminListMissing
+    /// The Recovery administrator list exists but is unsafe or unreadable.
+    case adminListUnreadable(detail: String)
+    /// The Recovery administrator list has no entry for the account.
+    case notInAdminList
+    /// The Recovery administrator list gives the account another identity.
+    case adminIdentityMismatch
+    /// The disk layout or the running system changed during the check.
+    case layoutChanged
+
+    /// Printable ASCII, so `EngineFailureNotice` keeps every character.
+    var summary: String {
+      switch self {
+      case .otherMac: "this Mac is not the one the installation was planned on."
+      case .otherDisk: "the internal disk is not the one the installation was planned on."
+      case .diskQuery(let step, _): "macOS did not answer the \(step) query."
+      case .runningSystem: "the running macOS volume group could not be identified."
+      case .volumes(let system, let data, let preboot, let recovery):
+        "the macOS container has \(system) System, \(data) Data, \(preboot) Preboot and "
+          + "\(recovery) Recovery volumes; one of each is required."
+      case .systemVolume: "the macOS System volume does not match the disk layout."
+      case .unknownAccount: "this account was not found among the local macOS accounts."
+      case .notVolumeOwner:
+        "APFS does not list this account as a volume owner. Use the account that set up this Mac."
+      case .preboot: "the macOS Preboot volume could not be opened safely."
+      case .adminListMissing: "the Preboot volume has no list of Recovery administrators."
+      case .adminListUnreadable:
+        "the list of Recovery administrators on the Preboot volume could not be read safely."
+      case .notInAdminList:
+        "the Recovery administrator list on Preboot does not include this account."
+      case .adminIdentityMismatch:
+        "the Recovery administrator list on Preboot gives this account another identity."
+      case .layoutChanged: "the disk layout changed during the check. Choose Check again."
+      }
+    }
+
+    var description: String {
+      switch self {
+      case .otherMac: "otherMac"
+      case .otherDisk: "otherDisk"
+      case .diskQuery(let step, let detail): "diskQuery(\(step)): \(detail)"
+      case .runningSystem: "runningSystem"
+      case .volumes(let system, let data, let preboot, let recovery):
+        "volumes(system: \(system), data: \(data), preboot: \(preboot), recovery: \(recovery))"
+      case .systemVolume: "systemVolume"
+      case .unknownAccount: "unknownAccount"
+      case .notVolumeOwner: "notVolumeOwner"
+      case .preboot(let detail): "preboot: \(detail)"
+      case .adminListMissing: "adminListMissing"
+      case .adminListUnreadable(let detail): "adminListUnreadable: \(detail)"
+      case .notInAdminList: "notInAdminList"
+      case .adminIdentityMismatch: "adminIdentityMismatch"
+      case .layoutChanged: "layoutChanged"
+      }
+    }
+
+    /// Cancellation and an earlier refusal pass through unchanged.
+    static func wrapping<T>(_ step: String, _ body: () throws -> T) throws -> T {
+      do {
+        return try body()
+      } catch let error as CancellationError {
+        throw error
+      } catch let error as NativeSourceOwnerRefusal {
+        throw error
+      } catch {
+        throw diskQuery(step: step, detail: String(describing: error))
+      }
+    }
+  }
+
   /// The same live source-owner proof is required before disk preparation and
   /// again when a target's Recovery configuration is admitted. No password is
   /// sent to a command or used to modify the source installation.
   struct NativeSourceOwnerAdmission: Sendable {
     let environment: NativeHandoffEnvironment
     init(environment: NativeHandoffEnvironment = .live) { self.environment = environment }
+
+    static let adminListPath = "var/db/AdminUserRecoveryInfo.plist"
 
     /// Reading the disk layout takes a dozen disk utility queries. A caller
     /// that read the layout for its own pass and reads it again before it
@@ -55,16 +151,19 @@
       layout: RemovalSnapshot? = nil
     ) throws -> NativeSourceBootstrap {
       try Task.checkCancellation()
-      guard
-        try InstallerPerformance.measure("owner_device", { try environment.device() })
-          == package.deviceIdentifier,
+      let device = try InstallerPerformance.measure("owner_device") {
+        try NativeSourceOwnerRefusal.wrapping("hardware identity") { try environment.device() }
+      }
+      guard device == package.deviceIdentifier,
         !AppleSiliconHostInspector.isExplicitlyUnsupported(package.deviceIdentifier)
-      else { throw NativeHandoffValidationError.invalidOwner }
+      else { throw NativeSourceOwnerRefusal.otherMac }
       let before =
         try layout
-        ?? InstallerPerformance.measure("owner_snapshot") { try environment.snapshot() }
+        ?? InstallerPerformance.measure("owner_snapshot") {
+          try NativeSourceOwnerRefusal.wrapping("disk layout") { try environment.snapshot() }
+        }
       guard before.disk == package.storeIdentifier else {
-        throw NativeHandoffValidationError.invalidOwner
+        throw NativeSourceOwnerRefusal.otherDisk
       }
       let mounts = NativeHandoffMounts(environment)
       let bootstrap = try InstallerPerformance.measure("owner_resolve") {
@@ -72,9 +171,15 @@
       }
       try Task.checkCancellation()
       try InstallerPerformance.measure("owner_recheck") {
-        guard try layout != nil || environment.snapshot() == before,
-          try NativeSourceBootstrap.uuid(rootGroup()) == bootstrap.groupUUID
-        else { throw NativeHandoffValidationError.changedLayout }
+        if layout == nil {
+          let after = try NativeSourceOwnerRefusal.wrapping("disk layout") {
+            try environment.snapshot()
+          }
+          guard after == before else { throw NativeSourceOwnerRefusal.layoutChanged }
+        }
+        guard try runningGroup() == bootstrap.groupUUID else {
+          throw NativeSourceOwnerRefusal.layoutChanged
+        }
       }
       return bootstrap
     }
@@ -97,24 +202,31 @@
       mounts: NativeHandoffMounts
     ) throws -> NativeSourceBootstrap {
       try Task.checkCancellation()
-      let root = try environment.disk("/")
+      let root = try NativeSourceOwnerRefusal.wrapping("running system") {
+        try environment.disk("/")
+      }
       try Task.checkCancellation()
       guard let group = root["APFSVolumeGroupID"] as? String,
         let reference = root["APFSContainerReference"] as? String,
-        NativeInspectionCommands.identifier(reference)
-      else { throw NativeHandoffValidationError.invalidOwner }
-      let groupUUID = try NativeSourceBootstrap.uuid(group)
+        NativeInspectionCommands.identifier(reference),
+        let groupUUID = try? NativeSourceBootstrap.uuid(group)
+      else { throw NativeSourceOwnerRefusal.runningSystem }
       let containers = snapshot.containers.filter { $0.uuid == snapshot.macOSContainerUUID }
       guard containers.count == 1, let container = containers.first,
         container.storeUUID == snapshot.macOSStoreUUID
-      else { throw NativeHandoffValidationError.invalidOwner }
+      else { throw NativeSourceOwnerRefusal.runningSystem }
       let systems = container.volumes.filter { $0.roles == ["System"] && $0.group == groupUUID }
       let data = container.volumes.filter { $0.roles == ["Data"] && $0.group == groupUUID }
       let preboots = container.volumes.filter { $0.roles == ["Preboot"] }
-      guard systems.count == 1, data.count == 1, preboots.count == 1,
-        container.volumes.filter({ $0.roles == ["Recovery"] }).count == 1
-      else { throw NativeHandoffValidationError.invalidOwner }
-      let source = try environment.disk(systems[0].identifier)
+      let recoveries = container.volumes.filter { $0.roles == ["Recovery"] }
+      guard systems.count == 1, data.count == 1, preboots.count == 1, recoveries.count == 1 else {
+        throw NativeSourceOwnerRefusal.volumes(
+          system: systems.count, data: data.count, preboot: preboots.count,
+          recovery: recoveries.count)
+      }
+      let source = try NativeSourceOwnerRefusal.wrapping("System volume") {
+        try environment.disk(systems[0].identifier)
+      }
       try Task.checkCancellation()
       guard
         (source["VolumeUUID"] as? String).flatMap(UUID.init(uuidString:))?.uuidString
@@ -122,12 +234,30 @@
         (source["APFSVolumeGroupID"] as? String).flatMap(UUID.init(uuidString:))?.uuidString
           == groupUUID,
         source["APFSContainerReference"] as? String == reference
-      else { throw NativeHandoffValidationError.invalidOwner }
-      let guid = try NativeSourceBootstrap.uuid(environment.ownerUUID(authorization.username))
+      else { throw NativeSourceOwnerRefusal.systemVolume }
+      // OpenDirectory matches a typed name without regard to case and also
+      // accepts an account's aliases. The Preboot list is keyed by the
+      // account's own short name, so that is the name looked up there.
+      let account: String
+      let guid: String
+      do {
+        account = try environment.ownerName(authorization.username)
+        guid = try NativeSourceBootstrap.uuid(environment.ownerUUID(authorization.username))
+      } catch let error as CancellationError {
+        throw error
+      } catch {
+        throw NativeSourceOwnerRefusal.unknownAccount
+      }
       let bootstrap = try NativeSourceBootstrap(
         systemUUID: systems[0].uuid, groupUUID: groupUUID, ownerUUID: guid)
-      let users = try environment.plist(["apfs", "listUsers", bootstrap.systemUUID, "-plist"])
-      guard let entries = users["Users"] as? [[String: Any]],
+      let users = try NativeSourceOwnerRefusal.wrapping("APFS volume users") {
+        try environment.plist(["apfs", "listUsers", bootstrap.systemUUID, "-plist"])
+      }
+      guard let entries = users["Users"] as? [[String: Any]] else {
+        throw NativeSourceOwnerRefusal.diskQuery(
+          step: "APFS volume users", detail: "the reply has no Users list")
+      }
+      guard
         entries.contains(where: {
           guard let flag = $0["VolumeOwner"] as? NSNumber,
             CFGetTypeID(flag) == CFBooleanGetTypeID(), flag.boolValue
@@ -135,30 +265,62 @@
           return ($0["APFSCryptoUserUUID"] as? String).flatMap(UUID.init(uuidString:))?.uuidString
             == guid
         })
-      else { throw NativeHandoffValidationError.invalidOwner }
+      else { throw NativeSourceOwnerRefusal.notVolumeOwner }
       try Task.checkCancellation()
       let preboot = preboots[0]
-      let url = try mounts.mounted(preboot.identifier, uuid: preboot.uuid, sourcePreboot: true)
-      let tree = try NativeHandoffFileTree(
-        url, protected: true, owner: environment.owner,
-        volumeRoot: true, volumeDevice: preboot.identifier, verifyMount: environment.verifyMount)
+      let url: URL
+      let tree: NativeHandoffFileTree
+      do {
+        url = try mounts.mounted(preboot.identifier, uuid: preboot.uuid, sourcePreboot: true)
+        tree = try NativeHandoffFileTree(
+          url, protected: true, owner: environment.owner,
+          volumeRoot: true, volumeDevice: preboot.identifier, verifyMount: environment.verifyMount
+        )
+      } catch let error as CancellationError {
+        throw error
+      } catch {
+        throw NativeSourceOwnerRefusal.preboot(detail: String(describing: error))
+      }
+      let metadata: Data
+      do {
+        metadata = try tree.sourceOwnerMetadata(groupUUID: groupUUID)
+      } catch let error as CancellationError {
+        throw error
+      } catch {
+        // Only the message depends on this: the protected read above decides.
+        let path = url.appendingPathComponent(groupUUID + "/" + Self.adminListPath).path
+        var info = stat()
+        if lstat(path, &info) != 0, errno == ENOENT {
+          throw NativeSourceOwnerRefusal.adminListMissing
+        }
+        throw NativeSourceOwnerRefusal.adminListUnreadable(detail: String(describing: error))
+      }
+      // Only the authorized account's entry is read, as the reference engine
+      // reads it. Other keys may hold anything macOS records there.
       guard
-        let admins = try PropertyListSerialization.propertyList(
-          from: tree.sourceOwnerMetadata(groupUUID: groupUUID),
-          format: nil
-        ) as? [String: [String: Any]],
-        (admins[authorization.username]?["GeneratedUID"] as? String).flatMap(
-          UUID.init(uuidString:))?.uuidString == guid
-      else { throw NativeHandoffValidationError.invalidOwner }
+        let admins = try? PropertyListSerialization.propertyList(from: metadata, format: nil)
+          as? [String: Any]
+      else {
+        throw NativeSourceOwnerRefusal.adminListUnreadable(detail: "not a dictionary")
+      }
+      guard let entry = admins[account] as? [String: Any] else {
+        throw NativeSourceOwnerRefusal.notInAdminList
+      }
+      guard
+        (entry["GeneratedUID"] as? String).flatMap(UUID.init(uuidString:))?.uuidString == guid
+      else { throw NativeSourceOwnerRefusal.adminIdentityMismatch }
       try Task.checkCancellation()
       return bootstrap
     }
 
-    private func rootGroup() throws -> String {
-      guard let group = try environment.disk("/")["APFSVolumeGroupID"] as? String else {
-        throw NativeHandoffValidationError.invalidOwner
+    private func runningGroup() throws -> String {
+      let root = try NativeSourceOwnerRefusal.wrapping("running system") {
+        try environment.disk("/")
       }
-      return group
+      guard let group = root["APFSVolumeGroupID"] as? String,
+        let uuid = try? NativeSourceBootstrap.uuid(group)
+      else { throw NativeSourceOwnerRefusal.layoutChanged }
+      return uuid
     }
   }
 #endif

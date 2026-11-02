@@ -11,8 +11,9 @@
     /// Updating macOS to `version` makes the lowest of them installable.
     case macOSUpdateRequired(version: String)
     case invalidSource
-    /// The selected firmware comes only as an OTA update archive, which has
-    /// no native decoder yet.
+    /// The selected firmware comes only as an OTA update archive whose
+    /// Recovery image patches an earlier one. Only whole-image update
+    /// archives, such as macOS 14.8.3's, have a native decoder.
     case updateArchiveOnly(version: String)
   }
 

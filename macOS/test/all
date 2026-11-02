@@ -33,6 +33,7 @@ print("Python compilation and shell syntax passed")
 PY
 
 python3 test/native-stub-file-vectors.py
+python3 test/native-update-archive-vectors.py
 python3 test/native-finishing-vectors.py
 
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'

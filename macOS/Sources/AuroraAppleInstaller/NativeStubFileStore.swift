@@ -48,6 +48,30 @@
       }
     }
 
+    /// An update archive's whole-image patch stream, decoded as it arrives.
+    /// Nothing is published until the member's CRC and the image's length
+    /// and SHA-1 have been checked.
+    func updateImage(
+      _ member: IPSWArchiveMember, image: UpdateArchiveFullImage.Header, archive: IPSWArchive,
+      at path: String, compressed: Bool = false, mode: mode_t = 0o644
+    ) async throws -> NativeStubFileIdentity {
+      try await publish(path, bytes: image.outputBytes, mode: mode, compressed: compressed) {
+        writer in
+        let decoder = UpdateArchiveFullImage.Decoder(header: image)
+        var hash = SHA256()
+        try await archive.stream(
+          member, maximumBytes: 8 << 30, maximumCompressedBytes: 8 << 30
+        ) { bytes in
+          try decoder.consume(bytes) { chunk in
+            hash.update(data: chunk)
+            try writer.append(chunk)
+          }
+        }
+        try decoder.finish()
+        return NativeStubFileIdentity(bytes: image.outputBytes, sha256: Self.hex(hash.finalize()))
+      }
+    }
+
     func local(_ source: URL, at path: String, compressed: Bool) async throws
       -> NativeStubFileIdentity
     {

@@ -17,8 +17,9 @@
     case macOSUpdateRequired(version: String)
     /// No compatible boot firmware could be selected for this Mac.
     case firmwareUnavailable
-    /// The firmware this Mac needs comes only as an OTA update archive,
-    /// which this installer cannot prepare yet.
+    /// The firmware this Mac needs comes only as an OTA update archive this
+    /// installer cannot prepare: one whose Recovery image patches an earlier
+    /// one.
     case firmwareArchiveUnsupported(version: String)
   }
 

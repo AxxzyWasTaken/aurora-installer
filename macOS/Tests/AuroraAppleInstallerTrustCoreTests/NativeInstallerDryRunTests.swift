@@ -110,11 +110,17 @@
       XCTAssertEqual(result["one_true_recovery_boot_policy"] as? [String], ["-nca"])
     }
 
-    func testRefusedModelsStopBeforePlanning() async throws {
+    func testTheJ614sIsNoLongerRefused() async throws {
       let result = try await run(
         machine(device: "apple,j614s", chip: 0x6040, macOS: "26.6.2", boot: "mBoot-20457.1.29"))
+      XCTAssertNil(result["unsupported_reason"])
+    }
+
+    func testUnknownModelsStopBeforePlanning() async throws {
+      let result = try await run(
+        machine(device: "apple,j999", chip: 0x6040, macOS: "26.6.2", boot: "mBoot-20457.1.29"))
       XCTAssertEqual(result["supported"] as? Bool, false)
-      XCTAssertEqual(result["unsupported_reason"] as? String, "explicitly refused model")
+      XCTAssertEqual(result["unsupported_reason"] as? String, "model not in the inspection policy")
       XCTAssertNil(result["candidates"])
     }
   }

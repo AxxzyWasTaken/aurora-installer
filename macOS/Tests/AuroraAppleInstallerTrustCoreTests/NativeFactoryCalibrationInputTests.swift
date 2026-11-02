@@ -68,6 +68,26 @@
           tree, name: name, maximum: 64 << 20, owner: getuid()))
     }
 
+    func testWritableSensorFactoryRecordsUseBoundedFactoryReader() throws {
+      let (root, _, _) = try fixture()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let tree = try NativeHandoffFileTree(root, protected: true, owner: getuid())
+      for name in ["MSRk-fixture", "FSC2-fixture", "seal-fixture", "trustobject-current"] {
+        let expected = Data("synthetic sensor record".utf8)
+        let path = NativeSensorInputCollector.factoryRelativePath + "/" + name
+        let file = root.appendingPathComponent(path)
+        try expected.write(to: file)
+        XCTAssertEqual(chmod(file.path, 0o666), 0)
+        XCTAssertThrowsError(try tree.read(path, maximum: 16 << 20))
+        XCTAssertEqual(
+          try NativeFactoryCalibrationInput.readRecord(
+            tree, name: name, maximum: 16 << 20, owner: getuid()), expected)
+        XCTAssertThrowsError(
+          try NativeFactoryCalibrationInput.readRecord(
+            tree, name: name, maximum: expected.count - 1, owner: getuid()))
+      }
+    }
+
     func testFactoryReaderRejectsUnsafeSourcesAndConcurrentChanges() throws {
       for fault in ["owner", "link", "symlink", "parent", "size", "mode", "changed"] {
         let (root, file, _) = try fixture()

@@ -7,15 +7,18 @@
     public let validated: ValidatedEngineTranscript
     public let knownInstallations: [NativeKnownInstallation]
     public let displayGeometry: NativeDiskDisplayGeometry?
+    /// Every part of the disk for the Partitions screen. Render-only.
+    public let diskLayout: NativeDiskLayout?
 
     public init(
       transcript: Data, knownInstallations: [NativeKnownInstallation] = [],
-      displayGeometry: NativeDiskDisplayGeometry? = nil
+      displayGeometry: NativeDiskDisplayGeometry? = nil, diskLayout: NativeDiskLayout? = nil
     ) throws {
       self.transcript = transcript
       validated = try AppleInstallerTrustCore().validateEngineTranscript(transcript)
       self.knownInstallations = knownInstallations
       self.displayGeometry = displayGeometry
+      self.diskLayout = diskLayout
     }
   }
 
@@ -59,8 +62,7 @@
         let policy = try self.policy()
         let hardware = try self.hardware()
         let device = host.identity.deviceIdentifier
-        guard !AppleSiliconHostInspector.isExplicitlyUnsupported(device),
-          policy.supports(device, hardware: hardware)
+        guard policy.supports(device, hardware: hardware)
         else {
           return try NativeInstallerInspection(
             transcript: NativeDiskInventory.unsupported(device: device))
@@ -75,7 +77,9 @@
             device: device, snapshot: disk.snapshot, containers: disk.containers,
             metadata: metadata, stubBytes: stub),
           knownInstallations: NativeKnownInstallations.recognize(disk),
-          displayGeometry: NativeDiskDisplayGeometry(snapshot: disk.snapshot))
+          displayGeometry: NativeDiskDisplayGeometry(snapshot: disk.snapshot),
+          // Display only: a layout this cannot describe never blocks inspection.
+          diskLayout: try? NativeDiskLayout(disk))
         try Task.checkCancellation()
         return result
       }

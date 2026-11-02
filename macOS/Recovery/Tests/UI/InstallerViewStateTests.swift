@@ -255,6 +255,15 @@ final class InstallerViewStateTests: XCTestCase {
     model.accountConfirmation = "secret"
     XCTAssertTrue(hint.isHidden)
     XCTAssertTrue(action.button.isEnabled)
+    // Passwords over 4,096 bytes or with a null character are refused too.
+    model.accountConfirmation = ""
+    model.accountPassword = String(repeating: "a", count: 4097)
+    XCTAssertEqual(hint.stringValue, RecoveryAccountForm.passwordProblem)
+    XCTAssertTrue(hint.stringValue.contains("4,096 bytes"), hint.stringValue)
+    model.accountPassword = "pass\u{0}word"
+    XCTAssertEqual(hint.stringValue, RecoveryAccountForm.passwordProblem)
+    XCTAssertTrue(hint.stringValue.contains("null characters"), hint.stringValue)
+    XCTAssertFalse(action.button.isEnabled)
   }
 
   func testLaunchPreparesToolsOnlyAfterAPassingCheck() {

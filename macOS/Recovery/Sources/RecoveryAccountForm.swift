@@ -4,7 +4,8 @@
 enum RecoveryAccountForm {
   static let usernameProblem =
     "Choose another username: up to 31 characters, starting with a–z, using only a–z, 0–9, “-” or “_”."
-  static let passwordProblem = "Use a password without line breaks."
+  static let passwordProblem =
+    "Use a password of up to 4,096 bytes, without line breaks or null characters."
   static let mismatch = "The passwords don’t match."
 
   static func problem(

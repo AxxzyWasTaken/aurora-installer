@@ -3,10 +3,6 @@ import CoreServices
 
 // Explicit macOS previews simulate the flow; enrollment requires paired 1TR.
 // Credentials stay in memory and never enter command arguments or logs.
-enum Stage: Int, CaseIterable {
-  case welcome, installing, account, complete
-}
-
 final class InstallerModel {
   var onChange: (() -> Void)?
   private func changed() { onChange?() }
@@ -20,9 +16,25 @@ final class InstallerModel {
   var progress = 0.0 { didSet { changed() } }
   var currentOperation = "Preparing installation" { didSet { changed() } }
   var operations: [String] = [] { didSet { changed() } }
-  var failure: String? { didSet { changed() } }
-  var environmentIssue: EnrollmentGateIssue? { didSet { changed() } }
+  var failure: String? {
+    didSet {
+      if failure != nil { environmentVerified = false }
+      changed()
+    }
+  }
+  var environmentIssue: EnrollmentGateIssue? {
+    didSet {
+      if environmentIssue != nil { environmentVerified = false }
+      changed()
+    }
+  }
   var checkingEnvironment = false { didSet { changed() } }
+  /// The last environment check passed and found `authorizationOwner`, and
+  /// nothing has failed since. Continue then asks for the password at once
+  /// while the same check runs again in the background.
+  var environmentVerified = false { didSet { changed() } }
+  /// Reading the Aura flags and installing the `aura` command after launch.
+  var preparingTools = false { didSet { changed() } }
   var debugEnabled = false { didSet { changed() } }
   var proxyEnabled = false { didSet { changed() } }
   var accountUsername = "" { didSet { changed() } }
@@ -40,6 +52,15 @@ final class InstallerModel {
   var previewNotice: (title: String, message: String)? { didSet { changed() } }
   private var checkingAccount = false
   private var awaitingStartupDiskReturn = false
+  private var previewChecks = 0
+
+  /// Why Create Account is unavailable, once the person has typed something.
+  var accountFormProblem: String? {
+    RecoveryAccountForm.problem(
+      username: accountUsername, password: accountPassword, confirmation: accountConfirmation,
+      validName: RecoveryAccountInstaller.validName,
+      validPassword: { (try? RecoveryAccountInstaller.validatePassword(Data($0.utf8))) != nil })
+  }
 
   var canCreateAccount: Bool {
     !creatingAccount && !restartingWithoutAccount
@@ -175,22 +196,78 @@ final class InstallerModel {
     if name == "debug" { debugEnabled = enabled } else { proxyEnabled = enabled }
   }
 
-  func refreshBootFlags() {
-    guard RecoveryActions.inRecovery else { return }
-    do {
-      let arguments = try RecoveryActions.readBootArguments().split(whereSeparator: {
-        $0.isWhitespace
-      })
-      debugEnabled = arguments.contains("aura-debug")
-      proxyEnabled = arguments.contains("aura-proxy")
-    } catch { failure = error.localizedDescription }
-  }
-  func checkEnrollmentEnvironment(ready: @escaping () -> Void = {}) {
-    if RecoveryActions.isPreview {
-      ready()
+  /// Reads the firmware's Aura flags and installs the `aura` command off the
+  /// main thread, so the window keeps responding while nvram and the volume
+  /// remount run.
+  func prepareRecoveryTools() {
+    if RecoveryActions.isPreview, let outcome = PreviewSimulation.tools {
+      preparingTools = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + PreviewSimulation.checkSeconds) {
+        self.preparingTools = false
+        if outcome == .fail {
+          self.failure = "The aura command could not be installed (simulated)."
+        }
+      }
       return
     }
+    guard RecoveryActions.inRecovery else { return }
+    preparingTools = true
+    DispatchQueue.global(qos: .userInitiated).async {
+      let flags = Result { try RecoveryActions.readBootArguments() }
+      let command = Result { try RecoveryActions.installCommand() }
+      DispatchQueue.main.async {
+        self.preparingTools = false
+        switch flags {
+        case .success(let value):
+          let arguments = value.split(whereSeparator: { $0.isWhitespace })
+          self.debugEnabled = arguments.contains("aura-debug")
+          self.proxyEnabled = arguments.contains("aura-proxy")
+        case .failure(let error): self.failure = error.localizedDescription
+        }
+        if case .failure(let error) = command { self.failure = error.localizedDescription }
+      }
+    }
+  }
+
+  /// Checks the environment at launch, then prepares the Recovery tools.
+  func startLaunchCheck() {
+    checkEnrollmentEnvironment { passed in
+      if passed { self.prepareRecoveryTools() }
+    }
+  }
+
+  /// Checks Recovery, root, the target volume and its paired boot policy,
+  /// then resolves the owner who authorizes enrollment. `finished` gets
+  /// whether the check passed, after any failure has been reported.
+  func checkEnrollmentEnvironment(_ finished: @escaping (_ passed: Bool) -> Void = { _ in }) {
     guard !checkingEnvironment else { return }
+    if RecoveryActions.isPreview {
+      // Nothing to verify; each check ends as simulated.
+      let outcome = previewChecks == 0 ? PreviewSimulation.firstCheck : PreviewSimulation.recheck
+      previewChecks += 1
+      let finish = {
+        switch outcome {
+        case .pass, .ownerChanged:
+          if outcome == .ownerChanged {
+            self.authorizationOwner = PreviewSimulation.changedOwner
+            self.authorizationUsesSourceOwner = false
+          }
+          self.environmentVerified = true
+          finished(true)
+        case .fail:
+          self.password.removeAll(keepingCapacity: false)
+          self.environmentIssue = .cannotVerify
+          finished(false)
+        }
+      }
+      guard PreviewSimulation.checkSeconds > 0 else { return finish() }
+      checkingEnvironment = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + PreviewSimulation.checkSeconds) {
+        self.checkingEnvironment = false
+        finish()
+      }
+      return
+    }
     checkingEnvironment = true
     InstallerLog.shared.beginAttempt()
     DispatchQueue.global(qos: .userInitiated).async {
@@ -206,7 +283,8 @@ final class InstallerModel {
           self.checkingEnvironment = false
           self.authorizationOwner = owner
           self.authorizationUsesSourceOwner = sourceOwner
-          ready()
+          self.environmentVerified = true
+          finished(true)
         }
       } catch {
         InstallerLog.shared.append("Recovery preflight failed: " + error.localizedDescription)
@@ -218,6 +296,7 @@ final class InstallerModel {
           } else {
             self.failure = error.localizedDescription
           }
+          finished(false)
         }
       }
     }
@@ -448,6 +527,40 @@ enum RecoveryBrand {
   }()
 }
 
+/// Preview builds only; Recovery builds ignore it. Simulates the environment
+/// check and tool preparation so their waits and failures can be reviewed:
+/// - `--preview-check-seconds=N` (0 to 30): how long each step takes.
+/// - `--preview-recheck=owner-changed|fail`: how checks after the first end.
+/// - `--preview-tools=pass|fail`: simulate preparing the Recovery tools.
+enum PreviewSimulation {
+  enum CheckOutcome: String {
+    case pass
+    case ownerChanged = "owner-changed"
+    case fail
+  }
+  enum ToolsOutcome: String { case pass, fail }
+
+  static let changedOwner = RecoveryOwner(
+    username: "aurora-owner", uuid: UUID(uuidString: "3F2B9C1E-7A55-4E0B-9D2C-5B6A1F0E8D47")!)
+  static var checkSeconds: Double = {
+    guard let text = value("--preview-check-seconds="), let seconds = Double(text),
+      seconds.isFinite
+    else { return 0 }
+    return min(max(seconds, 0), 30)
+  }()
+  /// How the first check ends; tests can make it fail.
+  static var firstCheck = CheckOutcome.pass
+  static var recheck = value("--preview-recheck=").flatMap(CheckOutcome.init) ?? .pass
+  static var tools = value("--preview-tools=").flatMap(ToolsOutcome.init)
+
+  private static func value(_ prefix: String) -> String? {
+    guard RecoveryActions.isPreview,
+      let argument = CommandLine.arguments.first(where: { $0.hasPrefix(prefix) })
+    else { return nil }
+    return String(argument.dropFirst(prefix.count))
+  }
+}
+
 enum DestinationVolume {
   static let url = RecoveryActions.volume
   private static let previewDistribution: String? = {
@@ -496,6 +609,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     LaunchTrace.mark("delegate.didFinishLaunching")
     NSApp.appearance = NSAppearance(named: .darkAqua)
+    // One fixed window: keep AppKit's tab items out of the View menu.
+    NSWindow.allowsAutomaticWindowTabbing = false
     let window = InstallerWindow()
     window.title = "Aurora Installer"
     window.isOpaque = true
@@ -519,18 +634,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if renderPreviewIfRequested(window) { return }
     if model.recoveryInterface && RecoveryActions.inRecovery {
       // Restoring an already enrolled stage 2 does not change boot policy.
-      model.refreshBootFlags()
+      model.prepareRecoveryTools()
       model.resumeAccountSetup()
-      do { try RecoveryActions.installCommand() } catch {
-        model.failure = error.localizedDescription
-      }
     } else {
-      model.checkEnrollmentEnvironment {
-        self.model.refreshBootFlags()
-        do { try RecoveryActions.installCommand() } catch {
-          self.model.failure = error.localizedDescription
-        }
-      }
+      // Start the check at once: Continue waits for it, with a spinner.
+      model.startLaunchCheck()
     }
   }
 
@@ -573,6 +681,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     edit.addItem(
       withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+    // View → Show Details / Hide Details opens and closes the window's details sheet.
+    if let controller {
+      menu.addItem(
+        RecoveryDetailsMenu.makeMenuItem(
+          target: controller, action: #selector(InstallerView.toggleDetails(_:))))
+    }
 
     let utilities = submenu("Utilities")
     let terminal = utilities.addItem(

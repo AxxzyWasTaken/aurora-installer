@@ -1,11 +1,13 @@
 import AppKit
 
 /// A keyboard-modal AppKit sheet styled like the Recovery window. It keeps
-/// `height` as its minimum and grows to fit a long wrapped message.
+/// `height` as its minimum and grows to fit a long wrapped message. An
+/// optional accessory, such as a spinner, sits just left of the buttons; the
+/// buttons stay anchored to the right edge whether or not it shows.
 final class RecoverySheet: NSPanel {
   init(
     title: String, message: String, width: CGFloat, height: CGFloat,
-    body: NSView, bodyHeight: CGFloat, buttons: [NSButton]
+    body: NSView, bodyHeight: CGFloat, buttons: [NSButton], accessory: NSView? = nil
   ) {
     super.init(
       contentRect: NSRect(x: 0, y: 0, width: width, height: height),
@@ -56,6 +58,14 @@ final class RecoverySheet: NSPanel {
     actions.translatesAutoresizingMaskIntoConstraints = false
     for button in buttons { actions.addArrangedSubview(button) }
     root.addSubview(actions)
+    if let accessory {
+      accessory.translatesAutoresizingMaskIntoConstraints = false
+      root.addSubview(accessory)
+      NSLayoutConstraint.activate([
+        accessory.trailingAnchor.constraint(equalTo: actions.leadingAnchor, constant: -12),
+        accessory.centerYAnchor.constraint(equalTo: actions.centerYAnchor),
+      ])
+    }
 
     NSLayoutConstraint.activate([
       heading.topAnchor.constraint(equalTo: root.topAnchor, constant: 26),

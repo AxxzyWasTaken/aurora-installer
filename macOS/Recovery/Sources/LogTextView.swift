@@ -34,6 +34,23 @@ final class LogTextView: NSScrollView {
 
   required init?(coder: NSCoder) { fatalError("Use the programmatic initializer") }
 
+  /// Autoresizing adds every change in the visible width to the text view's
+  /// width, so a log created before its sheet is laid out could end up twice
+  /// as wide as it shows, and scrolling to the end then scrolled sideways and
+  /// cut off the start of every line. Keep the text exactly as wide as the view.
+  override func tile() {
+    super.tile()
+    let width = contentSize.width
+    guard width > 0 else { return }
+    if editor.frame.width != width {
+      editor.setFrameSize(NSSize(width: width, height: editor.frame.height))
+    }
+    if contentView.bounds.origin.x != 0 {
+      contentView.scroll(to: NSPoint(x: 0, y: contentView.bounds.origin.y))
+      reflectScrolledClipView(contentView)
+    }
+  }
+
   var displayedText: String { editor.string }
   var textView: NSTextView { editor }
 

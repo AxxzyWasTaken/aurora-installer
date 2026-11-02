@@ -278,6 +278,102 @@
       }
     }
 
+    func testASpaceFailureShowsItsNumbersAndNeverAReleaseMismatch() throws {
+      let summary =
+        "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
+        + "Free up 2.6 GB, then try again."
+      let display = PlainLanguage.engineFailure(
+        EngineFailureNotice(
+          reason: .macOSSpaceRequired, exitStatus: 1, diskUnchanged: true, summary: summary),
+        technicalDetail: "detail")
+      XCTAssertEqual(display.headline, "macOS needs more free space")
+      XCTAssertEqual(display.plainDetail, summary + " No disk changes were made.")
+      let remedy = try XCTUnwrap(display.remedy)
+      XCTAssertTrue(remedy.contains("Empty the Trash"), remedy)
+      XCTAssertTrue(remedy.contains("Check again"), remedy)
+      XCTAssertFalse(display.replanAvailable)
+      // After disk changes, Try again continues from the last completed step.
+      let resumed = PlainLanguage.engineFailure(
+        EngineFailureNotice(
+          reason: .macOSSpaceRequired, exitStatus: 1, diskUnchanged: false, summary: summary),
+        technicalDetail: "detail")
+      XCTAssertTrue(try XCTUnwrap(resumed.remedy).contains(PlainLanguage.retry))
+      // Whatever a helper sends, no reason claims the plan didn't match the release.
+      for reason in EngineFailureReason.allCases {
+        for text in ["", summary, "Native disk preparation could not be verified."] {
+          let shown = PlainLanguage.engineFailure(
+            EngineFailureNotice(reason: reason, exitStatus: 1, diskUnchanged: true, summary: text),
+            technicalDetail: "detail")
+          XCTAssertFalse(shown.plainDetail.contains("verified release"), "\(reason)")
+          XCTAssertFalse(shown.headline.contains("verified release"), "\(reason)")
+        }
+      }
+    }
+
+    func testARetryableSpaceFailureKeepsItsNumbersInsteadOfAGenericPause() {
+      let summary =
+        "macOS needs 23.1 GB free to prepare the installation and has 19.0 GB. "
+        + "Free up 4.1 GB, then try again."
+      let display = PlainLanguage.failure(
+        for: EngineXPCSubmissionError.engineFailed(
+          EngineFailureNotice(
+            reason: .macOSSpaceRequired, exitStatus: 1, diskUnchanged: false, summary: summary)),
+        retryRecoveryAvailable: true)
+      XCTAssertEqual(display.headline, "macOS needs more free space")
+      XCTAssertTrue(display.plainDetail.hasPrefix(summary), display.plainDetail)
+      XCTAssertTrue(display.retryRecoveryAvailable)
+    }
+
+    func testEngineFailuresShowTheHelpersCause() {
+      for (reason, summary) in [
+        (
+          EngineFailureReason.planIntegrity,
+          "The macOS boot files check refused the approved plan (NativeStubFileError.invalidPlan)."
+        ),
+        (.unclassified, "Aurora stub files could not be copied (NativeStubFileError.writeFailed)."),
+        (.firmwarePreparation, "The macOS restore image could not be read (RestoreFailure)."),
+        (
+          .recoveryPreparation,
+          "The current macOS volume owner could not be verified: the check was canceled."
+        ),
+        (
+          .deviceUnsupported,
+          "This Mac needs boot firmware from macOS 14.8.3, which Apple ships only as an update "
+            + "archive. This installer can't prepare that archive yet."
+        ),
+      ] {
+        let display = PlainLanguage.engineFailure(
+          EngineFailureNotice(reason: reason, exitStatus: 1, diskUnchanged: true, summary: summary),
+          technicalDetail: "detail")
+        XCTAssertEqual(display.plainDetail, summary + " No disk changes were made.", "\(reason)")
+      }
+    }
+
+    func testPlanningRefusesWhatTheInstallCouldNotFinishWithAnAction() throws {
+      let space = PlainLanguage.failure(
+        for: MacOSFreeSpaceShortfall(requiredBytes: 12_557_937_290, availableBytes: 8_944_269_393))
+      XCTAssertEqual(space.headline, "macOS needs more free space")
+      XCTAssertEqual(
+        space.plainDetail,
+        "macOS needs 12.6 GB free to prepare the installation and has 8.9 GB. "
+          + "Free up 3.7 GB, then try again. The disk has not been changed.")
+      XCTAssertTrue(try XCTUnwrap(space.remedy).contains("Check again"))
+
+      let archive = PlainLanguage.failure(
+        for: InstallerPlanPreparationError.firmwareArchiveUnsupported(version: "14.8.3"))
+      XCTAssertTrue(archive.plainDetail.contains("macOS 14.8.3"), archive.plainDetail)
+      XCTAssertTrue(archive.plainDetail.contains("update archive"), archive.plainDetail)
+      XCTAssertTrue(archive.plainDetail.hasSuffix("The disk has not been changed."))
+
+      let update = PlainLanguage.failure(
+        for: InstallerPlanPreparationError.macOSUpdateRequired(version: "13.5"))
+      XCTAssertEqual(update.headline, "Update macOS to install Aurora")
+      XCTAssertEqual(update.actionURL, PlainLanguage.softwareUpdateSettingsURL)
+
+      let firmware = PlainLanguage.failure(for: InstallerPlanPreparationError.firmwareUnavailable)
+      XCTAssertNotEqual(firmware.headline, "An installation plan couldn’t be prepared")
+    }
+
     func testUnsupportedModelNamesTheMacAndTheCatalogFamilies() throws {
       let display = PlainLanguage.failure(
         for: InstallerAssetPreparationError.notInCatalog(

@@ -32,6 +32,10 @@
     /// this one no longer has. It cannot be continued; the person starts a
     /// new installation. Older apps show this as unclassified.
     case startOverRequired = 9
+    /// macOS lacks the free space an installation step needs on it. The
+    /// summary names the space needed and the space free, in gigabytes.
+    /// Older apps show this as unclassified.
+    case macOSSpaceRequired = 10
 
     private static let macOSUpdatePrefix = "This Mac needs macOS "
     private static let macOSUpdateSuffix = " or later."

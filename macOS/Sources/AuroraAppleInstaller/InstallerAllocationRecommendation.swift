@@ -46,6 +46,8 @@ public struct InstallerAllocationRecommendation:
   static let maximumResizeDriftMarginBytes: UInt64 = 8_589_934_592
 
   public let candidate: ValidatedEngineCandidate
+  /// The candidate's own smallest install, before any recommended size.
+  let floorBytes: UInt64
   public let minimumBytes: UInt64
   public let maximumBytes: UInt64
   public let requestedLengthBytes: UInt64
@@ -58,6 +60,7 @@ public struct InstallerAllocationRecommendation:
       candidate.lengthBytes % PinnedAsahiPlanRequest.allocationUnitBytes == 0
     else { throw InstallerAllocationRecommendationError.noEligibleCandidate }
     self.candidate = candidate
+    floorBytes = candidate.lengthBytes
     minimumBytes = candidate.lengthBytes
     maximumBytes = candidate.lengthBytes
     requestedLengthBytes = candidate.lengthBytes
@@ -161,12 +164,39 @@ public struct InstallerAllocationRecommendation:
     }
     let alignedTarget = targetBytes - (targetBytes % unit)
     candidate = selected.candidate
+    floorBytes = Self.alignUp(selected.candidate.minimumInstallBytes, unit: unit)
     minimumBytes = selected.minimum
     maximumBytes = selected.maximum
     requestedLengthBytes = min(
       selected.maximum,
       max(selected.minimum, alignedTarget)
     )
+  }
+
+  init(
+    candidate: ValidatedEngineCandidate, floorBytes: UInt64, minimumBytes: UInt64,
+    maximumBytes: UInt64, requestedLengthBytes: UInt64
+  ) {
+    self.candidate = candidate
+    self.floorBytes = floorBytes
+    self.minimumBytes = minimumBytes
+    self.maximumBytes = maximumBytes
+    self.requestedLengthBytes = requestedLengthBytes
+  }
+
+  /// This recommendation with its largest size lowered to `limit`, rounded
+  /// down to the allocation unit. A recommended minimum gives way to the
+  /// candidate's own; nil when even that doesn't fit.
+  public func limited(toMaximumBytes limit: UInt64) -> Self? {
+    let unit = PinnedAsahiPlanRequest.allocationUnitBytes
+    let aligned = limit - limit % unit
+    guard aligned < maximumBytes else { return self }
+    guard aligned >= floorBytes else { return nil }
+    let minimum = aligned >= minimumBytes ? minimumBytes : floorBytes
+    return Self(
+      candidate: candidate, floorBytes: floorBytes, minimumBytes: minimum,
+      maximumBytes: aligned,
+      requestedLengthBytes: max(minimum, min(requestedLengthBytes, aligned)))
   }
 
   /// The free or resize candidate that comes closest to the install minimum,

@@ -267,35 +267,55 @@
         let preparedPayloadImages: any NativePayloadImagesExecuting
         let preparedESPFiles: any NativeESPFilesExecuting
         let preparedFinishing: any NativeInstallationFinishing
+        // Each preflight names its own stage, so a refusal reports the check
+        // that made it and the cause, not one sentence for all six.
+        var stage = NativePreflightStage.apfs
         do {
           // Every stage must preflight before the first disk change. A fresh
           // installation that any stage cannot take stops here.
+          guard package.installationIntent == .fresh else {
+            throw NativePreflightRefusal.notFreshInstallation
+          }
           guard
             let apfs = try await InstallerPerformance.measuring(
-              "apfs_preflight", { try await apfsPreparer.preflight(package) }),
+              "apfs_preflight", { try await apfsPreparer.preflight(package) })
+          else { throw NativePreflightRefusal.stageUnavailable }
+          stage = .stubFiles
+          guard
             let stubFiles = try await InstallerPerformance.measuring(
               "stub_files_preflight", { try await stubFilesPreparer.preflight(package) })
-          else { throw NativeHandoffValidationError.invalidTarget }
+          else { throw NativePreflightRefusal.stageUnavailable }
+          stage = .osPartitions
           let osPartitions = try InstallerPerformance.measure("os_partitions_preflight") {
             try osPartitionsPreparer.preflight(package)
           }
+          stage = .payloadImages
           let payloadImages = try await InstallerPerformance.measuring(
             "payload_images_preflight"
           ) {
             try await payloadImagesPreparer.preflight(package)
           }
+          stage = .espFiles
           guard
             let espFiles = try await InstallerPerformance.measuring(
-              "esp_files_preflight", { try await espFilesPreparer.preflight(package) }),
+              "esp_files_preflight", { try await espFilesPreparer.preflight(package) })
+          else { throw NativePreflightRefusal.stageUnavailable }
+          stage = .finishing
+          guard
             let finishing = try InstallerPerformance.measure(
               "finishing_preflight",
               {
                 try installationFinisher.preflight(
                   package: package, stub: stubFiles.firmwarePlan,
                   peripherals: preparedPeripherals)
-              }),
-            package.installationIntent == .fresh
-          else { throw NativeHandoffValidationError.invalidTarget }
+              })
+          else { throw NativePreflightRefusal.stageUnavailable }
+          // The stub stage caches and decodes restore files on macOS. A plan
+          // macOS lacks the free space for stops here, with the disk as is.
+          stage = .stubFiles
+          try InstallerPerformance.measure("staging_space") {
+            try stubFiles.requireStagingSpace(journal: journal)
+          }
           preparedAPFS = apfs
           preparedStubFiles = stubFiles
           preparedOSPartitions = osPartitions
@@ -303,10 +323,11 @@
           preparedESPFiles = espFiles
           preparedFinishing = finishing
         } catch {
+          let (reason, summary) = Self.preflightFailure(stage: stage, error: error)
           throw preparationFailure(
-            error, reason: .planIntegrity, operation: operation,
+            error, reason: reason, operation: operation,
             journal: journal, package: package, password: authorization.password,
-            summary: "Native disk preparation could not be verified.")
+            summary: summary)
         }
         do {
           try InstallerPerformance.measure("apfs_preparation") {
@@ -331,27 +352,15 @@
           }
         } catch {
           let network = TransientTransport.isTransient(error)
+          let (reason, summary) = Self.executionFailure(error)
           throw PinnedAsahiEngineExecutionError.engineFailed(
             EngineFailureReport(
               notice: EngineFailureNotice(
-                reason: network
-                  ? .networkUnavailable
-                  : error is NativeRawImageError
-                    ? .unclassified
-                    : error is RestoreFailure
-                      ? .recoveryPreparation
-                      : error as? NativeInstallAdmissionError == .invalidJournal
-                        ? .planIntegrity : .diskLayoutChanged,
+                reason: network ? .networkUnavailable : reason,
                 exitStatus: 1,
                 diskUnchanged: journalProvesNoMutation(
                   journal, identity: RecoveryRetryIdentity(package: package)),
-                summary: network
-                  ? Self.networkSummary
-                  : error is NativeRawImageError
-                    ? "The Linux image could not be written."
-                    : error is RestoreFailure
-                      ? "The Recovery archive could not be prepared."
-                      : "The current disk could not be admitted for a fresh installation."),
+                summary: network ? Self.networkSummary : summary),
               redactedStandardErrorTail: EngineStandardErrorRedactor.redact(
                 Data(String(describing: error).utf8), truncated: false,
                 secrets: [authorization.password])))
@@ -363,10 +372,12 @@
               sourceBootstrap: sourceBootstrap, recovery: recovery)
           }
         } catch {
+          let space = error as? MacOSFreeSpaceShortfall
           throw preparationFailure(
-            error, reason: .recoveryPreparation, operation: operation,
-            journal: journal, package: package, password: authorization.password,
-            summary: "Native firmware and Recovery publication did not complete.")
+            error, reason: space == nil ? .recoveryPreparation : .macOSSpaceRequired,
+            operation: operation, journal: journal, package: package,
+            password: authorization.password,
+            summary: space?.summary ?? "Native firmware and Recovery publication did not complete.")
         }
         return try await finalizeNativeHandoff(
           package, journal: journal, authorization: authorization,
@@ -405,7 +416,155 @@
       }
       return error is NativeFirmwareSelectionError
         ? (.firmwarePreparation, "Compatible boot firmware could not be selected.")
-        : (.planIntegrity, "The installation images could not be verified.")
+        : (.planIntegrity, "The installation images could not be verified (\(errorName(error))).")
+    }
+
+    /// How a refused disk-preparation preflight is reported: the reason that
+    /// matches its cause, and a summary naming the stage and the cause.
+    static func preflightFailure(stage: NativePreflightStage, error: any Error)
+      -> (EngineFailureReason, String)
+    {
+      if TransientTransport.isTransient(error) { return (.networkUnavailable, networkSummary) }
+      if let shortfall = error as? MacOSFreeSpaceShortfall {
+        return (.macOSSpaceRequired, shortfall.summary)
+      }
+      if let update = macOSUpdateSummary(for: error) { return (.macOSUpdateRequired, update) }
+      let name = errorName(error)
+      switch error {
+      case NativeFirmwareSelectionError.updateArchiveOnly(let version):
+        return (.deviceUnsupported, updateArchiveSummary(version: version))
+      case NativeFirmwareSelectionError.unsupportedDevice:
+        return (.deviceUnsupported, "The installer engine doesn't support this Mac model.")
+      case is NativeFirmwareSelectionError:
+        return (.firmwarePreparation, "Compatible boot firmware could not be selected (\(name)).")
+      case NativePreflightRefusal.notFreshInstallation:
+        return (
+          .unclassified,
+          "This installer installs only into free space or a resized container, not over an "
+            + "existing installation."
+        )
+      case NativePreflightRefusal.stageUnavailable:
+        return (.planIntegrity, "This installer has no \(stage.step) step for this plan.")
+      case NativeStubFileError.cacheFull, NativeStubFileError.freeSpaceUnavailable:
+        return (.unclassified, stagingSummary(error))
+      case is RestoreFailure:
+        return (.firmwarePreparation, "The macOS restore image could not be read (\(name)).")
+      case is CancellationError:
+        return (.unclassified, "The installation was canceled during the \(stage.step) check.")
+      case is NativeSourceOwnerRefusal, NativeHandoffValidationError.invalidOwner:
+        return (.recoveryPreparation, sourceOwnerSummary(for: error))
+      default: break
+      }
+      if isLayoutChange(error) {
+        return (.diskLayoutChanged, "The disk changed after you approved the plan (\(name)).")
+      }
+      if isOutOfSpace(error) {
+        return (
+          .unclassified, "A volume ran out of space during the \(stage.step) check (\(name))."
+        )
+      }
+      if isIntegrity(error) {
+        return (.planIntegrity, "The \(stage.step) check refused the approved plan (\(name)).")
+      }
+      return (.unclassified, "The \(stage.step) check stopped (\(name)).")
+    }
+
+    /// How a stage that may have changed the disk is reported.
+    static func executionFailure(_ error: any Error) -> (EngineFailureReason, String) {
+      if let shortfall = error as? MacOSFreeSpaceShortfall {
+        return (.macOSSpaceRequired, shortfall.summary)
+      }
+      let name = errorName(error)
+      switch error {
+      case is NativeRawImageError: return (.unclassified, "The Linux image could not be written.")
+      case is RestoreFailure:
+        return (.recoveryPreparation, "The Recovery archive could not be prepared.")
+      case NativeInstallAdmissionError.invalidJournal:
+        return (.planIntegrity, "The installation record could not be verified.")
+      case is NativeSourceOwnerRefusal, NativeHandoffValidationError.invalidOwner:
+        return (.recoveryPreparation, sourceOwnerSummary(for: error))
+      case NativeStubFileError.cacheFull, NativeStubFileError.freeSpaceUnavailable:
+        return (.unclassified, stagingSummary(error))
+      case is NativeStubFileError:
+        return (.unclassified, "Aurora stub files could not be copied (\(name)).")
+      default: break
+      }
+      if isLayoutChange(error) {
+        return (
+          .diskLayoutChanged, "The current disk could not be admitted for a fresh installation."
+        )
+      }
+      if isOutOfSpace(error) {
+        return (.unclassified, "A volume ran out of space while preparing the disk (\(name)).")
+      }
+      return (.unclassified, "Disk preparation stopped (\(name)).")
+    }
+
+    private static func stagingSummary(_ error: any Error) -> String {
+      error as? NativeStubFileError == .cacheFull
+        ? "The restore image cache on macOS is full."
+        : "macOS did not report the free space of the installer's volume."
+    }
+
+    static func updateArchiveSummary(version: String) -> String {
+      "This Mac needs boot firmware from macOS \(version), which Apple ships only as an update "
+        + "archive. This installer can't prepare that archive yet."
+    }
+
+    /// The disk or its partitions no longer match what the plan approved.
+    private static func isLayoutChange(_ error: any Error) -> Bool {
+      switch error {
+      case NativeAPFSError.changedLayout, NativeAPFSError.changedTarget,
+        NativeOSPartitionError.changedLayout, NativeHandoffValidationError.changedLayout,
+        NativeInstallAdmissionError.existingInstallation, NativeInstallAdmissionError.deviceChanged,
+        NativeInspectionError.invalidLayout:
+        true
+      default: false
+      }
+    }
+
+    /// The approved plan, its files or its evidence failed a check.
+    private static func isIntegrity(_ error: any Error) -> Bool {
+      switch error {
+      case is EngineHandoffImportError, is NativePayloadPreflightError,
+        NativeAPFSError.invalidPlan, NativeAPFSError.invalidLabel,
+        NativeStubFileError.invalidPlan, NativeStubFileError.changedFile,
+        NativeStubFileError.invalidImage, NativeOSPartitionError.invalidMetadata,
+        NativeHandoffValidationError.invalidEvidence, NativeHandoffValidationError.changedContent,
+        NativeHandoffValidationError.invalidTarget, NativeHandoffValidationError.unsafePath,
+        NativeInspectionError.invalidMetadata, NativeInspectionError.metadataChanged,
+        NativeInspectionError.invalidPolicy, NativeRawImageError.invalidImage,
+        NativeInstallAdmissionError.invalidJournal,
+        PinnedAsahiEngineExecutionError.unsafeTranscript:
+        true
+      default: false
+      }
+    }
+
+    private static func isOutOfSpace(_ error: any Error) -> Bool {
+      let error = error as NSError
+      return (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOSPC))
+        || (error.domain == NSCocoaErrorDomain && error.code == NSFileWriteOutOfSpaceError)
+    }
+
+    /// The error's type and, for an enum, its case. Associated values are
+    /// left out: they can carry paths, which stay in the root-only
+    /// diagnostics. Foundation errors keep their domain and code. A type that
+    /// describes itself is named only, since its description is free text.
+    static func errorName(_ error: any Error) -> String {
+      let kind = String(describing: type(of: error))
+      if let url = error as? URLError { return "URLError \(url.code.rawValue)" }
+      guard Mirror(reflecting: error).displayStyle == .enum, !(error is CustomStringConvertible)
+      else {
+        if type(of: error) is NSError.Type {
+          let error = error as NSError
+          return "\(kind) \(error.domain) \(error.code)"
+        }
+        return kind
+      }
+      let name = String(describing: error).prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" }
+      )
+      return name.isEmpty || name.count > 60 ? kind : "\(kind).\(name)"
     }
 
     /// The notice summary naming the macOS version this Mac must update to,
@@ -817,6 +976,35 @@
         throw PinnedAsahiEngineExecutionError.unsafeTranscript
       }
       return data
+    }
+
+    /// The six preflights, in the order they run.
+    enum NativePreflightStage: String, Sendable {
+      case apfs
+      case stubFiles = "stub_files"
+      case osPartitions = "os_partitions"
+      case payloadImages = "payload_images"
+      case espFiles = "esp_files"
+      case finishing
+
+      /// The step's name in a shown summary.
+      var step: String {
+        switch self {
+        case .apfs: "disk preparation"
+        case .stubFiles: "macOS boot files"
+        case .osPartitions: "Linux partition"
+        case .payloadImages: "Linux image"
+        case .espFiles: "EFI partition"
+        case .finishing: "firmware and Recovery"
+        }
+      }
+    }
+
+    enum NativePreflightRefusal: Error, Equatable {
+      /// Only a fresh installation reaches the native disk stages.
+      case notFreshInstallation
+      /// The stage has nothing it can run for this plan.
+      case stageUnavailable
     }
 
     private struct RecoveryRetryIdentity {

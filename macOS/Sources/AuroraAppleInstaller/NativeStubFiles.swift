@@ -6,12 +6,16 @@
 
   protocol NativeStubFilesExecuting: Sendable {
     var firmwarePlan: NativeStubFilePlan? { get }
+    /// Refuses, before the first disk change, a stage macOS lacks the free
+    /// space for. Throws `MacOSFreeSpaceShortfall` with the stage's needs.
+    func requireStagingSpace(journal: URL) throws
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization,
       sourceBootstrap: NativeSourceBootstrap) async throws
   }
   extension NativeStubFilesExecuting {
     var firmwarePlan: NativeStubFilePlan? { nil }
+    func requireStagingSpace(journal: URL) throws {}
   }
 
   protocol NativeStubFilesPreparing: Sendable {
@@ -93,6 +97,11 @@
       self.facts = facts
     }
 
+    /// A full restore image. Update archives are OTA patch streams.
+    static func isRestoreImage(_ url: URL) -> Bool {
+      url.path.lowercased().hasSuffix(".ipsw")
+    }
+
     func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
       any NativeStubFilesExecuting
     )? {
@@ -108,9 +117,11 @@
         deviceIdentifier: package.deviceIdentifier,
         facts: facts, metadata: NativeInstallationMetadata(data: metadata),
         policy: NativeInspectionPolicy.sealed())
-      // OTA patch streams keep their existing path until their native decoder
-      // is qualified. Never interpret an update archive as a restore IPSW.
-      guard firmware.sourceURL.path.lowercased().hasSuffix(".ipsw") else { return nil }
+      // OTA patch streams have no native decoder yet. Never interpret an
+      // update archive as a restore IPSW; name the firmware instead.
+      guard Self.isRestoreImage(firmware.sourceURL) else {
+        throw NativeFirmwareSelectionError.updateArchiveOnly(version: firmware.version)
+      }
       let source = try await IPSWHTTPRangeReader.discover(url: firmware.sourceURL)
       let identity = try NativeStubRestoreCache.identity(
         url: firmware.sourceURL, bytes: source.sizeBytes)
@@ -121,14 +132,36 @@
         owner: owner)
       let reader = try NativeStubRestoreCache(
         source: source, root: cache, owner: owner, identity: identity)
-      let archive = try await IPSWArchive.open(reader)
-      let plan = try await NativeStubFilePlan(
-        archive: archive, source: firmware,
-        deviceClass: String(package.deviceIdentifier.dropFirst(6)) + "ap",
-        boardID: platform.boardID(), chipID: facts.hardware.chipID)
+      let boardID = try platform.boardID()
+      let plan: NativeStubFilePlan
+      do {
+        let archive = try await IPSWArchive.open(reader)
+        plan = try await NativeStubFilePlan(
+          archive: archive, source: firmware,
+          deviceClass: String(package.deviceIdentifier.dropFirst(6)) + "ap",
+          boardID: boardID, chipID: facts.hardware.chipID)
+      } catch let shortfall as MacOSFreeSpaceShortfall {
+        // The cache refused a planning read. Name what the whole stage needs,
+        // worked out from the image without caching, not that read's floor.
+        guard
+          let whole = try? await NativeStubStagingRequirement.estimate(
+            source: source, firmware: firmware, deviceIdentifier: package.deviceIdentifier,
+            boardID: boardID, chipID: facts.hardware.chipID)
+        else { throw shortfall }
+        throw MacOSFreeSpaceShortfall(
+          requiredBytes: max(whole.requiredFreeBytes, shortfall.requiredBytes),
+          availableBytes: shortfall.availableBytes)
+      }
+      // What earlier attempts already cached for this image is on disk.
+      let cached = try await reader.cachedBytes(
+        overlapping: NativeStubStagingRequirement.spans(plan.readMembers))
+      let staging = NativeStubStagingRequirement(
+        plan: plan, decoded: try await NativeStubStagingRequirement.decodedMembers(of: plan),
+        includingPlanningReads: false
+      ).remaining(cachedBytes: cached)
       return NativeStubFilesExecution(
         package: package, approved: approved,
-        plan: plan, owner: owner, platform: platform, cache: reader)
+        plan: plan, owner: owner, platform: platform, cache: reader, staging: staging)
     }
   }
 
@@ -145,9 +178,89 @@
     let owner: uid_t
     let platform: NativeStubFilePlatform
     let cache: NativeStubRestoreCache?
+    /// What the stage still needs free on macOS, from this plan's members.
+    var staging: NativeStubStagingRequirement? = nil
+    var freeBytes: @Sendable (URL) -> UInt64? = { NativeStubRestoreCache.freeBytes($0) }
     var firmwarePlan: NativeStubFilePlan? { plan }
 
+    /// The free bytes the stage needs now, or nil once it completed.
+    static func stagingFreeBytes(_ stage: UInt64, checkpoints: [String], pendingShrink: UInt64)
+      -> UInt64?
+    {
+      if checkpoints.contains("stub-and-esp-installed") { return nil }
+      let (sum, overflow) = stage.addingReportingOverflow(pendingShrink)
+      return overflow ? .max : sum
+    }
+
+    /// The part of a macOS resize not yet done, read from the partition map:
+    /// the macOS container still covering the new partition's extent.
+    static func pendingShrinkBytes(
+      kind: String, source: RemovalPartition?, macOSStoreUUID: String, offsetBytes: UInt64,
+      lengthBytes: UInt64
+    ) -> UInt64 {
+      guard kind == "resize", let source, source.uuid == macOSStoreUUID,
+        source.end > offsetBytes
+      else { return 0 }
+      return min(lengthBytes, source.end - offsetBytes)
+    }
+
+    func requireStagingSpace(journal: URL) throws {
+      guard let staging else { return }
+      let file = try NativeInstallJournalFile(url: journal, package: package, owner: owner)
+      let saved = try file.readJournal()
+      let checkpoints =
+        saved.isEmpty
+        ? []
+        : try AppleInstallerTrustCore().validateEngineTranscript(saved).checkpoints.map(
+          \.identifier)
+      var pending: UInt64 = 0
+      if approved.candidateKind == "resize" {
+        let snapshot = try platform.environment.snapshot()
+        pending = Self.pendingShrinkBytes(
+          kind: approved.candidateKind,
+          source: snapshot.partitions.first { $0.identifier == approved.sourceIdentifier },
+          macOSStoreUUID: snapshot.macOSStoreUUID, offsetBytes: approved.offsetBytes,
+          lengthBytes: approved.lengthBytes)
+      }
+      guard
+        let required = Self.stagingFreeBytes(
+          staging.requiredFreeBytes, checkpoints: checkpoints, pendingShrink: pending)
+      else { return }
+      guard let free = freeBytes(package.packageURL.deletingLastPathComponent()) else {
+        throw NativeStubFileError.freeSpaceUnavailable
+      }
+      guard free >= required else {
+        throw MacOSFreeSpaceShortfall(requiredBytes: required, availableBytes: free)
+      }
+    }
+
     func prepare(
+      journal: URL, authorization: MachineOwnerAuthorization,
+      sourceBootstrap: NativeSourceBootstrap
+    ) async throws {
+      do {
+        try await populate(
+          journal: journal, authorization: authorization, sourceBootstrap: sourceBootstrap)
+      } catch let shortfall as MacOSFreeSpaceShortfall {
+        throw try await stillNeeded(after: shortfall)
+      }
+    }
+
+    /// A floor reached mid-stage names one read's need; report what fetching
+    /// the rest of the stage needs, when that is more.
+    private func stillNeeded(after shortfall: MacOSFreeSpaceShortfall) async throws
+      -> MacOSFreeSpaceShortfall
+    {
+      let spans = NativeStubStagingRequirement.spans(plan.readMembers)
+      let cached = try await cache?.cachedBytes(overlapping: spans) ?? 0
+      let whole = NativeStubStagingRequirement(
+        plan: plan, decoded: [], includingPlanningReads: false)
+      let rest = whole.remaining(cachedBytes: cached).fetchingFreeBytes
+      return MacOSFreeSpaceShortfall(
+        requiredBytes: max(rest, shortfall.requiredBytes), availableBytes: shortfall.availableBytes)
+    }
+
+    private func populate(
       journal: URL, authorization: MachineOwnerAuthorization,
       sourceBootstrap: NativeSourceBootstrap
     ) async throws {
@@ -263,9 +376,7 @@
       try stores["Data"]!.tree.createDirectory("private/var/db/dslocal")
       try stores["System"]!.tree.createDirectory("Finish Installation.app/Contents/Resources")
       for operation in plan.copies {
-        let topLevelRestore =
-          operation.role == "Preboot" && operation.path.hasPrefix(plan.restorePath + "/")
-          && !String(operation.path.dropFirst(plan.restorePath.count + 1)).contains("/")
+        let topLevelRestore = plan.isTopLevelRestore(operation)
         if let target = plan.linkTargets[operation.member] {
           try await copy(operation.role, operation.path, linkTarget: target) { store, path in
             try store.tree.relativeLink(path, target: target)
@@ -382,11 +493,14 @@
         guard let executable = package.restoreImageURL else {
           throw NativeStubFileError.invalidImage
         }
-        var space = statfs()
-        guard statfs(directory.path, &space) == 0,
-          UInt64(space.f_bavail) * UInt64(space.f_bsize) >= (10 << 30) + UInt64(member.sizeBytes)
-            + (8 << 30)
-        else { throw NativeStubFileError.insufficientSpace }
+        guard let free = freeBytes(directory) else {
+          throw NativeStubFileError.freeSpaceUnavailable
+        }
+        let needed = NativeStubStagingRequirement.decodeFreeBytes(
+          memberBytes: UInt64(member.sizeBytes))
+        guard free >= needed else {
+          throw MacOSFreeSpaceShortfall(requiredBytes: needed, availableBytes: free)
+        }
         let lease = try file.leaseForChild()
         defer { try? lease.close() }
         try await platform.decode(input, identity.sha256, output, executable, lease)

@@ -77,17 +77,24 @@ final class VerifiedArtifactStagerTests: XCTestCase {
 
   func testLocalPayloadBuildPolicy() {
     let requested = temporaryDirectory()
-    #if DEBUG && AURORA_LOCAL_PAYLOAD_TEST_BUILD
+    // Derive the expectation independently of the feature's compiler flag.
+    // An opted-in CI run must fail if the manifest ever drops that flag.
+    #if DEBUG
+      let expected = ProcessInfo.processInfo.environment["AURORA_LOCAL_PAYLOAD_TEST_BUILD"] == "1"
+    #else
+      let expected = false
+    #endif
+    if expected {
       XCTAssertEqual(InstallerLocalPayloadPolicy.directory(requested: requested), requested)
       XCTAssertEqual(
         InstallerLocalPayloadPolicy.directory()?.path,
         "/Users/Shared/AuroraInstallerTestPayloads")
-    #else
-      // Also runs with the build-time opt-in set during release CI: release
-      // configuration cannot enable the source, even through an injected path.
+    } else {
+      // Release CI sets the build-time opt-in too: release configuration must
+      // still reject both the default source and an injected populated cache.
       XCTAssertNil(InstallerLocalPayloadPolicy.directory(requested: requested))
       XCTAssertNil(InstallerLocalPayloadPolicy.directory())
-    #endif
+    }
   }
 
   func testLocalPayloadSourceUsesSignedPinsOrIsIgnoredInRelease() async throws {

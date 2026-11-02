@@ -58,6 +58,11 @@
     }
 
     static func live(name: String, storeIdentifier: String) throws -> Data {
+      guard name.hasPrefix("BWC2-") else { throw NativePeripheralInputError.localInput }
+      return try liveRecord(name: name, storeIdentifier: storeIdentifier, maximum: 32 << 20)
+    }
+
+    static func liveRecord(name: String, storeIdentifier: String, maximum: Int) throws -> Data {
       func information() throws -> [String: Any] {
         let info = try NativeHandoffEnvironment.live.disk(
           NativeSensorInputCollector.hardwareVolume.path)
@@ -71,7 +76,7 @@
       let tree = try NativeHandoffFileTree(
         NativeSensorInputCollector.hardwareVolume, protected: true,
         volumeRoot: true, volumeDevice: device)
-      let bytes = try read(tree, name: name, volumeDevice: device)
+      let bytes = try readRecord(tree, name: name, maximum: maximum, volumeDevice: device)
       let after = try information()
       guard after["DeviceIdentifier"] as? String == device,
         after["VolumeUUID"] as? String == uuid

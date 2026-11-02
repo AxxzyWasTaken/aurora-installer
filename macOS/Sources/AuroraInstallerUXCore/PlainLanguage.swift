@@ -27,6 +27,19 @@
     public static let existingInstallHeadline = "Linux is already installed"
     public static let closeInstaller = "Close"
 
+    // MARK: Partitions on this Mac
+
+    public static let partitionsTitle = "Partitions on this Mac"
+    public static let partitionsSubtitle =
+      "Erase a partition to free up space, or shrink a macOS partition."
+    public static let partitionsAddHeading = "Add a new installation"
+    public static let partitionsNoRoomTitle = "No room for another installation"
+    public static let partitionsNotByAurora = "Not installed by Aurora"
+    /// The removal service's scan found another installation than the row
+    /// the person chose to erase.
+    public static let removalTargetMismatch =
+      "The removal service found a different installation than the one you chose, so nothing can be erased here. Nothing was changed."
+
     // MARK: Screen B — Plan
 
     public static func allocationNotice(requestedBytes: UInt64, actualBytes: UInt64) -> String? {
@@ -46,6 +59,17 @@
       resizesMacOS
         ? "I have a current backup and approve the disk resize above."
         : "I have a current backup and approve the disk layout above."
+    }
+    /// Shown on the plan for an M1 Pro, M1 Max or M1 Ultra Mac, whose iBoot
+    /// may refuse the current Stage 1. The owner can still install.
+    public static let stage1CautionHeadline = "Aurora may not start on this Mac yet"
+    public static let stage1CautionRecovery =
+      "If the Mac shows “macOS needs to be reinstalled” or doesn’t start Aurora: shut it down, press and hold the power button until startup options appear, select Macintosh HD and choose Always Use. macOS starts as before. Then open this installer in macOS and use Erase Linux to remove the Aurora installation. macOS and its data are not changed by any of this."
+    public static func planAcknowledgement(resizesMacOS: Bool, stage1Caution: Bool) -> String {
+      stage1Caution
+        ? String(planAcknowledgement(resizesMacOS: resizesMacOS).dropLast())
+          + ", and I understand Aurora may not start on this Mac."
+        : planAcknowledgement(resizesMacOS: resizesMacOS)
     }
     public static let planPreservedAcknowledgement =
       "I have a current backup and approve erasing Linux while keeping Stage 1 and the partition sizes."
@@ -878,6 +902,14 @@
               "Choose the installed Aurora distribution and check this Mac again. The startup setup and disk were not changed.",
             technicalDetail: technical,
             remedy: "Select the installed distribution, then check this Mac again."
+          )
+        case .targetUnavailable:
+          return FailureDisplay(
+            headline: "The space you chose changed",
+            plainDetail:
+              "The disk no longer matches what this Mac’s check found. Nothing was changed.",
+            technicalDetail: technical,
+            remedy: "Check this Mac again, then choose where to install."
           )
         default:
           return FailureDisplay(

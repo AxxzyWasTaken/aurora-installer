@@ -66,7 +66,8 @@
         }
       }
       guard records.count == 1 else { throw NativePeripheralInputError.localInput }
-      let sensor = try NativeSensorInputCollector.live.collect(storeIdentifier: storeIdentifier)
+      let sensor = try NativeSensorInputCollector.live(storeIdentifier: storeIdentifier).collect(
+        storeIdentifier: storeIdentifier)
       try verifyFactoryStore()
       return Self(factory: factory, lsci: records[0], address: address, sensor: sensor)
     }
@@ -269,7 +270,7 @@
       outputs["fallback/lsci.bin"] = local.lsci
       if let sensor = local.sensor {
         let calibration = sensor.calibration
-        guard try SignedSensorInputs.calibration(in: calibration) == calibration else {
+        guard try SignedSensorInputs.preparedCalibration(calibration) == calibration else {
           throw NativePeripheralInputError.localInput
         }
         outputs["apple/mesacal-j700.bin"] = calibration

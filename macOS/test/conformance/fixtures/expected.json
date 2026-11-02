@@ -1,0 +1,190 @@
+{
+ "cells": {
+  "j575d-synthetic/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j575d-synthetic/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j575d-synthetic/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j575d-synthetic/side-by-side/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j575d-synthetic/side-by-side/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j575d-synthetic/side-by-side/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s-shrunk-synthetic/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s-shrunk-synthetic/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s-shrunk-synthetic/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s-shrunk-synthetic/side-by-side/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s-shrunk-synthetic/side-by-side/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s-shrunk-synthetic/side-by-side/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "j616s/side-by-side/arch": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s/side-by-side/fedora": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "j616s/side-by-side/nixos": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "m1pro/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m1pro/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m1pro/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m1pro/side-by-side/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m1pro/side-by-side/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m1pro/side-by-side/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/side-by-side/arch": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "m2-shrunk-synthetic/side-by-side/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2-shrunk-synthetic/side-by-side/nixos": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "m2/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "m2/side-by-side/arch": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "m2/side-by-side/fedora": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "m2/side-by-side/nixos": {
+   "failing": [
+    "plan"
+   ],
+   "verdict": "FAIL"
+  },
+  "neo/fresh/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "neo/fresh/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "neo/fresh/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "neo/side-by-side/arch": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "neo/side-by-side/fedora": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  },
+  "neo/side-by-side/nixos": {
+   "failing": [],
+   "verdict": "UNTESTED-ON-HW"
+  }
+ },
+ "note": "At-pin verdicts recorded 2026-11-01 against the live Alpha 14 catalogs (37 Macs, J616s and J575d enabled, every board qualified for Stage 1) and the distro branches that pin kernel f41ac3de (fleet14c), aura a9cad94e and U-Boot d30213ea. The remaining FAIL cells are disk space for side by side (M2: Chloe's macOS; J616s without shrinking its Linux root). CI fails when a cell does worse; when one improves, update it here with the run that shows it.",
+ "schema": 1
+}

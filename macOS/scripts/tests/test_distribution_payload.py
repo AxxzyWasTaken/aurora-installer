@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 import plistlib
 import tempfile
@@ -70,8 +71,7 @@ class DistributionPayloadTests(unittest.TestCase):
         supported, _ = supported_models.load()
         boards = {identifier.removeprefix('apple,') + 'ap' for identifier in supported}
         self.assertIn('j700ap', boards)
-        refused = {identifier.removeprefix('apple,') + 'ap' for identifier in supported_models.stage1_unqualified()}
-        self.assertEqual(set(metadata['aurora_stage1']['qualified_machines']), boards - refused)
+        self.assertEqual(set(metadata['aurora_stage1']['qualified_machines']), boards)
         self.assertEqual(metadata['aurora_stage2']['board_members']['j700ap'],
                          'esp/m1n1/boot-j700.bin')
         for key in ('excluded_device_classes', 'allowed_device_classes', 'supported_fw',
@@ -85,13 +85,19 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertFalse(receipt['private_neo_inputs'])
         self.assertFalse(receipt['native_neo_reset_qa'])
 
-    def test_boards_whose_iboot_refuses_the_common_stage_one_are_not_qualified(self):
+    def test_every_supported_board_is_qualified_and_only_untried_boards_are_cautioned(self):
+        # Ryan 2026-10-30: M1 to M3 and the A18 Pro are supported. A board
+        # whose Stage 1 is untried is warned about, not blocked. The M1 Pro,
+        # Max and Ultra left the list once aura's Stage 1 shrank to 1.6 MB.
         output = self.root / 'output'
         payload.assemble(self.bundle, self.app, output, release_id='fixture')
         qualified = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0][
             'aurora_stage1']['qualified_machines']
-        self.assertNotIn('j316sap', qualified)
-        self.assertNotIn('j314sap', qualified)
+        caution = supported_models.stage1_caution()
+        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s'})
+        for identifier in list(caution) + ['apple,j314s', 'apple,j316s', 'apple,j314c', 'apple,j316c',
+                                           'apple,j375c', 'apple,j375d']:
+            self.assertIn(identifier.removeprefix('apple,') + 'ap', qualified)
         self.assertIn('j413ap', qualified)
         self.assertIn('j700ap', qualified)
         self.assertIn('j614sap', qualified)
@@ -103,6 +109,12 @@ class DistributionPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'J614s requires a current board-specific'):
             payload.assemble(self.bundle, self.app, output, release_id='fixture')
         self.assertFalse(output.exists())
+
+    def test_the_installer_warns_about_exactly_the_caution_boards(self):
+        source = (SCRIPT.parents[1] / 'Sources/AuroraInstallerUXCore/Stage1Caution.swift').read_text()
+        table = source[source.index('static let reasons'):]
+        swift = set(re.findall(r'"(apple,j[0-9]+[a-z]*)":', table))
+        self.assertEqual(swift, set(supported_models.stage1_caution()))
 
     def test_public_payload_without_the_neo_stage_two_is_refused(self):
         self.remove_neo_stage_two()
@@ -137,18 +149,23 @@ class DistributionPayloadTests(unittest.TestCase):
                     icon = archive.read(metadata['icon'])
                 self.assertEqual(icon[:4], b'icns')
                 self.assertEqual(int.from_bytes(icon[4:8], 'big'), len(icon))
-                self.assertEqual(hashlib.sha256(icon).hexdigest(), provenance[distribution]['sha256'])
+                self.assertIn(distribution, provenance['aurora']['used_by'])
+                self.assertEqual(hashlib.sha256(icon).hexdigest(), provenance['aurora']['sha256'])
                 self.assertEqual(icon, payload.DISTRIBUTION_ICONS[distribution].read_bytes())
                 if distribution in observed:
                     self.assertEqual(icon, observed[distribution])
                 observed[distribution] = icon
-        self.assertEqual(len(set(observed.values())), 3)
+        # Every system's startup volume shows the Aurora mark.
+        self.assertEqual(set(provenance), {'aurora'})
+        self.assertEqual(len(set(observed.values())), 1)
 
     def test_resume_rejects_an_icon_from_another_distribution(self):
         from unittest.mock import patch
         output = self.root / 'output'
         payload.assemble(self.bundle, self.app, output, release_id="fixture")
-        with patch.dict(payload.DISTRIBUTION_ICONS, fedora=payload.DISTRIBUTION_ICONS['nixos']):
+        other = self.root / 'other.icns'
+        other.write_bytes(b'icns' + (16).to_bytes(4, 'big') + b'not-aurora')
+        with patch.dict(payload.DISTRIBUTION_ICONS, fedora=other):
             with self.assertRaisesRegex(ValueError, 'content differs: aurora-volume.icns'):
                 payload.assemble(self.bundle, self.app, output, reuse_payload=True, release_id="fixture")
 

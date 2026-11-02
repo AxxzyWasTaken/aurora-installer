@@ -372,63 +372,175 @@ final class InstallerViewStateTests: XCTestCase {
     XCTAssertFalse(model.environmentVerified)
   }
 
-  func testViewMenuShowsAndHidesDetails() throws {
+  func testWindowMenuOpensTheInstallerLogBesideSheets() throws {
+    // Keep the log window invisible, as every other test window is.
+    InstallerLogWindowController.willShow = { window in
+      window.alphaValue = 0
+      window.ignoresMouseEvents = true
+    }
+    defer { InstallerLogWindowController.willShow = nil }
     let model = InstallerModel()
     let (window, controller) = show(model)
+    defer { controller.logWindow?.close() }
     XCTAssertTrue(
       views(NSButton.self, in: controller.view).allSatisfy {
-        !$0.title.localizedCaseInsensitiveContains("details")
-      }, "details are no longer a button in the window")
-    let viewItem = RecoveryDetailsMenu.makeMenuItem(
-      target: controller, action: #selector(InstallerView.toggleDetails(_:)))
+        !$0.title.localizedCaseInsensitiveContains("log")
+      }, "the log is not a button in the window")
+    let windows = NSMenu(title: "Window")
+    let item = RecoveryLogMenu.addItem(
+      to: windows, target: controller, action: #selector(InstallerView.toggleInstallerLog(_:)))
+    let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+    windowItem.submenu = windows
     let mainMenu = NSMenu()
-    mainMenu.addItem(viewItem)
-    let menu = try XCTUnwrap(viewItem.submenu)
-    let item = try XCTUnwrap(menu.items.first)
-    XCTAssertEqual(viewItem.title, "View")
-    XCTAssertEqual(item.keyEquivalent, "l")
-    XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+    mainMenu.addItem(windowItem)
     let commandL = try XCTUnwrap(
       NSEvent.keyEvent(
         with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
         windowNumber: window.windowNumber, context: nil, characters: "l",
         charactersIgnoringModifiers: "l", isARepeat: false, keyCode: 37))
-    func validated() -> (String, Bool) {
-      menu.update()
-      return (item.title, item.isEnabled)
+    func validated() -> (NSControl.StateValue, Bool) {
+      windows.update()
+      return (item.state, item.isEnabled)
     }
 
-    XCTAssertTrue(validated() == ("Show Details", false), "nothing to show before any output")
-    model.operations = (1...6).map { "Step \($0) of the simulated installation — simulated" }
-    model.stage = .complete
-    XCTAssertTrue(validated() == ("Show Details", true))
-
+    // The launch check logs, so the log has lines before anything else.
+    model.checkEnrollmentEnvironment()
+    wait("the launch check") { model.environmentVerified && !model.checkingEnvironment }
+    XCTAssertTrue(validated() == (.off, true))
     XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))
-    let details = try XCTUnwrap(window.attachedSheet)
-    let log = try XCTUnwrap(views(LogTextView.self, in: details.contentView).first)
-    spin(0.3)
+    let logs = try XCTUnwrap(controller.logWindow)
+    XCTAssertTrue(logs.isShowing)
+    XCTAssertNil(window.attachedSheet, "the log is a window, not a sheet")
+    XCTAssertEqual(logs.window?.title, "Installer Log")
+    XCTAssertEqual(
+      logs.filterButton.itemTitles,
+      ["Show Errors Only", "Show Errors and Progress", "Show All Logs"])
+    XCTAssertTrue(validated() == (.on, true))
+    wait("the check's lines") { !logs.viewer.displayedText.isEmpty }
     // The log must not be wider than it shows, or each line's start is cut off.
-    XCTAssertEqual(log.textView.frame.width, log.contentSize.width)
-    XCTAssertEqual(log.contentView.bounds.origin.x, 0)
-    XCTAssertTrue(validated() == ("Hide Details", true))
-    XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))
-    XCTAssertNil(window.attachedSheet)
-    XCTAssertTrue(validated() == ("Show Details", true))
+    spin(0.3)
+    XCTAssertEqual(logs.viewer.textView.frame.width, logs.viewer.contentSize.width)
+    XCTAssertEqual(logs.viewer.contentView.bounds.origin.x, 0)
 
-    // Closing the sheet itself keeps the menu in step.
-    controller.toggleDetails(item)
-    let reopened = try XCTUnwrap(window.attachedSheet)
-    try XCTUnwrap(button("Done", in: reopened.contentView)).performClick(nil)
-    XCTAssertNil(window.attachedSheet)
-    XCTAssertTrue(validated() == ("Show Details", true))
+    logs.apply(filter: .all, search: "")
+    XCTAssertTrue(logs.viewer.displayedText.contains("Started #"), "commands at Show All Logs")
+    logs.apply(filter: .errorsAndProgress, search: "")
+    XCTAssertFalse(logs.viewer.displayedText.contains("Started #"))
+    XCTAssertTrue(logs.viewer.displayedText.contains("Recovery environment verified"))
+    logs.apply(filter: .all, search: "LISTUSERS")
+    let found = logs.viewer.displayedText.split(separator: "\n")
+    XCTAssertFalse(found.isEmpty)
+    XCTAssertTrue(found.allSatisfy { $0.contains("listUsers") }, logs.viewer.displayedText)
 
-    // Another sheet is open: details wait for it.
+    // Another sheet does not hide or block the log.
     model.previewNotice = ("Restart simulated", "This preview does not restart your Mac.")
     let notice = try XCTUnwrap(window.attachedSheet)
-    XCTAssertTrue(validated() == ("Show Details", false))
-    _ = mainMenu.performKeyEquivalent(with: commandL)
-    spin(0.2)
+    XCTAssertTrue(validated() == (.on, true))
+    XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))
+    XCTAssertFalse(logs.isShowing)
     XCTAssertTrue(window.attachedSheet === notice, "Command-L leaves the open sheet alone")
-    XCTAssertTrue(views(LogTextView.self, in: notice.contentView).isEmpty)
+    XCTAssertTrue(validated() == (.off, true))
+
+    // Closing the window itself keeps the menu in step.
+    controller.toggleInstallerLog(item)
+    XCTAssertTrue(logs.isShowing)
+    logs.window?.performClose(nil)
+    XCTAssertTrue(validated() == (.off, true))
+  }
+
+  func testAFailureOffersTheInstallerLog() throws {
+    InstallerLogWindowController.willShow = { window in
+      window.alphaValue = 0
+      window.ignoresMouseEvents = true
+    }
+    defer { InstallerLogWindowController.willShow = nil }
+    PreviewSimulation.firstCheck = .fail
+    let model = InstallerModel()
+    let (window, controller) = show(model)
+    defer { controller.logWindow?.close() }
+    model.checkEnrollmentEnvironment()
+    wait("the failure") { window.attachedSheet != nil }
+    let issue = try XCTUnwrap(window.attachedSheet)
+    try XCTUnwrap(button("Show Log", in: issue.contentView)).performClick(nil)
+    XCTAssertNil(window.attachedSheet)
+    let logs = try XCTUnwrap(controller.logWindow)
+    XCTAssertTrue(logs.isShowing)
+    logs.apply(filter: .errorsOnly, search: "")
+    wait("the error lines") { logs.viewer.displayedText.contains("Recovery preflight failed") }
+  }
+
+  func testSaveFallsBackBesideTheAttemptFileAndFullLogKeepsEveryAttempt() throws {
+    InstallerLogWindowController.willShow = { window in
+      window.alphaValue = 0
+      window.ignoresMouseEvents = true
+    }
+    let present = InstallerLogWindowController.presentSavePanel
+    // Where AppKit can show the panel, it says so, and nothing falls back.
+    let (window, _) = show(InstallerModel())
+    let panel = NSSavePanel()
+    XCTAssertTrue(present(panel, window) { _ in })
+    window.endSheet(panel)
+    panel.orderOut(nil)
+    XCTAssertNil(window.attachedSheet)
+    self.window = nil
+    window.orderOut(nil)
+    if let sheetObserver { NotificationCenter.default.removeObserver(sheetObserver) }
+    sheetObserver = nil
+    // As in a Recovery stub that can't show the panel.
+    InstallerLogWindowController.presentSavePanel = { _, _, _ in false }
+    defer {
+      InstallerLogWindowController.willShow = nil
+      InstallerLogWindowController.presentSavePanel = present
+    }
+    let log = InstallerLog.shared
+    log.beginAttempt()
+    log.append("an earlier attempt’s line")
+    log.beginAttempt()
+    log.append("Setup failed: before the attempt was saved", level: .error)
+    let model = InstallerModel()
+    let (_, controller) = show(model)
+    defer { controller.logWindow?.close() }
+    controller.showInstallerLog()
+    let logs = try XCTUnwrap(controller.logWindow)
+    wait("the lines") { logs.viewer.displayedText.contains("before the attempt was saved") }
+    let directory = log.attemptDirectory
+    func saved(_ prefix: String) -> [URL] {
+      ((try? FileManager.default.contentsOfDirectory(
+        at: directory, includingPropertiesForKeys: nil)) ?? [])
+        .filter { $0.lastPathComponent.hasPrefix(prefix) }
+    }
+    for url in saved("Aurora Installer ") { try? FileManager.default.removeItem(at: url) }
+    defer { for url in saved("Aurora Installer ") { try? FileManager.default.removeItem(at: url) } }
+
+    logs.apply(filter: .errorsOnly, search: "")
+    logs.saveButton.performClick(nil)
+    let shown = try XCTUnwrap(saved("Aurora Installer Log ").first)
+    let text = try String(contentsOf: shown, encoding: .utf8)
+    XCTAssertTrue(text.contains("Setup failed: before the attempt was saved"))
+    XCTAssertFalse(text.contains("an earlier attempt’s line"), "Save writes the lines shown")
+    wait("where it went") { log.entries.contains { $0.message.contains(shown.lastPathComponent) } }
+
+    try XCTUnwrap(button("Save Full Log…", in: logs.window?.contentView)).performClick(nil)
+    let full = try XCTUnwrap(saved("Aurora Installer Full Log ").first)
+    let session = try String(contentsOf: full, encoding: .utf8)
+    XCTAssertTrue(session.contains("an earlier attempt’s line"))
+    XCTAssertTrue(session.contains("Setup failed: before the attempt was saved"))
+    XCTAssertTrue(session.contains("=== Attempt "))
+
+    // Search marks the source column as well as the message.
+    let marked = InstallerLogWindowController.text(
+      [
+        InstallerLogEntry(
+          sequence: 1, time: Date(), level: .debug, source: "kmutil", message: "Started #1")
+      ][...], search: "KMUTIL")
+    var highlighted = false
+    marked.enumerateAttribute(
+      .backgroundColor, in: NSRange(location: 0, length: marked.length)
+    ) { value, range, _ in
+      if value != nil, (marked.string as NSString).substring(with: range) == "kmutil" {
+        highlighted = true
+      }
+    }
+    XCTAssertTrue(highlighted)
   }
 }

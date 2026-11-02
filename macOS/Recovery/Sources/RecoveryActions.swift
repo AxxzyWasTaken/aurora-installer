@@ -68,7 +68,8 @@ enum RecoveryActions {
       isRecovery: true, isRoot: true,
       policy: String(decoding: report, as: UTF8.self))
     {
-      InstallerLog.shared.append("Recovery environment rejected: \(issue.title). \(issue.message)")
+      InstallerLog.shared.append(
+        "Recovery environment rejected: \(issue.title). \(issue.message)", level: .error)
       throw issue
     }
   }
@@ -91,7 +92,7 @@ enum RecoveryActions {
   }
   @discardableResult static func run(_ path: String, _ args: [String]) throws -> Data {
     let logged = path != "/usr/sbin/nvram"
-    let log = logged ? CommandLog("$ " + ([path] + args).joined(separator: " ")) : nil
+    let log = logged ? CommandLog(path, args) : nil
     let process = Process()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = args
@@ -100,13 +101,13 @@ enum RecoveryActions {
     process.standardError = output
     process.standardInput = FileHandle.nullDevice
     do { try process.run() } catch {
-      log?.output("Could not launch: " + error.localizedDescription)
+      log?.finish(status: -1, reason: "Could not launch: " + error.localizedDescription)
       throw error
     }
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
-    log?.output(
-      String(decoding: data, as: UTF8.self) + "\nExit status: \(process.terminationStatus)")
+    log?.output(String(decoding: data, as: UTF8.self))
+    log?.finish(status: process.terminationStatus)
     try check(
       process.terminationStatus == 0,
       "\(URL(fileURLWithPath: path).lastPathComponent) failed (\(process.terminationStatus)).")
@@ -293,7 +294,7 @@ enum RecoveryActions {
   static func authorized(
     _ executable: String, _ arguments: [String], owner: RecoveryOwner, password: String
   ) throws {
-    let log = CommandLog("$ " + ([executable] + arguments).joined(separator: " "))
+    let log = CommandLog(executable, arguments, secrets: [password])
     let context = Unmanaged.passUnretained(log).toOpaque()
     let argv = ([executable] + arguments).map { strdup($0) } + [nil]
     defer { for p in argv { if let p { free(p) } } }
@@ -315,8 +316,12 @@ enum RecoveryActions {
     let name = URL(fileURLWithPath: executable).lastPathComponent
     let reason =
       result < 0 ? String(cString: aurora_authorization_failure(result)) : "exit status \(result)"
-    InstallerLog.shared.append("\(name): \(result == 0 ? "completed" : reason)")
-    try check(result == 0, "\(name) failed: \(reason). Open Show details for the command output.")
+    log.finish(status: result, reason: result < 0 ? "Authorization failed: " + reason : nil)
+    InstallerLog.shared.append(
+      "\(name): \(result == 0 ? "completed" : reason)", level: result == 0 ? .progress : .error)
+    try check(
+      result == 0,
+      "\(name) failed: \(reason). Open Window → Installer Log for the command output.")
   }
   static func install(
     selection: BootSelection, owner: RecoveryOwner, password: String,

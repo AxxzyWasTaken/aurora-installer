@@ -6,6 +6,9 @@
     let label: String
     let stub: Bool
     let version: String?
+    /// A startup container's only: the EFI partitions (UUIDs) its bootloader
+    /// chainloads, nil when it has no readable boot object.
+    var bootPartitions: [String]? = nil
   }
 
   struct NativeContainerFacts: Decodable, Sendable {

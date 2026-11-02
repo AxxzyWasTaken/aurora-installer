@@ -135,7 +135,7 @@ struct AuroraAppleInstallerApp: App {
   @State private var checkedPendingInstallation = false
   @State private var showsRemoval = false
   /// The startup container chosen with Erase on the Partitions screen.
-  @State private var removalTarget: String?
+  @State private var removalTarget: DiskLayoutDisplay.EraseTarget?
   @State private var removalNeedsReview = false
   @State private var removalBusy = false
   #if DEBUG
@@ -276,7 +276,7 @@ struct AuroraAppleInstallerApp: App {
             }
           }, onClose: { showsRemoval = false }, onRequiresReview: { removalNeedsReview = true },
           simulationScenario: previewRemovalScenario,
-          expectedStartupContainerUUID: removalTarget)
+          eraseTarget: removalTarget)
       }
       .preferredColorScheme(previewColorScheme)
       .frame(minWidth: 800, maxWidth: .infinity, minHeight: 580, maxHeight: .infinity)

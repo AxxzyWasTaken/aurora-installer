@@ -161,7 +161,8 @@
       ).remaining(cachedBytes: cached)
       return NativeStubFilesExecution(
         package: package, approved: approved,
-        plan: plan, owner: owner, platform: platform, cache: reader, staging: staging)
+        plan: plan, owner: owner, platform: platform, cache: reader, staging: staging,
+        stagingCachedBytes: cached)
     }
   }
 
@@ -180,6 +181,8 @@
     let cache: NativeStubRestoreCache?
     /// What the stage still needs free on macOS, from this plan's members.
     var staging: NativeStubStagingRequirement? = nil
+    /// What the cache held for those members when `staging` was counted.
+    var stagingCachedBytes: UInt64 = 0
     var freeBytes: @Sendable (URL) -> UInt64? = { NativeStubRestoreCache.freeBytes($0) }
     var firmwarePlan: NativeStubFilePlan? { plan }
 
@@ -246,16 +249,17 @@
       }
     }
 
-    /// A floor reached mid-stage names one read's need; report what fetching
-    /// the rest of the stage needs, when that is more.
+    /// A floor reached mid-stage names one read's need; report what the
+    /// rest of the stage needs, decode included, when that is more.
     private func stillNeeded(after shortfall: MacOSFreeSpaceShortfall) async throws
       -> MacOSFreeSpaceShortfall
     {
+      guard let staging else { return shortfall }
       let spans = NativeStubStagingRequirement.spans(plan.readMembers)
       let cached = try await cache?.cachedBytes(overlapping: spans) ?? 0
-      let whole = NativeStubStagingRequirement(
-        plan: plan, decoded: [], includingPlanningReads: false)
-      let rest = whole.remaining(cachedBytes: cached).fetchingFreeBytes
+      let rest = staging.remaining(
+        cachedBytes: cached - min(cached, stagingCachedBytes)
+      ).requiredFreeBytes
       return MacOSFreeSpaceShortfall(
         requiredBytes: max(rest, shortfall.requiredBytes), availableBytes: shortfall.availableBytes)
     }

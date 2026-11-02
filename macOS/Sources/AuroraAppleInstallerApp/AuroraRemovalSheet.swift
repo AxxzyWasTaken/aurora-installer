@@ -9,9 +9,10 @@ struct AuroraRemovalSheet: View {
   let onClose: () -> Void
   let onRequiresReview: () -> Void
   let simulationScenario: String?
-  /// Set when Erase was chosen for one row of the Partitions screen: only a
-  /// ticket for the startup container with this partition UUID is shown.
-  let expectedStartupContainerUUID: String?
+  /// Set when Erase was chosen for one row of the Partitions screen: the
+  /// service plans to erase that row and leave its space unallocated, and
+  /// only a ticket for exactly its partitions is shown.
+  let eraseTarget: DiskLayoutDisplay.EraseTarget?
 
   @State private var ticket: AuroraRemovalTicket?
   @State private var phrase = ""
@@ -42,11 +43,11 @@ struct AuroraRemovalSheet: View {
   init(
     isSimulation: Bool, onBusyChanged: @escaping (Bool) -> Void,
     onClose: @escaping () -> Void, onRequiresReview: @escaping () -> Void,
-    simulationScenario: String? = nil, expectedStartupContainerUUID: String? = nil
+    simulationScenario: String? = nil, eraseTarget: DiskLayoutDisplay.EraseTarget? = nil
   ) {
     self.isSimulation = isSimulation
     self.simulationScenario = simulationScenario
-    self.expectedStartupContainerUUID = expectedStartupContainerUUID
+    self.eraseTarget = eraseTarget
     #if DEBUG
       if let simulationScenario, let selected = RemovalPreviewScenario(rawValue: simulationScenario)
       {
@@ -144,8 +145,14 @@ struct AuroraRemovalSheet: View {
         .accessibilityIdentifier("removal-message")
       if let ticket, !submitted, !showsApproval {
         VStack(spacing: 8) {
-          summaryRow("Space returned to macOS", value: PlainLanguage.bytes(ticket.reclaimBytes))
-          summaryRow("macOS after removal", value: PlainLanguage.bytes(ticket.macOSBytesAfter))
+          if ticket.kind == .eraseToFreeSpace {
+            summaryRow(
+              "Free space afterwards", value: PlainLanguage.bytes(ticket.freedBytes ?? 0))
+            summaryRow("macOS", value: "Not resized")
+          } else {
+            summaryRow("Space returned to macOS", value: PlainLanguage.bytes(ticket.reclaimBytes))
+            summaryRow("macOS after removal", value: PlainLanguage.bytes(ticket.macOSBytesAfter))
+          }
         }
         if let step = ticket.startupDisk {
           VStack(alignment: .leading, spacing: 6) {
@@ -310,9 +317,12 @@ struct AuroraRemovalSheet: View {
   }
 
   private var reviewSummary: String {
-    ticket?.kind == .freeSpace
-      ? "Return the unused space to macOS."
-      : "Erase the Linux installation and return its space to macOS."
+    switch ticket?.kind {
+    case .freeSpace: "Return the unused space to macOS."
+    case .eraseToFreeSpace:
+      "Erase “\(eraseTarget?.name ?? "these partitions")” and leave its space free to install into."
+    default: "Erase the Linux installation and return its space to macOS."
+    }
   }
 
   private var heading: String {
@@ -320,6 +330,7 @@ struct AuroraRemovalSheet: View {
       return ticket?.kind == .freeSpace ? "Approve space return" : "Approve erasure"
     }
     if ticket?.kind == .freeSpace { return completed ? "Space returned" : "Return free space" }
+    if let eraseTarget { return completed ? "Erased" : "Erase \(eraseTarget.name)" }
     return completed ? "Linux removed" : "Erase Linux"
   }
 
@@ -359,10 +370,16 @@ struct AuroraRemovalSheet: View {
     if !keepingAccount { password = "" }
     submitted = false
     completed = false
-    message = "Checking for an existing Aurora installation…"
+    message =
+      eraseTarget == nil
+      ? "Checking for an existing Aurora installation…" : "Checking the partitions to erase…"
     #if DEBUG
       if isSimulation {
         try? await Task.sleep(for: .milliseconds(350))
+        if let eraseTarget {
+          (ticket, message) = RemovalPreviewScenario.eraseTicket(eraseTarget)
+          return
+        }
         if scenario == .none || scenario == .ambiguous || scenario == .helperUnavailable {
           message = scenario.message
         } else {
@@ -403,12 +420,11 @@ struct AuroraRemovalSheet: View {
     do {
       let submitter = try InstallerHelperSetup.submitter()
       client = submitter
-      let reply = try await submitter.removal()
-      if let expected = expectedStartupContainerUUID, let found = reply.ticket,
-        found.startupContainerUUID?.caseInsensitiveCompare(expected) != .orderedSame
+      let reply = try await submitter.removal(erasing: eraseTarget?.anchorUUID)
+      if let eraseTarget, let found = reply.ticket, !found.erases(exactly: eraseTarget.memberUUIDs)
       {
-        // The scan would erase another installation, or can't say which:
-        // never show a ticket for something the person didn't choose.
+        // The scan would erase other partitions than the row shows, or can't
+        // say which: never show a ticket for something the person didn't choose.
         ticket = nil
         message = PlainLanguage.removalTargetMismatch
       } else {
@@ -470,16 +486,29 @@ struct AuroraRemovalSheet: View {
     password = ""
     busy = true
     submitted = true
-    message =
-      ticket.startupDisk == nil
-      ? "Removing Aurora, then returning its space to macOS…"
-      : "Setting macOS as the startup disk, removing Aurora, then returning its space to macOS…"
+    if ticket.kind == .eraseToFreeSpace {
+      message =
+        ticket.startupDisk == nil
+        ? "Erasing the partitions…"
+        : "Setting macOS as the startup disk, then erasing the partitions…"
+    } else {
+      message =
+        ticket.startupDisk == nil
+        ? "Removing Aurora, then returning its space to macOS…"
+        : "Setting macOS as the startup disk, removing Aurora, then returning its space to macOS…"
+    }
     defer { busy = false }
     #if DEBUG
       if isSimulation {
         try? await Task.sleep(for: .seconds(2))
         if scenario == .disconnected {
           connectionLost()
+          return
+        }
+        if ticket.kind == .eraseToFreeSpace {
+          completed = true
+          message =
+            "“\(eraseTarget?.name ?? "The partitions")” was erased. Its space is now free to install into."
           return
         }
         completed = [.success, .asahi, .freeSpace, .startupDisk].contains(scenario)
@@ -496,7 +525,8 @@ struct AuroraRemovalSheet: View {
     }
     do {
       let reply = try await client.removal(
-        ticket: ticket, confirmation: phrase, authorization: authorization)
+        ticket: ticket, confirmation: phrase, authorization: authorization,
+        erasing: ticket.kind == .eraseToFreeSpace ? eraseTarget?.anchorUUID : nil)
       completed = reply.completed
       if reply.requiresReview { onRequiresReview() }
       message = reply.message
@@ -741,6 +771,30 @@ private struct RemovalSheetHeightCapReader: NSViewRepresentable {
       case .disconnected:
         "The connection to the removal service was lost. Removal may still be running. Don’t restart removal or turn off this Mac. Check the removal record before continuing."
       }
+    }
+  }
+
+  extension RemovalPreviewScenario {
+    /// The simulation's erase review: exactly the row's partitions, left as
+    /// free space, as the removal service would plan it.
+    static func eraseTicket(_ target: DiskLayoutDisplay.EraseTarget) -> (
+      AuroraRemovalTicket, String
+    ) {
+      let ticket = AuroraRemovalTicket(
+        id: UUID(), kind: .eraseToFreeSpace, reclaimBytes: 0, macOSBytesAfter: 0,
+        deletions: [
+          AuroraRemovalItem(
+            title: target.name,
+            detail: target.memberUUIDs.count == 1
+              ? "1 partition" : "\(target.memberUUIDs.count) partitions", bytes: target.bytes)
+        ],
+        notes: [
+          "Its \(PlainLanguage.bytes(target.bytes)) is left as unallocated space. macOS isn’t resized."
+        ], erasedPartitionUUIDs: target.memberUUIDs, freedBytes: target.freedBytes)
+      return (
+        ticket,
+        "Erase permanently deletes “\(target.name)” and everything stored in it. Its space becomes \(PlainLanguage.bytes(target.freedBytes)) of unallocated free space that you can install into. macOS isn’t resized."
+      )
     }
   }
 #endif

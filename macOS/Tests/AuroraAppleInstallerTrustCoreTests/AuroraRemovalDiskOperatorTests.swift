@@ -333,6 +333,47 @@
       XCTAssertEqual(fake.log.filter { $0.first != "info" }, [])
     }
 
+    func testUnmountNamesTheBusyVolumeAndMountsTheOthersAgain() throws {
+      let model = F.converged()
+      let fake = FakeDiskutil(model)
+      let stub = try XCTUnwrap(model.partitions.first { $0.uuid == F.convergedInstall.stub })
+      let volumes = try XCTUnwrap(model.containers.first { $0.storeUUID == stub.uuid }).volumes
+      for volume in volumes { fake.mountPoints[volume.identifier] = "/Volumes/\(volume.name)" }
+      let busy = try XCTUnwrap(volumes.last)
+      fake.refuseUnmount = [busy.identifier]
+      XCTAssertThrowsError(try fake.makeOperator().unmountVolumes(of: stub, in: model)) {
+        let error = $0 as? RemovalVolumeBusy
+        XCTAssertEqual(error?.volume, busy.name)
+        XCTAssertEqual(error?.stillUnmounted, [])
+      }
+      // The ones unmounted before it are mounted again.
+      for volume in volumes.dropLast() {
+        XCTAssertTrue(fake.log.contains(["mount", volume.identifier]), volume.identifier)
+        XCTAssertNotNil(fake.mountPoints[volume.identifier])
+      }
+    }
+
+    func testStartupStoresIncludeThePersistentTargetBesideAOneTimeChoice() throws {
+      let model = F.converged()
+      let fake = FakeDiskutil(model)
+      let stub = try XCTUnwrap(model.partitions.first { $0.uuid == F.convergedInstall.stub })
+      let system = try XCTUnwrap(
+        model.containers.first { $0.storeUUID == stub.uuid }?.volumes.first {
+          $0.roles == ["System"]
+        })
+      // Persistent startup from the installation, a one-time choice of macOS.
+      fake.bless = "/dev/\(system.identifier)\n"
+      fake.nvram +=
+        "alt-boot-volume\t"
+        + RemovalFixtures.bootVolume(store: model.macOSStoreUUID, group: RemovalFixtures.macGroup)
+        + "\n"
+      let stores = try XCTUnwrap(try fake.makeOperator().startupStores(model))
+      XCTAssertEqual(Set(stores), [stub.uuid, model.macOSStoreUUID])
+      // An unreadable target is unknown.
+      fake.bless = nil
+      XCTAssertNil(try fake.makeOperator().startupStores(model))
+    }
+
     func testGrowLimitReadsResizeLimits() throws {
       let model = F.freeSpaceOnly()
       let fake = FakeDiskutil(model)
@@ -467,6 +508,8 @@
     var onMount: ((String, String) throws -> Void)?
     var mountWritable = false
     var failUnmount = false
+    /// `diskutil unmount` refuses these, as it does a volume in use.
+    var refuseUnmount = Set<String>()
     /// `diskutil mount` refuses these, as it does a dirty FAT.
     var refuseDiskutilMount = Set<String>()
     /// The EFI partition's files, served from a FAT32 image read in place of
@@ -540,7 +583,7 @@
       let key = arguments.joined(separator: " ")
       if arguments.first == "mount" {
         let identifier = arguments.last!
-        let path = arguments[arguments.count - 2]
+        let path = arguments.count == 2 ? "/Volumes/\(identifier)" : arguments[arguments.count - 2]
         if refuseDiskutilMount.contains(identifier) {
           throw RemovalFailure(message: "Volume on \(identifier) failed to mount")
         }
@@ -549,7 +592,9 @@
         return Data()
       }
       if arguments.first == "unmount" {
-        if failUnmount { throw RemovalFailure(message: "busy") }
+        if failUnmount || refuseUnmount.contains(arguments[1]) {
+          throw RemovalFailure(message: "busy")
+        }
         if let path = mountPoints.removeValue(forKey: arguments[1]) {
           for item in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] {
             try? FileManager.default.removeItem(atPath: path + "/" + item)

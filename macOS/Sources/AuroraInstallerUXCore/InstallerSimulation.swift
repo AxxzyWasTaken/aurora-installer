@@ -302,11 +302,12 @@
       progress(AssetProgressUpdate(stage: .planning))
       lock.withLock { resetRequested = false }
       let unit: UInt64 = 1_000_000_000
-      let minimum: UInt64 = 30 * unit
-      // As the planner does: a resize withholds a small drift margin.
+      // As the planner does: a resize withholds a small drift margin, and a
+      // free extent is fixed, so Aurora takes all of it.
       let maximum =
         option.kind == .shrink
         ? option.maximumBytes - option.maximumBytes / 20 : option.maximumBytes
+      let minimum: UInt64 = option.kind == .shrink ? 30 * unit : maximum
       let chosen = min(
         maximum,
         max(minimum, auroraBytes ?? InstallerAllocationRecommendation.balancedTargetBytes))
@@ -324,8 +325,8 @@
       return .plan(
         PlanDisplay(
           diskTotalBytes: layout.totalBytes, auroraBytes: chosen,
-          bindingDigest: "simulation-partitions-\(option.id)-\(chosen)", minimumBytes: minimum,
-          maximumBytes: maximum,
+          bindingDigest: "simulation-partitions-\(option.id)-\(chosen)",
+          isResizable: option.kind == .shrink, minimumBytes: minimum, maximumBytes: maximum,
           releaseDescription: "SIMULATION · \(channel.rawValue.uppercased()) · Aurora test release",
           targetDescription: source == .freeExtent
             ? "Simulated internal disk · Use free space"
@@ -377,12 +378,20 @@
       ) {
         let identifier = kind == .free ? nil : "disk0s\(number)"
         if kind != .free { number += 1 }
+        let uuid = identifier.map { "00000000-0000-4000-8000-0000000000\($0.suffix(2))" }
+        // As the erase rule decides: macOS and Apple's partitions never go.
+        let refusal: String? =
+          switch kind {
+          case .macOS: "macOS is never erased here."
+          case .appleSystem: "Apple’s system partitions are never erased."
+          default: nil
+          }
         regions.append(
           Region(
-            kind: kind, identifier: identifier,
-            uuid: identifier.map { "00000000-0000-4000-8000-0000000000\($0.suffix(2))" },
+            kind: kind, identifier: identifier, uuid: uuid,
             offsetBytes: offset, lengthBytes: bytes, name: name, freeBytes: free,
-            recognized: recognized, isRunningMacOS: running))
+            recognized: recognized, isRunningMacOS: running, memberUUIDs: uuid.map { [$0] } ?? [],
+            eraseRefusal: refusal))
         offset += bytes
       }
       add(.appleSystem, "Apple system", 524_288_000)

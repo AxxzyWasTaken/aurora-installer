@@ -171,6 +171,19 @@
             }
             XCTAssertLessThanOrEqual(plan.maximumBytes, option.maximumBytes)
             XCTAssertEqual(plan.allocationSource == .freeExtent, option.kind == .freeSpace)
+            // A chosen free extent is fixed: no slider and no size to edit,
+            // only the breakdown. Only a shrink has a size to choose, when its
+            // range has room to move.
+            XCTAssertEqual(
+              plan.isResizable,
+              option.kind == .shrink && plan.minimumBytes < plan.maximumBytes, option.title)
+            if option.kind == .freeSpace {
+              XCTAssertEqual(plan.auroraBytes, option.maximumBytes, option.title)
+              XCTAssertEqual(plan.minimumBytes, plan.maximumBytes, option.title)
+              XCTAssertNotNil(plan.fixedExtentSummary, option.title)
+            } else {
+              XCTAssertNil(plan.fixedExtentSummary, option.title)
+            }
             attempt.setAcknowledged(true)
             attempt.approve()
             attempt.presentInstallCredentials()

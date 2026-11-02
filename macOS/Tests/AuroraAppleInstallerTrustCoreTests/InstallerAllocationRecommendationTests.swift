@@ -335,7 +335,15 @@ final class InstallerAllocationRecommendationTests: XCTestCase {
     )
 
     XCTAssertEqual(recommendation.candidate, free)
-    XCTAssertEqual(recommendation.requestedLengthBytes, 128 * gib)
+    // A free extent is fixed: Aurora takes all of it, with no size to choose,
+    // whatever size was asked for.
+    XCTAssertEqual(recommendation.requestedLengthBytes, 300 * gib)
+    XCTAssertEqual(recommendation.minimumBytes, 300 * gib)
+    XCTAssertEqual(recommendation.maximumBytes, 300 * gib)
+    XCTAssertEqual(
+      try InstallerAllocationRecommendation(
+        inventory: inventory([free]), targetBytes: 64 * gib
+      ).requestedLengthBytes, 300 * gib)
   }
 
   func testClampsToAlignedMaximumWithoutViolatingMinimum() throws {

@@ -38,6 +38,14 @@
       reply: @escaping @Sendable (Data?, NSError?) -> Void
     )
 
+    /// Erase on the Partitions screen. `partition` is the chosen row's first
+    /// partition UUID; its partitions are deleted and their extent is left
+    /// unallocated. An empty ticket asks for the plan, as removal does.
+    func erase(
+      partition: String, ticket: String, confirmation: String, machineOwner: String,
+      password: Data, reply: @escaping @Sendable (Data?, NSError?) -> Void
+    )
+
     func submit(
       packageDirectory: FileHandle,
       operation: String,
@@ -353,9 +361,11 @@
       return version.isEmpty ? nil : version
     }
 
+    /// - Parameter erasing: Erase on the Partitions screen: the chosen row's
+    ///   first partition UUID. Nil for removal, which returns space to macOS.
     public func removal(
       ticket: AuroraRemovalTicket? = nil, confirmation: String = "",
-      authorization: MachineOwnerAuthorization? = nil
+      authorization: MachineOwnerAuthorization? = nil, erasing: String? = nil
     ) async throws -> AuroraRemovalReply {
       // Failures before the request is handed over mean nothing started, and
       // are told apart from a reply lost after sending.
@@ -385,10 +395,7 @@
           handle.invalidate()
           return
         }
-        proxy.removal(
-          ticket: ticket?.id.uuidString ?? "", confirmation: confirmation,
-          machineOwner: authorization?.username ?? "", password: authorization?.password ?? Data()
-        ) { response, error in
+        let respond: @Sendable (Data?, NSError?) -> Void = { response, error in
           defer { handle.invalidate() }
           if let error {
             gate.resume(throwing: error)
@@ -397,6 +404,17 @@
           } else {
             gate.resume(throwing: EngineXPCSubmissionError.emptyResponse)
           }
+        }
+        if let erasing {
+          proxy.erase(
+            partition: erasing, ticket: ticket?.id.uuidString ?? "", confirmation: confirmation,
+            machineOwner: authorization?.username ?? "",
+            password: authorization?.password ?? Data(), reply: respond)
+        } else {
+          proxy.removal(
+            ticket: ticket?.id.uuidString ?? "", confirmation: confirmation,
+            machineOwner: authorization?.username ?? "",
+            password: authorization?.password ?? Data(), reply: respond)
         }
       }
       return try JSONDecoder().decode(AuroraRemovalReply.self, from: data)

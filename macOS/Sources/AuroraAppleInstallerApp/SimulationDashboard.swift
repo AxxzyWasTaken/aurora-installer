@@ -58,7 +58,7 @@
     var selection = AuroraInstallationSelection()
     var onSessionAvailable: ((InstallerSession) -> Void)? = nil
     var onRemoveLinux: () -> Void = {}
-    var onEraseInstallation: (String) -> Void = { _ in }
+    var onEraseInstallation: (DiskLayoutDisplay.EraseTarget) -> Void = { _ in }
 
     var body: some View {
       Group {

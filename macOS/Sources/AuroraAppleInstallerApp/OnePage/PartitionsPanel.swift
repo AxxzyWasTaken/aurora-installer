@@ -46,7 +46,9 @@ struct PartitionsPanel: View {
           .font(InstallerTheme.detail).foregroundStyle(InstallerTheme.secondaryText)
           .fixedSize(horizontal: false, vertical: true)
       }
-      Divider()
+      // The rule separates the partitions from the disk overview; it gets
+      // equal extra room above and below it beyond the stack's spacing.
+      Divider().padding(.vertical, 8)
       VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .firstTextBaseline) {
           PartitionSectionTitle(text: "Disk", trailing: PlainLanguage.bytes(layout.totalBytes))
@@ -131,11 +133,7 @@ struct PartitionRowView: View {
           .disabled(!enabled)
       }
     case .aurora:
-      let erase = row.erase ?? .unavailable(DiskLayoutDisplay.eraseUnavailableReason)
-      Button("Erase…") { onErase(row) }
-        .partitionRowButton()
-        .disabled(!enabled || !erase.isAvailable)
-        .help(erase.reason ?? "Erase \(row.name) and everything stored in it.")
+      eraseButton
       Menu {
         ForEach(PartitionRowMenu.items(for: row)) { item in
           if item.separatorBefore { Divider() }
@@ -158,10 +156,21 @@ struct PartitionRowView: View {
       .partitionRowButton()
       .fixedSize()
       .accessibilityLabel("More actions for \(row.name)")
-    case .otherLinux:
-      Text(PlainLanguage.partitionsNotByAurora)
-        .font(.system(size: 11)).foregroundStyle(InstallerTheme.secondaryText)
+    case .otherLinux, .other:
+      if row.kind == .otherLinux {
+        Text(PlainLanguage.partitionsNotByAurora)
+          .font(.system(size: 11)).foregroundStyle(InstallerTheme.secondaryText)
+      }
+      eraseButton
     }
+  }
+
+  private var eraseButton: some View {
+    let erase = row.erase ?? .unavailable(DiskLayoutDisplay.eraseUnavailableReason)
+    return Button("Erase…") { onErase(row) }
+      .partitionRowButton()
+      .disabled(!enabled || !erase.isAvailable)
+      .help(erase.reason ?? "Erase \(row.name), leaving its space free to install into.")
   }
 }
 
@@ -567,7 +576,7 @@ struct EraseInstallationSheet: View {
         InstallationIcon(icon: row.icon, size: 44)
         VStack(alignment: .leading, spacing: 3) {
           Text("Erase \(row.name)?").font(.system(size: 18, weight: .semibold))
-          Text("Its files and settings on this Mac are deleted. This can’t be undone.")
+          Text("Everything stored in it is deleted. This can’t be undone.")
             .font(.system(size: 12)).foregroundStyle(InstallerTheme.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -579,19 +588,15 @@ struct EraseInstallationSheet: View {
         PartitionStrip(segments: layout.afterErasing(row.id) ?? layout.segments)
       }
       VStack(alignment: .leading, spacing: 5) {
-        Label(
-          "Removes its startup volume, EFI partition and Linux partitions (\(PlainLanguage.bytes(row.bytes))).",
-          systemImage: "trash")
-        if let macOS = layout.macOSRows.first, let growth = layout.macOSGrowthAfterErasing(row.id) {
-          Label(
-            "\(macOS.name) grows by \(PlainLanguage.bytes(growth)), taking back the free space after it. Its files stay as they are.",
-            systemImage: "arrow.left.and.right")
+        Label(EraseSheetText.removes(row), systemImage: "trash")
+        if let freed = layout.freeBytesAfterErasing(row.id) {
+          Label(EraseSheetText.leaves(freed), systemImage: "square.dashed")
         }
         if let keptText {
           Label(keptText, systemImage: "checkmark.circle")
         }
         Label(
-          "Next, the removal service checks the disk again and asks for your password.",
+          "Next, the removal service checks the disk again, lists exactly which partitions it erases, and asks for your password.",
           systemImage: "lock")
       }
       .font(.system(size: 12)).foregroundStyle(InstallerTheme.secondaryText)
@@ -611,10 +616,9 @@ struct EraseInstallationSheet: View {
     .background(InstallerTheme.window)
   }
 
-  /// Every other installation, apart from the macOS that grows.
+  /// Every other row, macOS included: nothing else changes.
   private var keptText: String? {
-    let grows = layout.macOSRows.first?.id
-    let others = layout.rows.filter { $0.id != row.id && $0.id != grows }.map(\.name)
+    let others = layout.rows.filter { $0.id != row.id }.map(\.name)
     guard !others.isEmpty else { return nil }
     let list =
       others.count == 1

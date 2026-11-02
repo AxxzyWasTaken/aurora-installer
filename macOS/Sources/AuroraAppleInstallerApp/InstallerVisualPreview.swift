@@ -16,10 +16,13 @@
         : (screen == "allocation-free" ? .freeExtent : .macOSResize)
       let macOS: UInt64 = source == .macOSResize ? 400_000_000_000 : 256_000_000_000
       let other: UInt64 = source == .otherContainerResize ? 208_000_000_000 : 64_000_000_000
+      // A free extent is fixed: Aurora takes all of it, with nothing to drag.
+      let free: UInt64 = 192_000_000_000
       return PlanDisplay(
-        diskTotalBytes: 512_000_000_000, auroraBytes: allocation,
-        bindingDigest: String(repeating: "a", count: 64), minimumBytes: 32_000_000_000,
-        maximumBytes: source == .otherContainerResize ? 160_000_000_000 : 192_000_000_000,
+        diskTotalBytes: 512_000_000_000, auroraBytes: source == .freeExtent ? free : allocation,
+        bindingDigest: String(repeating: "a", count: 64), isResizable: source != .freeExtent,
+        minimumBytes: source == .freeExtent ? free : 32_000_000_000,
+        maximumBytes: source == .otherContainerResize ? 160_000_000_000 : free,
         targetDescription: source == .otherContainerResize
           ? "Internal storage · Resize Work"
           : (source == .freeExtent
@@ -77,7 +80,7 @@
       case "allocation", "allocation-free", "allocation-other", "allocation-checking",
         "allocation-editing", "allocation-ready":
         DiskSplitPanel(
-          plan: plan, editable: true, isBusy: screen == "allocation-checking",
+          plan: plan, editable: plan.isResizable, isBusy: screen == "allocation-checking",
           pendingAllocationBytes: screen == "allocation-checking" ? 160_000_000_000 : nil,
           onSizeChosen: { allocation = $0 },
           opensSizePromptForPreview: screen == "allocation-editing")

@@ -121,9 +121,11 @@ public struct InstallerAllocationRecommendation:
       guard minimum <= alignedMaximum else {
         return nil
       }
+      // A free extent is fixed: Aurora takes all of it, and there is no
+      // size to choose.
       return Ranked(
         candidate: candidate,
-        minimum: minimum,
+        minimum: candidate.kind == "free" ? alignedMaximum : minimum,
         maximum: alignedMaximum
       )
     }.sorted { left, right in

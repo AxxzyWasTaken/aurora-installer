@@ -142,8 +142,9 @@
     public let macOSFreeBeforeAllocationBytes: UInt64?
     public let recommendedAuroraBytes: UInt64?
     public static let recommendedMacOSFreeBytes: UInt64 = 38_000_000_000
-    /// Whether the user may choose Aurora's size. Replacement and preserved
-    /// reinstall plans reuse an exact extent, so there is nothing to drag.
+    /// Whether the user may choose Aurora's size. Only a resize has a size to
+    /// choose: a free extent, a replacement and a preserved reinstall each
+    /// use one exact extent, so there is nothing to drag or edit.
     public let isResizable: Bool
     public var preservesStage1: Bool { allocationSource == .preservedInstall }
 
@@ -185,6 +186,14 @@
   }
 
   extension PlanDisplay {
+    /// A chosen free extent's plan, read-only: what goes where. Nil when the
+    /// person chooses a size.
+    public var fixedExtentSummary: String? {
+      guard allocationSource == .freeExtent, !isResizable else { return nil }
+      return
+        "Aurora uses all \(PlainLanguage.bytes(auroraBytes)) of this free space. macOS stays \(PlainLanguage.bytes(baselineMacOSBytes)) and isn’t changed."
+    }
+
     /// Shared by the bar, its accessibility value, and the visible warning.
     public func macOSSpaceCaution(for allocation: UInt64) -> String? {
       guard allocationSource == .macOSResize, let free = macOSFreeBeforeAllocationBytes else {

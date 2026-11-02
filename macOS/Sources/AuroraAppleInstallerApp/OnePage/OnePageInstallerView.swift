@@ -31,7 +31,7 @@ struct OnePageInstallerView: View {
   let onRemoveLinux: () -> Void
   /// Erase one installation: the removal service's review, which must find
   /// the startup container with this partition UUID.
-  let onEraseInstallation: (String) -> Void
+  let onEraseInstallation: (DiskLayoutDisplay.EraseTarget) -> Void
   let onChooseSystem: (() -> Void)?
   /// Rendering an already driven session: no inspection on appear and no
   /// sheets, which the renderer draws on their own.
@@ -45,7 +45,7 @@ struct OnePageInstallerView: View {
     onChannelAvailability: @escaping (Bool) -> Void = { _ in },
     onSessionAvailable: @escaping (InstallerSession) -> Void = { _ in },
     onRemoveLinux: @escaping () -> Void = {},
-    onEraseInstallation: @escaping (String) -> Void = { _ in },
+    onEraseInstallation: @escaping (DiskLayoutDisplay.EraseTarget) -> Void = { _ in },
     onChooseSystem: (() -> Void)? = nil
   ) {
     _session = State(
@@ -172,7 +172,7 @@ struct OnePageInstallerView: View {
           layout: layout, row: row, onCancel: { erasingRow = nil },
           onErase: {
             erasingRow = nil
-            if let uuid = row.startupContainerUUID { onEraseInstallation(uuid) }
+            if let target = row.eraseTarget { onEraseInstallation(target) }
           })
       }
     }
@@ -878,6 +878,13 @@ struct DiskSplitPanel: View {
         Text(plan.targetDescription)
           .font(InstallerTheme.body)
           .foregroundStyle(InstallerTheme.secondaryText)
+        // A free extent is fixed: the breakdown, with nothing to adjust.
+        if let summary = plan.fixedExtentSummary {
+          Text(summary)
+            .font(InstallerTheme.body)
+            .foregroundStyle(InstallerTheme.secondaryText)
+            .accessibilityIdentifier("plan-fixed-extent")
+        }
       }
       HStack(alignment: .top) {
         capacity("macOS", bytes: plan.macOSBytes(for: displayedAuroraBytes), highlighted: false)

@@ -880,8 +880,11 @@
           _ in
         }
       ) { error in
-        XCTAssertEqual((error as? RemovalFailure)?.message, "injected command failure")
-        XCTAssertEqual((error as? RemovalFailure)?.complete, false)
+        // Nothing was deleted and the disk is as reviewed: the stop is
+        // recorded so it doesn't block a fresh review.
+        let stopped = error as? RemovalStopped
+        XCTAssertEqual(stopped?.detail, "injected command failure")
+        XCTAssertEqual(stopped?.removed, [])
       }
     }
 

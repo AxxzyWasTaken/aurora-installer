@@ -304,6 +304,16 @@
     var operations = [String]()
     var evidenceReads = 0
     var limitOverride: UInt64?
+    /// What the Mac starts up from, as a store UUID; nil when unknown.
+    /// Every store the Mac may start up from next; nil when unknown.
+    var startupStoreUUIDs: [String]?
+    /// Each partition is taken to have one mounted volume, named by its UUID.
+    var unmounted = [String]()
+    var remounted = [String]()
+    var remountFailures = Set<String>()
+    /// Removes this partition, then reports a failure anyway.
+    var removesThenFails: String?
+    var busy = Set<String>()
     var afterPlanning: ((FakeRemovalDisk) -> Void)?
     let failAt: Int?
     let skipGrowth: Bool
@@ -329,6 +339,20 @@
       return RemovalEvidence(files: files)
     }
     func startup(_ snapshot: RemovalSnapshot) throws -> RemovalStartup { startupState }
+    func startupStores(_ snapshot: RemovalSnapshot) throws -> [String]? { startupStoreUUIDs }
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws
+      -> [String]
+    {
+      guard !busy.contains(partition.uuid) else {
+        throw RemovalVolumeBusy(volume: partition.identifier, stillUnmounted: [])
+      }
+      unmounted.append(partition.uuid)
+      return [partition.uuid]
+    }
+    func remountVolumes(_ identifiers: [String]) -> [String] {
+      remounted += identifiers
+      return identifiers.filter(remountFailures.contains)
+    }
     func setMacOSStartup(
       _ snapshot: RemovalSnapshot, nextOnly: Bool, authorization: MachineOwnerAuthorization
     ) throws {
@@ -348,6 +372,10 @@
       state.containers.removeAll { $0.storeUUID == stub.uuid }
     }
     func erasePartition(_ partition: RemovalPartition, disk: String) throws {
+      if removesThenFails == partition.uuid {
+        state.partitions.removeAll { $0.uuid == partition.uuid }
+        throw RemovalFailure(message: "diskutil reported a failure after erasing")
+      }
       try record("erase:\(partition.uuid)")
       state.partitions.removeAll { $0.uuid == partition.uuid }
     }

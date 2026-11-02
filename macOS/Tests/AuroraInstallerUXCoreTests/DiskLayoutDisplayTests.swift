@@ -19,15 +19,21 @@
     @discardableResult
     mutating func add(
       _ kind: NativeDiskLayout.Kind, _ name: String, _ bytes: UInt64, free: UInt64? = nil,
-      recognized: Bool = false, partial: Bool = false
+      recognized: Bool = false, partial: Bool = false, members: Int = 1, refusal: String? = nil
     ) -> String {
       let identifier = kind == .free ? nil : "disk0s\(number)"
+      let uuids = identifier.map { first in
+        ["uuid-\(first)"] + (1..<max(members, 1)).map { "uuid-\(first)-\($0)" }
+      }
       if kind != .free { number += 1 }
       regions.append(
         NativeDiskLayout.Region(
           kind: kind, identifier: identifier, uuid: identifier.map { "uuid-\($0)" },
           offsetBytes: offset, lengthBytes: bytes, name: name, freeBytes: free,
-          recognized: recognized, partial: partial, isRunningMacOS: kind == .macOS && number == 3))
+          recognized: recognized, partial: partial, isRunningMacOS: kind == .macOS && number == 3,
+          memberUUIDs: uuids ?? [],
+          eraseRefusal: refusal
+            ?? (kind == .macOS ? "macOS is never erased here." : nil)))
       offset += bytes
       return identifier ?? "free@\(offset - bytes)"
     }
@@ -86,15 +92,19 @@
       XCTAssertEqual(layout.rows[1].detail, "80 GB")
       XCTAssertEqual(layout.rows[1].icon, .auroraVolume)
       XCTAssertEqual(layout.rows[3].icon, .internalDrive)
-      // Linux this installer can't prove it made has no actions at all.
-      XCTAssertNil(layout.rows[3].erase)
+      // Linux this installer didn't make can't be reset or shrunk, but Erase
+      // can still make room from it.
+      XCTAssertEqual(layout.rows[3].erase, .available)
       XCTAssertNil(layout.rows[3].reset)
       XCTAssertNil(layout.rows[3].shrink)
-      // Each Aurora row can be reset; with several installations the removal
-      // service erases none of them, and the row says why.
+      // Every installation can be erased on its own, however many share the
+      // disk; macOS never can.
+      XCTAssertNil(layout.rows[0].erase)
+      XCTAssertNil(layout.rows[0].eraseTarget)
       for row in layout.rows where row.kind == .aurora {
         XCTAssertEqual(row.reset, .available)
-        XCTAssertEqual(row.erase, .unavailable(DiskLayoutDisplay.eraseUnavailableReason))
+        XCTAssertEqual(row.erase, .available)
+        XCTAssertEqual(row.eraseTarget?.anchorUUID, "uuid-\(row.id)")
       }
       XCTAssertEqual(
         layout.segments.map(\.kind),
@@ -149,10 +159,7 @@
       XCTAssertEqual(free.maximumBytes, 60 * gb)
       XCTAssertEqual(
         free.detail, "Between Macintosh HD and Aurora Fedora Remix. macOS isn’t changed.")
-      // A lone installation is what the removal service erases.
-      var erasable = disk
-      erasable.removable = "uuid-disk0s3"
-      XCTAssertEqual(erasable.display().rows[1].erase, .available)
+      XCTAssertEqual(disk.display().rows[1].erase, .available)
     }
 
     func testTheScreenIsShownOnlyForAComplexLayout() {
@@ -185,7 +192,7 @@
       XCTAssertTrue(layout.options.isEmpty)
       XCTAssertEqual(
         layout.noRoomReason,
-        "There’s no free space big enough, and Macintosh HD has 41 GB free. Erase an installation above, or free up space in macOS until it has more than 50 GB free."
+        "There’s no free space big enough, and Macintosh HD has 41 GB free. Erase a partition above, or free up space in macOS until it has more than 50 GB free."
       )
       XCTAssertNil(LayoutFixture.mixed().display().noRoomReason)
     }
@@ -201,20 +208,55 @@
       XCTAssertEqual(row.detail, "6 GB · unfinished installation")
     }
 
-    func testErasingGrowsMacOSOverTheFreedSpaceUpToTheNextKeptPartition() {
+    func testErasingLeavesItsExtentFreeJoinedWithItsNeighboursAndMacOSUnchanged() {
       var disk = LayoutFixture()
       disk.add(.macOS, "Macintosh HD", 300 * gb, free: 92 * gb)
       disk.add(.free, "Free", 60 * gb)
-      let aurora = disk.add(.linux, "Aurora Fedora Remix", 128 * gb, recognized: true)
-      disk.removable = "uuid-disk0s3"
+      let aurora = disk.add(.linux, "Aurora Fedora Remix", 128 * gb, recognized: true, members: 4)
+      disk.add(.free, "Free", 20 * gb)
+      disk.add(.linux, "Fedora Linux with KDE Plasma", 64 * gb)
       let layout = disk.display()
       let after = try! XCTUnwrap(layout.afterErasing(aurora))
-      XCTAssertEqual(after.map(\.kind), [.appleSystem, .macOS, .appleSystem])
-      XCTAssertEqual(after[1].bytes, 488 * gb)
+      // The free space on both sides joins the erased extent: one free row.
+      XCTAssertEqual(after.map(\.kind), [.appleSystem, .macOS, .free, .otherLinux, .appleSystem])
+      XCTAssertEqual(after[1].bytes, 300 * gb)
       XCTAssertEqual(after[1].usedBytes, 208 * gb)
-      XCTAssertEqual(layout.macOSGrowthAfterErasing(aurora), 188 * gb)
-      // Rows Erase doesn't apply to have no after view.
-      XCTAssertNil(LayoutFixture.mixed().display().afterErasing("disk0s3"))
+      XCTAssertEqual(after[2].bytes, 208 * gb)
+      XCTAssertEqual(layout.freeBytesAfterErasing(aurora), 208 * gb)
+      // The row names exactly its partitions, and the space it leaves.
+      let target = try! XCTUnwrap(layout.row(aurora)?.eraseTarget)
+      XCTAssertEqual(target.memberUUIDs.count, 4)
+      XCTAssertEqual(target.anchorUUID, "uuid-\(aurora)")
+      XCTAssertEqual(target.freedBytes, 208 * gb)
+      XCTAssertEqual(
+        EraseSheetText.leaves(target.freedBytes),
+        "Leaves 208 GB of free space you can install into. macOS isn’t resized, and its files stay as they are."
+      )
+      // macOS has no after view: Erase never applies to it.
+      XCTAssertNil(layout.afterErasing("disk0s2"))
+    }
+
+    func testEraseIsOfferedForEveryPartitionTheRuleAdmitsAndExplainsTheRest() {
+      var disk = LayoutFixture()
+      disk.add(.macOS, "Macintosh HD", 300 * gb, free: 41 * gb)
+      let data = disk.add(.other, "Windows Data", 100 * gb)
+      let needed = disk.add(
+        .linux, "Old ESP", 1 * gb,
+        refusal:
+          "“Asahi” starts Linux from the EFI partition disk0s4. Erase “Asahi” together with it."
+      )
+      let layout = disk.display()
+      // A partition no installation explains gets a row of its own.
+      let other = try! XCTUnwrap(layout.row(data))
+      XCTAssertEqual(other.kind, .other)
+      XCTAssertEqual(other.erase, .available)
+      XCTAssertEqual(other.eraseTarget?.memberUUIDs, ["uuid-\(data)"])
+      XCTAssertEqual(EraseSheetText.removes(other), "Removes this partition (100 GB).")
+      // A partition the rule refuses says why, and offers nothing to erase.
+      let refused = try! XCTUnwrap(layout.row(needed))
+      XCTAssertEqual(refused.erase?.reason?.hasPrefix("“Asahi” starts Linux"), true)
+      XCTAssertNil(refused.eraseTarget)
+      XCTAssertNil(layout.afterErasing(needed))
     }
   }
 #endif

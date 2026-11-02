@@ -1195,7 +1195,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       diskTotalBytes: total,
       auroraBytes: length,
       bindingDigest: review.identity.bindingDigest,
-      isResizable: !["replace", "reinstall"].contains(review.plan.candidateKind),
+      // Only a resize has a size to choose. A free extent, a replacement and
+      // a preserved reinstall each use one fixed extent.
+      isResizable: review.plan.candidateKind == "resize",
       minimumBytes: recommendation.minimumBytes,
       maximumBytes: recommendation.maximumBytes,
       releaseDescription: release,

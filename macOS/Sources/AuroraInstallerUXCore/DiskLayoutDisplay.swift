@@ -54,8 +54,34 @@
       }
     }
 
+    /// What Erase on one row deletes. The removal service scans again and
+    /// must name exactly these partitions before anything is approved.
+    public struct EraseTarget: Equatable, Sendable, Identifiable {
+      /// The row's first partition, which names the row to the service.
+      public let anchorUUID: String
+      /// Every partition in the row, in disk order.
+      public let memberUUIDs: [String]
+      public let name: String
+      public let bytes: UInt64
+      /// The unallocated space left afterwards, joined with its neighbours.
+      public let freedBytes: UInt64
+      public var id: String { anchorUUID }
+
+      public init(
+        anchorUUID: String, memberUUIDs: [String], name: String, bytes: UInt64, freedBytes: UInt64
+      ) {
+        self.anchorUUID = anchorUUID
+        self.memberUUIDs = memberUUIDs
+        self.name = name
+        self.bytes = bytes
+        self.freedBytes = freedBytes
+      }
+    }
+
     public struct Row: Equatable, Sendable, Identifiable {
-      public enum Kind: String, Equatable, Sendable { case macOS, aurora, otherLinux }
+      /// `other` is anything else Erase may delete, such as a partition with
+      /// another file system or an APFS container without a system.
+      public enum Kind: String, Equatable, Sendable { case macOS, aurora, otherLinux, other }
 
       /// The partition identifier; for Linux, its startup container.
       public let id: String
@@ -67,8 +93,10 @@
       public let startupContainerUUID: String?
       /// Only the startup container an unfinished installation left.
       public let partial: Bool
-      /// Aurora installations only.
+      /// Every row but macOS: whether Erase may delete it.
       public let erase: Availability?
+      /// Set when Erase is available: exactly what it deletes.
+      public let eraseTarget: EraseTarget?
       /// Aurora installations only: the preserved Stage 1 reinstall.
       public let reset: Availability?
       /// macOS only, when it has room to give.
@@ -77,8 +105,10 @@
       public init(
         id: String, kind: Kind, name: String, bytes: UInt64, icon: RowIcon,
         startupContainerUUID: String? = nil, partial: Bool = false, erase: Availability? = nil,
-        reset: Availability? = nil, shrink: InstallerPlanTarget? = nil
+        eraseTarget: EraseTarget? = nil, reset: Availability? = nil,
+        shrink: InstallerPlanTarget? = nil
       ) {
+        self.eraseTarget = eraseTarget
         self.id = id
         self.kind = kind
         self.name = name
@@ -160,39 +190,34 @@
         space = "no macOS has more than \(PlainLanguage.bytes(Self.shrinkOfferedFreeBytes)) free"
       }
       return
-        "There’s no free space big enough, and \(space). Erase an installation above, or free up space in macOS until it has more than \(PlainLanguage.bytes(Self.shrinkOfferedFreeBytes)) free."
+        "There’s no free space big enough, and \(space). Erase a partition above, or free up space in macOS until it has more than \(PlainLanguage.bytes(Self.shrinkOfferedFreeBytes)) free."
     }
 
-    /// The same disk once this row's installation is erased, as the removal
-    /// service does it: macOS grows over the freed space up to the next
-    /// partition it keeps. Nil for a row Erase does not apply to.
+    /// The same disk once this row is erased, as the removal service does it:
+    /// its extent becomes unallocated and joins the free space on either
+    /// side. Nothing grows into it. Nil for a row Erase does not apply to.
     public func afterErasing(_ rowID: String) -> [Segment]? {
       guard let erased = segments.firstIndex(where: { $0.id == rowID }),
-        rows.first(where: { $0.id == rowID })?.erase?.isAvailable == true,
-        let macOS = segments.firstIndex(where: { $0.kind == .macOS })
+        rows.first(where: { $0.id == rowID })?.erase?.isAvailable == true
       else { return nil }
+      var first = erased
+      var last = erased
+      while first > 0, segments[first - 1].kind == .free { first -= 1 }
+      while last + 1 < segments.count, segments[last + 1].kind == .free { last += 1 }
       var result = segments
-      result[erased] = Segment(
-        id: "erased:\(rowID)", kind: .free, name: "Free", bytes: segments[erased].bytes)
-      var grown = result[macOS].bytes
-      var next = macOS + 1
-      while next < result.count, result[next].kind == .free {
-        grown += result[next].bytes
-        result.remove(at: next)
-      }
-      let old = result[macOS]
-      result[macOS] = Segment(
-        id: old.id, kind: .macOS, name: old.name, bytes: grown, usedBytes: old.usedBytes)
+      result.replaceSubrange(
+        first...last,
+        with: [
+          Segment(
+            id: "erased:\(rowID)", kind: .free, name: "Free",
+            bytes: segments[first...last].reduce(0) { $0 + $1.bytes })
+        ])
       return result
     }
 
-    /// What the macOS that grows after Erase gains, for the sheet's summary.
-    public func macOSGrowthAfterErasing(_ rowID: String) -> UInt64? {
-      guard let after = afterErasing(rowID),
-        let before = segments.first(where: { $0.kind == .macOS }),
-        let grown = after.first(where: { $0.id == before.id })
-      else { return nil }
-      return grown.bytes - before.bytes
+    /// The free extent Erase leaves for this row, joined with its neighbours.
+    public func freeBytesAfterErasing(_ rowID: String) -> UInt64? {
+      afterErasing(rowID)?.first { $0.id == "erased:\(rowID)" }?.bytes
     }
 
     public func freeBytes(of rowID: String) -> UInt64? {
@@ -276,16 +301,15 @@
             Segment(
               id: id, kind: region.recognized ? .aurora : .otherLinux, name: region.name,
               bytes: region.lengthBytes))
+          let erase = eraseAvailability(region)
           guard region.recognized else {
             rows.append(
               Row(
                 id: id, kind: .otherLinux, name: region.name, bytes: region.lengthBytes,
-                icon: icon(region)))
+                icon: icon(region), startupContainerUUID: region.uuid, erase: erase,
+                eraseTarget: eraseTarget(region, index: index)))
             continue
           }
-          let erase: Availability =
-            region.uuid != nil && region.uuid == layout.removableStartupContainerUUID
-            ? .available : .unavailable(Self.eraseUnavailableReason)
           let reset: Availability =
             region.partial
             ? .unavailable(Self.partialResetReason)
@@ -295,7 +319,7 @@
             Row(
               id: id, kind: .aurora, name: region.name, bytes: region.lengthBytes,
               icon: icon(region), startupContainerUUID: region.uuid, partial: region.partial,
-              erase: erase, reset: reset))
+              erase: erase, eraseTarget: eraseTarget(region, index: index), reset: reset))
         case .free:
           segments.append(Segment(id: id, kind: .free, name: "Free", bytes: region.lengthBytes))
           guard freeSpaceOffsets.contains(region.offsetBytes) else { continue }
@@ -328,9 +352,58 @@
         case .other:
           segments.append(
             Segment(id: id, kind: .other, name: region.name, bytes: region.lengthBytes))
+          // A partition no installation explains, such as another file
+          // system: Erase may still make room from it.
+          rows.append(
+            Row(
+              id: id, kind: .other, name: region.name, bytes: region.lengthBytes,
+              icon: icon(region), erase: eraseAvailability(region),
+              eraseTarget: eraseTarget(region, index: index)))
         }
       }
+      func eraseAvailability(_ region: NativeDiskLayout.Region) -> Availability {
+        region.isErasable
+          ? .available : .unavailable(region.eraseRefusal ?? Self.eraseUnavailableReason)
+      }
+      func eraseTarget(_ region: NativeDiskLayout.Region, index: Int) -> EraseTarget? {
+        guard region.isErasable, let anchor = region.memberUUIDs.first else { return nil }
+        // The region's extent with the free space on either side, as the
+        // partition map will show it once its partitions are gone.
+        var freed = region.lengthBytes
+        var before = index - 1
+        while before >= 0, regions[before].kind == .free {
+          freed += regions[before].lengthBytes
+          before -= 1
+        }
+        var after = index + 1
+        while after < regions.count, regions[after].kind == .free {
+          freed += regions[after].lengthBytes
+          after += 1
+        }
+        return EraseTarget(
+          anchorUUID: anchor, memberUUIDs: region.memberUUIDs, name: region.name,
+          bytes: region.lengthBytes, freedBytes: freed)
+      }
       self.init(totalBytes: layout.diskBytes, segments: segments, rows: rows, options: options)
+    }
+  }
+#endif
+
+#if os(macOS)
+  /// The Erase sheet's lines, before the removal service's own review.
+  public enum EraseSheetText {
+    public static func removes(_ row: DiskLayoutDisplay.Row) -> String {
+      let size = PlainLanguage.bytes(row.bytes)
+      if row.kind == .aurora {
+        return "Removes its startup volume, EFI partition and Linux partitions (\(size))."
+      }
+      let count = row.eraseTarget?.memberUUIDs.count ?? 1
+      return count == 1
+        ? "Removes this partition (\(size))." : "Removes its \(count) partitions (\(size))."
+    }
+
+    public static func leaves(_ freedBytes: UInt64) -> String {
+      "Leaves \(PlainLanguage.bytes(freedBytes)) of free space you can install into. macOS isn’t resized, and its files stay as they are."
     }
   }
 #endif

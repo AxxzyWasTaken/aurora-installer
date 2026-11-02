@@ -156,6 +156,8 @@
     private let executor: any ImportedEngineHandoffExecuting
     private let importer: EngineHandoffPackageImporter
     private let removalDisks: any RemovalDiskOperating
+    /// Erase to free space reads the disk with container facts, as inspection does.
+    private let removalCollect: @Sendable () throws -> NativeCollectedDisk
     private let removalAdminValidator: @Sendable (MachineOwnerAuthorization) throws -> Void
     private let espDisks: any InstallConfESPDiskOperating
     private let selfUninstaller: any HelperSelfUninstalling
@@ -188,6 +190,9 @@
       jobs = InstallerJobRegistry(workingDirectory: workingDirectory, work: workState)
       importer = EngineHandoffPackageImporter()
       removalDisks = MacRemovalDiskOperator()
+      removalCollect = {
+        try NativeDiskCollector().collect(host: AppleSiliconHostInspector().inspect())
+      }
       removalAdminValidator = requireRemovalAdministrator
       espDisks = DiskutilInstallConfESPOperator()
     }
@@ -196,6 +201,9 @@
       workingDirectory: URL, executor: any ImportedEngineHandoffExecuting,
       credentialValidator: any MachineOwnerCredentialValidating,
       removalDisks: any RemovalDiskOperating,
+      removalCollect: @escaping @Sendable () throws -> NativeCollectedDisk = {
+        throw RemovalFailure(message: RemovalText.eraseUnreadable)
+      },
       removalAdminValidator: @escaping @Sendable (MachineOwnerAuthorization) throws -> Void,
       espDisks: any InstallConfESPDiskOperating = DiskutilInstallConfESPOperator(),
       selfUninstaller: any HelperSelfUninstalling = NoHelperSelfUninstall(),
@@ -211,6 +219,7 @@
         workingDirectory: workingDirectory, work: work, retryEligibility: retryEligibility)
       importer = EngineHandoffPackageImporter()
       self.removalDisks = removalDisks
+      self.removalCollect = removalCollect
       self.removalAdminValidator = removalAdminValidator
       self.espDisks = espDisks
     }
@@ -291,14 +300,19 @@
       return RecoveryAccountReply(ticket: ticket, target: observed.target, record: record)
     }
 
+    /// - Parameter erasing: Erase on the Partitions screen: the chosen row's
+    ///   first partition. Its partitions are deleted and their extent stays
+    ///   unallocated. Nil for removal, which returns the space to macOS.
     public func removal(
-      ticketID: UUID?, confirmation: String, authorization: MachineOwnerAuthorization?
+      ticketID: UUID?, confirmation: String, authorization: MachineOwnerAuthorization?,
+      erasing: String? = nil
     ) async throws -> AuroraRemovalReply {
       guard !isRetiring else { throw ClosedEngineHelperError.retiring }
       try work.beginJob()
       defer { work.endJob() }
       try requireNoInterruptedRemoval()
       let disks = removalDisks
+      let collect = removalCollect
       let validateAdministrator = removalAdminValidator
       // A partial fresh install is removed only on its own journal's proof.
       let journals = NativeRemovalInstallJournals(
@@ -306,15 +320,21 @@
       if ticketID == nil {
         removalPlan = nil
         let plan = try await Task.detached {
-          try AuroraRemovalPlan(disks: disks, journals: journals)
+          if let erasing {
+            return try AuroraRemovalPlan(erasing: erasing, disks: disks, collect: collect)
+          }
+          return try AuroraRemovalPlan(disks: disks, journals: journals)
         }.value
         let ticket = plan.ticket(id: UUID())
         removalPlan = (ticket, plan, Date().addingTimeInterval(300))
         return AuroraRemovalReply(ticket: ticket, message: plan.summary)
       }
+      // A ticket is used only by the request that asked for its kind: an
+      // erase ticket never runs as removal, nor removal as an erase.
       guard let authorization, let approved = removalPlan,
         approved.ticket.id == ticketID, approved.expires > Date(),
-        confirmation == approved.ticket.confirmation
+        confirmation == approved.ticket.confirmation,
+        approved.plan.erased?.anchor == erasing?.uppercased()
       else {
         throw RemovalFailure(
           message:
@@ -334,7 +354,7 @@
             throw RemovalFailure(message: "The macOS account or password was not accepted.")
           }
           try validateAdministrator(authorization)
-          let executor = AuroraRemovalExecutor(disks: disks, journals: journals)
+          let executor = AuroraRemovalExecutor(disks: disks, journals: journals, collect: collect)
           try executor.execute(approved.plan, authorization: authorization) { next in
             // The private journal is durable before each mutation, without credentials.
             let journal = RemovalJournal(plan: approved.plan, phase: next)
@@ -353,12 +373,20 @@
             phase = next
           }
           let name = approved.plan.installation?.name ?? approved.plan.partial?.name
-          var message =
-            name.map {
-              "“\($0)” and its data have been removed. The freed space is now part of macOS."
-            } ?? "The free space is now part of macOS."
+          var message: String
+          if let erased = approved.plan.erased {
+            message =
+              "“\(erased.name)” was erased. Its space is now \(RemovalText.size(erased.freedBytes)) of unallocated free space that you can install into."
+          } else {
+            message =
+              name.map {
+                "“\($0)” and its data have been removed. The freed space is now part of macOS."
+              } ?? "The free space is now part of macOS."
+          }
           do {
-            try retireExecutionJournals(in: workingDirectory, removal: approved.ticket.id)
+            if approved.plan.erasesStartupContainer {
+              try retireExecutionJournals(in: workingDirectory, removal: approved.ticket.id)
+            }
           } catch {
             message +=
               " The installer couldn’t clear its record of the earlier installation, so installing again at the same size may not work."
@@ -371,6 +399,9 @@
             message =
               (error as? RemovalFailure)?.complete == true
               ? detail : "\(detail) No disk changes were made."
+          } else if let erased = approved.plan.erased {
+            message =
+              "Erase stopped, and some partitions of “\(erased.name)” may already be erased. Their space stays unallocated. \(detail) Don’t start again; the removal record was kept for recovery."
           } else if approved.plan.kind == .freeSpace {
             message =
               "macOS couldn’t confirm it took the free space. The space may still be unallocated. \(detail) Don’t start again; the removal record was kept for recovery."
@@ -814,6 +845,29 @@
       ticket: String, confirmation: String, machineOwner: String, password: Data,
       reply: @escaping @Sendable (Data?, NSError?) -> Void
     ) {
+      removal(
+        erasing: nil, ticket: ticket, confirmation: confirmation, machineOwner: machineOwner,
+        password: password, reply: reply)
+    }
+
+    public func erase(
+      partition: String, ticket: String, confirmation: String, machineOwner: String,
+      password: Data, reply: @escaping @Sendable (Data?, NSError?) -> Void
+    ) {
+      guard let uuid = UUID(uuidString: partition) else {
+        let message = RemovalText.eraseTargetGone
+        reply(try? JSONEncoder().encode(AuroraRemovalReply(message: message)), nil)
+        return
+      }
+      removal(
+        erasing: uuid.uuidString, ticket: ticket, confirmation: confirmation,
+        machineOwner: machineOwner, password: password, reply: reply)
+    }
+
+    private func removal(
+      erasing: String?, ticket: String, confirmation: String, machineOwner: String,
+      password: Data, reply: @escaping @Sendable (Data?, NSError?) -> Void
+    ) {
       let server = server
       Task {
         do {
@@ -825,7 +879,7 @@
             ? nil : try MachineOwnerAuthorization(username: machineOwner, password: password)
           let result = try await server.removal(
             ticketID: UUID(uuidString: ticket), confirmation: confirmation,
-            authorization: authorization)
+            authorization: authorization, erasing: erasing)
           reply(try JSONEncoder().encode(result), nil)
           if result.completed { await server.retireAfterCompletion() }
         } catch {

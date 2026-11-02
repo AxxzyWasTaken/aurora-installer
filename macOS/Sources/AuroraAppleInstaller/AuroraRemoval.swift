@@ -6,6 +6,9 @@
     case installation
     /// No installation left; only unallocated space directly after macOS.
     case freeSpace
+    /// One row of the Partitions screen: its partitions are deleted and
+    /// their extent stays unallocated. macOS isn't resized.
+    case eraseToFreeSpace
   }
 
   public struct AuroraRemovalItem: Codable, Equatable, Sendable {
@@ -34,13 +37,22 @@
     /// the app can refuse a ticket for another installation than the one
     /// the person chose. Nil for free space, and from older helpers.
     public let startupContainerUUID: String?
+    /// Erase to free space only: every partition it deletes, in disk order,
+    /// which must be exactly the row the person chose.
+    public let erasedPartitionUUIDs: [String]?
+    /// Erase to free space only: the unallocated extent left afterwards,
+    /// including the free space it joins on either side.
+    public let freedBytes: UInt64?
     public init(
       id: UUID, kind: AuroraRemovalKind = .installation, reclaimBytes: UInt64,
       macOSBytesAfter: UInt64, deletions: [AuroraRemovalItem] = [],
       kept: [AuroraRemovalItem] = [], notes: [String] = [],
-      startupDisk: AuroraRemovalItem? = nil, startupContainerUUID: String? = nil
+      startupDisk: AuroraRemovalItem? = nil, startupContainerUUID: String? = nil,
+      erasedPartitionUUIDs: [String]? = nil, freedBytes: UInt64? = nil
     ) {
       self.startupContainerUUID = startupContainerUUID
+      self.erasedPartitionUUIDs = erasedPartitionUUIDs
+      self.freedBytes = freedBytes
       self.id = id
       self.kind = kind
       self.reclaimBytes = reclaimBytes
@@ -63,12 +75,29 @@
       startupDisk = try values.decodeIfPresent(AuroraRemovalItem.self, forKey: .startupDisk)
       startupContainerUUID = try values.decodeIfPresent(
         String.self, forKey: .startupContainerUUID)
+      erasedPartitionUUIDs = try values.decodeIfPresent(
+        [String].self, forKey: .erasedPartitionUUIDs)
+      freedBytes = try values.decodeIfPresent(UInt64.self, forKey: .freedBytes)
     }
     public var confirmation: String {
-      kind == .freeSpace ? Self.freeSpaceConfirmation : Self.confirmation
+      switch kind {
+      case .freeSpace: Self.freeSpaceConfirmation
+      case .eraseToFreeSpace: Self.eraseConfirmation
+      case .installation: Self.confirmation
+      }
     }
     public static let confirmation = "erase linux and its data"
     public static let freeSpaceConfirmation = "return free space to macos"
+    public static let eraseConfirmation = "erase these partitions"
+
+    /// Whether this ticket erases exactly the partitions the person chose.
+    public func erases(exactly partitions: [String]) -> Bool {
+      guard kind == .eraseToFreeSpace, let erased = erasedPartitionUUIDs else { return false }
+      func normalized(_ values: [String]) -> Set<String> {
+        Set(values.map { $0.uppercased() })
+      }
+      return erased.count == partitions.count && normalized(erased) == normalized(partitions)
+    }
   }
 
   public struct AuroraRemovalReply: Codable, Sendable {
@@ -176,6 +205,17 @@
     }
   }
 
+  /// The row Erase to free space deletes, as the plan was reviewed.
+  struct RemovalErasedRegion: Codable, Equatable, Sendable {
+    /// The row's first partition, which names it.
+    let anchor: String
+    let name: String
+    let memberUUIDs: [String]
+    /// The unallocated extent left afterwards, joined with its neighbours.
+    let freedOffset: UInt64
+    let freedBytes: UInt64
+  }
+
   enum RemovalStartup: Codable, Equatable, Sendable {
     case macOS
     case other(String)
@@ -200,6 +240,8 @@
     /// What the Mac started up from at review when that wasn't the running
     /// macOS. Execution sets macOS as the startup disk before deleting.
     let startup: RemovalStartup?
+    /// Erase to free space only: the row the person chose.
+    var erased: RemovalErasedRegion? = nil
 
     /// Read-only. Every check that can refuse happens here, before a ticket exists.
     init(disks: any RemovalDiskOperating, journals: (any RemovalInstallJournals)? = nil) throws {
@@ -266,9 +308,96 @@
       }
     }
 
+    /// Erase to free space: deletes a row of the Partitions screen and
+    /// leaves its extent unallocated. Read-only, like every plan: the shared
+    /// erase rule refuses here, before a ticket exists.
+    init(
+      erasing anchor: String, disks: any RemovalDiskOperating,
+      collect: () throws -> NativeCollectedDisk
+    ) throws {
+      let disk = try collect()
+      let snapshot = disk.snapshot
+      let region = try Self.erasableRegion(anchor, in: disk)
+      let members = region.memberUUIDs.compactMap { uuid in
+        snapshot.partitions.first { $0.uuid == uuid }
+      }
+      guard members.count == region.memberUUIDs.count,
+        let macOS = snapshot.partitions.first(where: { $0.uuid == snapshot.macOSStoreUUID })
+      else { throw RemovalFailure(message: RemovalText.eraseTargetGone) }
+      self.snapshot = snapshot
+      kind = .eraseToFreeSpace
+      installation = nil
+      evidence = nil
+      partial = nil
+      nativeJournal = nil
+      // A container goes first: if one of its volumes is busy, diskutil
+      // refuses before any other partition is touched.
+      self.members =
+        members.filter { $0.type == "Apple_APFS" } + members.filter { $0.type != "Apple_APFS" }
+      self.macOS = macOS
+      targetMacOSBytes = macOS.size
+      let freed = NativePartitionErase.freedExtent(members: members, snapshot: snapshot)
+      erased = RemovalErasedRegion(
+        anchor: anchor.uppercased(), name: region.name, memberUUIDs: region.memberUUIDs,
+        freedOffset: freed?.offset ?? region.offsetBytes,
+        freedBytes: freed?.length ?? members.reduce(0) { $0 + $1.size })
+      // Only a startup container or the EFI partition it starts from can be
+      // what the Mac starts up from now.
+      let touchesStartup = members.contains { ["Apple_APFS", "EFI"].contains($0.type) }
+      let startup = touchesStartup ? try disks.startup(snapshot) : .macOS
+      self.startup = startup == .macOS ? nil : startup
+    }
+
+    /// The row with this first partition, when Erase may delete it.
+    static func erasableRegion(_ anchor: String, in disk: NativeCollectedDisk) throws
+      -> NativeDiskLayout.Region
+    {
+      let layout: NativeDiskLayout
+      do { layout = try NativeDiskLayout(disk) } catch {
+        throw RemovalFailure(message: RemovalText.eraseUnreadable)
+      }
+      guard
+        let region = layout.regions.first(where: {
+          $0.uuid?.caseInsensitiveCompare(anchor) == .orderedSame
+        }), region.kind == .linux || region.kind == .other
+      else { throw RemovalFailure(message: RemovalText.eraseTargetGone) }
+      if let refusal = region.eraseRefusal {
+        throw RemovalFailure(message: refusal + " Nothing was changed.")
+      }
+      return region
+    }
+
+    /// Execution checks the startup disk before deleting, and sets macOS as
+    /// it when it isn't. An erase does so whenever it deletes a startup
+    /// container or an EFI partition, the only things the Mac can start up
+    /// from, even when macOS was the startup disk at review.
+    var setsMacOSStartupFirst: Bool {
+      kind == .eraseToFreeSpace
+        ? members.contains { ["Apple_APFS", "EFI"].contains($0.type) }
+        : installation != nil || partial != nil
+    }
+
+    /// The erase deletes a startup container, whose installer journals are
+    /// then stale.
+    var erasesStartupContainer: Bool {
+      kind == .eraseToFreeSpace
+        ? members.contains { part in
+          part.type == "Apple_APFS"
+            && snapshot.containers.first { $0.storeUUID == part.uuid }?.volumes.contains {
+              $0.roles == ["System"]
+            } == true
+        }
+        : installation != nil || partial != nil
+    }
+
     var reclaimBytes: UInt64 { targetMacOSBytes - macOS.size }
 
     var summary: String {
+      if let erased {
+        let first = startup == nil ? "" : "Erase first sets macOS as the startup disk. "
+        return
+          "\(first)Erase permanently deletes “\(erased.name)” and everything stored in it. Its space becomes \(RemovalText.size(erased.freedBytes)) of unallocated free space that you can install into. macOS isn’t resized."
+      }
       if let partial {
         let first = startup == nil ? "" : "Removal first sets macOS as the startup disk. "
         return
@@ -290,7 +419,17 @@
       let parts = snapshot.partitions.sorted { $0.offset < $1.offset }
       var deletions = [AuroraRemovalItem]()
       var notes = [String]()
-      if let installation {
+      if let erased {
+        for part in members.sorted(by: { $0.offset < $1.offset }) {
+          deletions.append(RemovalText.erasedItem(part, snapshot))
+        }
+        let size = members.reduce(UInt64(0)) { $0 + $1.size }
+        notes.append(
+          erased.freedBytes > size
+            ? "Its \(RemovalText.size(size)) joins the free space next to it: \(RemovalText.size(erased.freedBytes)) of unallocated space in all. macOS isn’t resized."
+            : "Its \(RemovalText.size(erased.freedBytes)) is left as unallocated space. macOS isn’t resized."
+        )
+      } else if let installation {
         deletions.append(
           AuroraRemovalItem(
             title: "Startup container “\(installation.name)”",
@@ -325,7 +464,9 @@
       var kept = [
         AuroraRemovalItem(
           title: "macOS “\(macOSName)”",
-          detail: "\(macOS.identifier) · grows to \(RemovalText.size(targetMacOSBytes))",
+          detail: erased == nil
+            ? "\(macOS.identifier) · grows to \(RemovalText.size(targetMacOSBytes))"
+            : "\(macOS.identifier) · not resized",
           bytes: macOS.size),
         AuroraRemovalItem(
           title: "Apple system container", detail: parts[0].identifier, bytes: parts[0].size),
@@ -344,8 +485,10 @@
           AuroraRemovalItem(
             title: "Separate startup container “\(name)”", detail: part.identifier, bytes: part.size
           ))
-        notes.append(
-          "The separate startup container “\(name)” is kept. macOS grows only up to it.")
+        if erased == nil {
+          notes.append(
+            "The separate startup container “\(name)” is kept. macOS grows only up to it.")
+        }
       }
       return AuroraRemovalTicket(
         id: id, kind: kind, reclaimBytes: reclaimBytes, macOSBytesAfter: targetMacOSBytes,
@@ -354,7 +497,8 @@
           AuroraRemovalItem(
             title: "Set macOS “\(macOSName)” as the startup disk",
             detail: RemovalText.startupNow($0), bytes: 0)
-        }, startupContainerUUID: installation?.stub.uuid ?? partial?.stub.uuid)
+        }, startupContainerUUID: installation?.stub.uuid ?? partial?.stub.uuid,
+        erasedPartitionUUIDs: erased?.memberUUIDs, freedBytes: erased?.freedBytes)
     }
 
     var macOSName: String {
@@ -416,6 +560,9 @@
   struct AuroraRemovalExecutor: Sendable {
     let disks: any RemovalDiskOperating
     var journals: (any RemovalInstallJournals)? = nil
+    /// Erase to free space: a fresh scan with container facts, to recheck
+    /// the row before anything is deleted.
+    var collect: (@Sendable () throws -> NativeCollectedDisk)? = nil
 
     func execute(
       _ plan: AuroraRemovalPlan, authorization: MachineOwnerAuthorization? = nil,
@@ -446,7 +593,17 @@
           try journals.creator(of: stub, in: first) == partial.journal
         else { throw changed }
       }
-      if plan.installation != nil || plan.partial != nil {
+      if let erased = plan.erased {
+        // The ticket may be minutes old: the row must still be the same
+        // partitions, and the erase rule must still admit them.
+        guard let collect else { throw changed }
+        let region: NativeDiskLayout.Region
+        do { region = try AuroraRemovalPlan.erasableRegion(erased.anchor, in: collect()) } catch {
+          throw (error as? RemovalFailure) ?? changed
+        }
+        guard region.memberUUIDs == erased.memberUUIDs else { throw changed }
+      }
+      if plan.setsMacOSStartupFirst {
         let startup = try disks.startup(first)
         if startup != .macOS {
           guard let reviewed = plan.startup, startup == reviewed else {
@@ -487,7 +644,7 @@
         try plan.validate(current, removed: removed)
         let target = try plan.live(member, in: current)
         try record("removing-\(member.uuid)")
-        if index == 0 {
+        if plan.kind == .eraseToFreeSpace ? member.type == "Apple_APFS" : index == 0 {
           // Without a new name, current macOS deletes the physical store too.
           try disks.deleteContainer(target, disk: current.disk)
         } else {
@@ -495,6 +652,12 @@
         }
         removed.insert(member.uuid)
         try plan.validate(disks.snapshot(), removed: removed)
+      }
+      // Erase leaves the extent unallocated: nothing grows into it.
+      if plan.kind == .eraseToFreeSpace {
+        try plan.validate(disks.snapshot(), removed: removed)
+        try record("complete")
+        return
       }
       // With nothing deleted yet (free space only), a refused preflight must
       // not leave a journal behind that blocks later installs.

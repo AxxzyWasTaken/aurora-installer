@@ -178,8 +178,18 @@
               version = product
               break
             }
+            // A startup container's bootloader names the EFI partition it
+            // starts Linux from; Erase never removes one a kept container needs.
+            let boot =
+              stub
+              ? try tree.read(
+                ["Finish Installation.app", "Contents", "Resources", "boot.bin"], limit: 64 << 20)
+              : nil
             return NativeSystemVolumeFacts(
-              group: group, label: system.name, stub: stub, version: version)
+              group: group, label: system.name, stub: stub, version: version,
+              bootPartitions: boot.flatMap(RemovalEvidence.efiPartitions(bootObject:))?.compactMap {
+                UUID(uuidString: $0)?.uuidString
+              })
           }
           // The booted System volume is normally a mounted snapshot, whose
           // BSD identity differs from the underlying System volume's identity.

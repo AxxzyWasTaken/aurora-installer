@@ -37,13 +37,23 @@
       public let partial: Bool
       /// The macOS that is running now.
       public let isRunningMacOS: Bool
+      /// The partitions in this region, in disk order. Erase deletes exactly
+      /// these and leaves their extent unallocated.
+      public internal(set) var memberUUIDs: [String] = []
+      /// Why Erase may not delete this region's partitions; nil when it may.
+      public internal(set) var eraseRefusal: String?
+      /// Erase is offered for Linux and other partitions, never for macOS or
+      /// Apple's own, and only when the shared erase rule admits them.
+      public var isErasable: Bool { [.linux, .other].contains(kind) && eraseRefusal == nil }
 
       public init(
         kind: Kind, identifier: String? = nil, uuid: String? = nil, offsetBytes: UInt64,
         lengthBytes: UInt64, name: String, freeBytes: UInt64? = nil,
         systemVolumeUUID: String? = nil, recognized: Bool = false, partial: Bool = false,
-        isRunningMacOS: Bool = false
+        isRunningMacOS: Bool = false, memberUUIDs: [String] = [], eraseRefusal: String? = nil
       ) {
+        self.memberUUIDs = memberUUIDs
+        self.eraseRefusal = eraseRefusal
         self.kind = kind
         self.identifier = identifier
         self.uuid = uuid
@@ -170,6 +180,22 @@
               kind: .other, identifier: part.identifier, uuid: part.uuid,
               offsetBytes: part.offset, lengthBytes: part.size,
               name: part.name.isEmpty ? "Other" : part.name))
+        }
+      }
+      // Each region's partitions, and whether Erase may delete them, by the
+      // rule the helper applies again to its own scan.
+      for index in regions.indices where regions[index].kind != .free {
+        let region = regions[index]
+        let members = snapshot.partitions.filter {
+          $0.offset >= region.offsetBytes && $0.end <= region.endBytes
+        }.sorted { $0.offset < $1.offset }
+        regions[index].memberUUIDs = members.map(\.uuid)
+        switch region.kind {
+        case .macOS: regions[index].eraseRefusal = "macOS is never erased here."
+        case .appleSystem:
+          regions[index].eraseRefusal = "Apple’s system partitions are never erased."
+        default:
+          regions[index].eraseRefusal = NativePartitionErase.refusal(members: members, disk: disk)
         }
       }
       let removable: String?

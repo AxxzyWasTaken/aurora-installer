@@ -261,6 +261,28 @@
       XCTAssertTrue(try XCTUnwrap(unnamed.remedy).hasPrefix("Install the latest macOS"))
     }
 
+    func testAChosenFreeExtentIsShownReadOnlyWithItsBreakdown() {
+      let gb: UInt64 = 1_000_000_000
+      let free = PlanDisplay(
+        diskTotalBytes: 1_000 * gb, auroraBytes: 208 * gb, bindingDigest: "free",
+        isResizable: false, minimumBytes: 208 * gb, maximumBytes: 208 * gb,
+        targetDescription: "Internal storage · Use free space", fixedMacOSBytes: 300 * gb,
+        allocationSource: .freeExtent, baselineMacOSBytes: 300 * gb, otherAllocatedBytes: 400 * gb)
+      XCTAssertFalse(free.isResizable)
+      XCTAssertEqual(
+        free.fixedExtentSummary,
+        "Aurora uses all 208 GB of this free space. macOS stays 300 GB and isn’t changed.")
+      // The bar's breakdown doesn't move with the allocation: macOS keeps its size.
+      XCTAssertEqual(free.macOSBytes(for: free.auroraBytes), 300 * gb)
+      XCTAssertEqual(free.unallocatedBytes(for: free.auroraBytes), 92 * gb)
+      // A resize keeps its slider and has no fixed summary.
+      let resize = PlanDisplay(
+        diskTotalBytes: 1_000 * gb, auroraBytes: 128 * gb, bindingDigest: "resize",
+        minimumBytes: 40 * gb, maximumBytes: 300 * gb)
+      XCTAssertTrue(resize.isResizable)
+      XCTAssertNil(resize.fixedExtentSummary)
+    }
+
     func testEveryEngineFailureReasonHasPlainWording() {
       for reason in EngineFailureReason.allCases {
         for unchanged in [true, false] {

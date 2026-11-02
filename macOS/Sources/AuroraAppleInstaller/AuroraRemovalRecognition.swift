@@ -454,6 +454,41 @@
       }
     }
 
+    static let eraseTargetGone =
+      "The partitions you chose to erase aren’t on the disk as they were, or they can’t be erased. Check the disk again and choose what to erase. Nothing was changed."
+    static let eraseUnreadable =
+      "The disk’s partitions couldn’t be read consistently, so nothing can be erased. Nothing was changed."
+
+    /// One line of an erase plan: what the partition is, by type and the
+    /// volumes it holds, so the person sees exactly what goes.
+    static func erasedItem(_ part: RemovalPartition, _ snapshot: RemovalSnapshot)
+      -> AuroraRemovalItem
+    {
+      let named = part.name.isEmpty ? "" : " “\(part.name)”"
+      switch part.type {
+      case "Apple_APFS":
+        let volumes = snapshot.containers.first { $0.storeUUID == part.uuid }?.volumes ?? []
+        let system = volumes.first { $0.roles == ["System"] }
+        let title =
+          system.map { "Startup container “\($0.name)”" }
+          ?? "APFS container\(volumes.isEmpty ? named : " “\(volumes[0].name)”")"
+        let names = volumes.map { "“\($0.name)”" }.joined(separator: ", ")
+        return AuroraRemovalItem(
+          title: title,
+          detail: "\(part.identifier) · APFS" + (names.isEmpty ? "" : " · volumes \(names)"),
+          bytes: part.size)
+      case "EFI":
+        return AuroraRemovalItem(
+          title: "EFI partition\(named)", detail: part.identifier, bytes: part.size)
+      case "Linux Filesystem":
+        return AuroraRemovalItem(
+          title: "Linux partition\(named)", detail: part.identifier, bytes: part.size)
+      default:
+        return AuroraRemovalItem(
+          title: "Partition\(named)", detail: "\(part.identifier) · \(part.type)", bytes: part.size)
+      }
+    }
+
     static let startupChanged =
       "Your Mac’s startup disk changed since you reviewed removal. Close this window and review removal again."
 

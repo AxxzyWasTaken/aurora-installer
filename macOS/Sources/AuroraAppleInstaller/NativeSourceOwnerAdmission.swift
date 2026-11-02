@@ -154,9 +154,7 @@
       let device = try InstallerPerformance.measure("owner_device") {
         try NativeSourceOwnerRefusal.wrapping("hardware identity") { try environment.device() }
       }
-      guard device == package.deviceIdentifier,
-        !AppleSiliconHostInspector.isExplicitlyUnsupported(package.deviceIdentifier)
-      else { throw NativeSourceOwnerRefusal.otherMac }
+      guard device == package.deviceIdentifier else { throw NativeSourceOwnerRefusal.otherMac }
       let before =
         try layout
         ?? InstallerPerformance.measure("owner_snapshot") {

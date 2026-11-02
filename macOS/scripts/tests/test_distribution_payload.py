@@ -39,7 +39,7 @@ class DistributionPayloadTests(unittest.TestCase):
         (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'OmarchyRecovery',
             'OmarchyRecoveryBuildMode':'recovery','OmarchyRecoveryDataLayout':'external-install-data-v1'}))
 
-    def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s')):
+    def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s', 'j614s')):
         records = {}
         for board in boards:
             dedicated = self.bundle / ('esp/m1n1/boot-%s.bin' % board)
@@ -85,7 +85,7 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertFalse(receipt['private_neo_inputs'])
         self.assertFalse(receipt['native_neo_reset_qa'])
 
-    def test_every_supported_board_is_qualified_and_only_the_m3_ultra_is_cautioned(self):
+    def test_every_supported_board_is_qualified_and_only_untried_boards_are_cautioned(self):
         # Ryan 2026-10-30: M1 to M3 and the A18 Pro are supported. A board
         # whose Stage 1 is untried is warned about, not blocked. The M1 Pro,
         # Max and Ultra left the list once aura's Stage 1 shrank to 1.6 MB.
@@ -94,18 +94,19 @@ class DistributionPayloadTests(unittest.TestCase):
         qualified = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0][
             'aurora_stage1']['qualified_machines']
         caution = supported_models.stage1_caution()
-        self.assertEqual(set(caution), {'apple,j575d'})
+        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s'})
         for identifier in list(caution) + ['apple,j314s', 'apple,j316s', 'apple,j314c', 'apple,j316c',
                                            'apple,j375c', 'apple,j375d']:
             self.assertIn(identifier.removeprefix('apple,') + 'ap', qualified)
         self.assertIn('j413ap', qualified)
         self.assertIn('j700ap', qualified)
+        self.assertIn('j614sap', qualified)
         self.assertIn('j616sap', qualified)
 
-    def test_public_payload_without_the_j616s_stage_two_is_refused(self):
-        self.write_neo_stage_two(boards=('j700',))
+    def test_public_payload_without_required_m4_stage_two_is_refused(self):
+        self.write_neo_stage_two(boards=('j700', 'j616s'))
         output = self.root / 'output'
-        with self.assertRaisesRegex(ValueError, 'J616s requires a current board-specific'):
+        with self.assertRaisesRegex(ValueError, 'J614s requires a current board-specific'):
             payload.assemble(self.bundle, self.app, output, release_id='fixture')
         self.assertFalse(output.exists())
 

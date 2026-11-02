@@ -82,12 +82,19 @@ enum InstallerLogFormat {
     return "\(timestamp(entry.time)) \(level) \(entry.source): \(entry.message)"
   }
 
-  /// A saved log: a header naming what was shown, then the lines.
+  /// A saved log: a header naming what was shown, then the lines. `kept` is
+  /// how many lines the window holds when older ones were dropped.
   static func document(
-    _ entries: [InstallerLogEntry], filter: InstallerLogFilter, search: String, now: Date = Date()
+    _ entries: [InstallerLogEntry], filter: InstallerLogFilter, search: String,
+    kept: Int? = nil, now: Date = Date()
   ) -> String {
     var text = "Aurora Installer log (Recovery), saved \(timestamp(now))\nFilter: \(filter.title)"
     if !search.trimmingCharacters(in: .whitespaces).isEmpty { text += ", matching “\(search)”" }
+    if let kept {
+      text +=
+        "\nOnly the newest \(kept) lines of this session are here; "
+        + "Save Full Log… writes every line of every attempt."
+    }
     text += "\n\n"
     for entry in entries { text += fileLine(entry) + "\n" }
     return text
@@ -109,9 +116,12 @@ enum InstallerLogRedactor {
     text = text.replacingOccurrences(
       of: #"\x1B\[[0-9;?]*[ -/]*[@-~]"#, with: "", options: .regularExpression)
     var cleaned = String.UnicodeScalarView()
+    // Invisible format characters, such as a right-to-left override, could
+    // make a line read differently from what it holds.
     for scalar in text.unicodeScalars
     where scalar == "\n" || scalar == "\t"
-      || (scalar.value >= 0x20 && scalar.value != 0x7F && !(0x80...0x9F).contains(scalar.value))
+      || (scalar.value >= 0x20 && scalar.value != 0x7F && !(0x80...0x9F).contains(scalar.value)
+        && scalar.properties.generalCategory != .format)
     {
       cleaned.append(scalar == "\t" ? " " : scalar)
     }
@@ -177,6 +187,8 @@ final class InstallerLog {
   private var nextSequence = 1
   private var updateScheduled = false
   private var file: URL?
+  /// Every attempt file of this session, oldest first.
+  private var attemptFiles: [URL] = []
   private var handle: FileHandle?
   private var temporary = true
   private var storageError: String?
@@ -198,6 +210,7 @@ final class InstallerLog {
     temporary = true
     let path = directory.appendingPathComponent("aurora-installer-" + UUID().uuidString + ".log")
     file = path
+    attemptFiles.append(path)
     if FileManager.default.createFile(
       atPath: path.path, contents: nil, attributes: [.posixPermissions: 0o600])
     {
@@ -257,6 +270,7 @@ final class InstallerLog {
       try handle?.close()
       handle = saved
       file = url
+      attemptFiles = attemptFiles.map { $0 == source ? url : $0 }
       // Only remove our temporary duplicate after a byte-identical copy.
       if temporary { try? FileManager.default.removeItem(at: source) }
       temporary = false
@@ -274,6 +288,31 @@ final class InstallerLog {
     }
     guard let file else { return "" }
     return try String(contentsOf: file, encoding: .utf8)
+  }
+
+  /// Every line of every attempt in this session, from their files, so
+  /// nothing the window dropped is lost. It works before an attempt is
+  /// saved with the installation, and after a failure.
+  func sessionText() -> String {
+    lock.lock()
+    defer { lock.unlock() }
+    try? handle?.synchronize()
+    var text = ""
+    for (index, url) in attemptFiles.enumerated() {
+      text += "=== Attempt \(index + 1): \(url.path) ===\n"
+      do { text += try String(contentsOf: url, encoding: .utf8) } catch {
+        text += "This attempt’s file could not be read: \(error.localizedDescription)\n"
+      }
+    }
+    if let storageError { text += "Log storage error: \(storageError)\n" }
+    return text
+  }
+
+  /// Where the current attempt's file is; Save writes here when it can't ask.
+  var attemptDirectory: URL {
+    lock.lock()
+    defer { lock.unlock() }
+    return file?.deletingLastPathComponent() ?? directory
   }
 
   /// Commands still running, oldest first.
@@ -333,7 +372,9 @@ final class CommandLog {
   private let number: Int
   private let started = Date()
   private let secrets: [String]
+  /// The output taken so far, and the latest snapshot.
   private var previous = ""
+  private var latest = ""
   private var partial = ""
   private var recent: [String] = []
 
@@ -356,8 +397,25 @@ final class CommandLog {
 
   /// Takes the command's cumulative output so far.
   func output(_ snapshot: String) {
+    latest = snapshot
+    take(Self.settled(snapshot))
+  }
+
+  /// The snapshot without what the next read may still change: a trailing
+  /// carriage return, which may begin a CRLF, and a trailing replacement
+  /// character, which may be a multi-byte character cut by the read.
+  static func settled(_ snapshot: String) -> String {
+    var scalars = snapshot.unicodeScalars
+    while let last = scalars.last, last == "\r" || last == "\u{FFFD}" {
+      scalars.removeLast()
+    }
+    return String(scalars)
+  }
+
+  private func take(_ snapshot: String) {
     guard snapshot != previous else { return }
-    if snapshot.hasPrefix(previous) {
+    // Bytes, not Characters: CRLF is one Character but two bytes.
+    if snapshot.utf8.starts(with: previous.utf8) {
       add(String(decoding: snapshot.utf8.dropFirst(previous.utf8.count), as: UTF8.self))
     } else {
       // Preserve diagnostics if a producer revises its output instead
@@ -386,6 +444,8 @@ final class CommandLog {
   /// How the command ended. `reason` describes a status that is not an
   /// exit code, such as an authorization failure. Previews pass `elapsed`.
   func finish(status: Int32, reason: String? = nil, elapsed: TimeInterval? = nil) {
+    // Nothing follows now: take what was held back.
+    take(latest)
     if !partial.isEmpty {
       emit(partial)
       partial = ""

@@ -133,6 +133,24 @@ import Foundation
     let document = InstallerLogFormat.document(
       Array(log.entries.suffix(1)), filter: .all, search: "fox")
     try require(document.contains("Filter: Show All Logs, matching “fox”"), "saved header")
+    try require(!document.contains("Only the newest"), "a complete log says nothing more")
+    let clipped = InstallerLogFormat.document(
+      Array(log.entries.suffix(1)), filter: .all, search: "", kept: log.displayLimit)
+    try require(
+      clipped.contains("Only the newest \(log.displayLimit) lines of this session are here"),
+      "a clipped log says it holds only the newest lines")
+
+    // Save Full Log: every line of every attempt, saved or not, even those
+    // the window dropped.
+    let session = log.sessionText()
+    try require(
+      session.contains("=== Attempt 1: \(saved.path) ===")
+        && session.contains("=== Attempt 2: ")
+        && session.components(separatedBy: "\n").filter { $0.contains("readable log output") }
+          .count == count
+        && session.contains("END OF FIRST ATTEMPT") && session.contains("SECOND ATTEMPT"),
+      "the session text holds every attempt in full")
+    try require(log.attemptDirectory.path == root.path, "the current attempt is still unsaved")
     print(
       "PASS \(count) lines in \(String(format: "%.3f", elapsed))s; \(publications) UI publications; levels, redaction, filters, search, running commands, bounded view, complete append-only file, attempt isolation, permissions"
     )

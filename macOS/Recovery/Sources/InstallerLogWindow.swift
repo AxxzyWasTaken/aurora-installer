@@ -16,6 +16,15 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
   let filterButton = NSPopUpButton(frame: .zero, pullsDown: false)
   let searchField = NSSearchField()
   let saveButton = NSButton(title: "Save…", target: nil, action: nil)
+  let saveFullButton = NSButton(title: "Save Full Log…", target: nil, action: nil)
+  /// Shows the save panel as a sheet and says whether it is showing. The
+  /// panel is new to Recovery, so a stub that can't show it falls back.
+  static var presentSavePanel:
+    (NSSavePanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Bool = {
+      panel, window, completion in
+      panel.beginSheetModal(for: window, completionHandler: completion)
+      return window.attachedSheet === panel || panel.isVisible
+    }
   let viewer = LogTextView(text: "")
   let countLabel = NSTextField(labelWithString: "")
   private(set) var filter: InstallerLogFilter
@@ -36,7 +45,7 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
       styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered,
       defer: false)
     window.title = RecoveryLogMenu.title
-    window.minSize = NSSize(width: 560, height: 300)
+    window.minSize = NSSize(width: 700, height: 300)
     window.isReleasedWhenClosed = false
     // The menu's own item opens it; the window list would name it twice.
     window.isExcludedFromWindowsMenu = true
@@ -75,6 +84,9 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
     saveButton.bezelStyle = .rounded
     saveButton.target = self
     saveButton.action = #selector(savePressed)
+    saveFullButton.bezelStyle = .rounded
+    saveFullButton.target = self
+    saveFullButton.action = #selector(saveFullPressed)
     countLabel.font = .systemFont(ofSize: 11)
     countLabel.textColor = .secondaryLabelColor
     countLabel.lineBreakMode = .byTruncatingTail
@@ -86,7 +98,7 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
     viewer.textView.setAccessibilityLabel(RecoveryLogMenu.title)
 
     let content = NSView()
-    let top = NSStackView(views: [filterButton, NSView(), searchField, saveButton])
+    let top = NSStackView(views: [filterButton, NSView(), searchField, saveButton, saveFullButton])
     top.orientation = .horizontal
     top.spacing = 10
     top.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -113,7 +125,7 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
       lower.topAnchor.constraint(equalTo: viewer.bottomAnchor),
       footer.topAnchor.constraint(equalTo: lower.bottomAnchor),
       footer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-      searchField.widthAnchor.constraint(equalToConstant: 220),
+      searchField.widthAnchor.constraint(equalToConstant: 180),
     ])
     window.contentView = content
   }
@@ -136,6 +148,7 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
     shownQuery = (filter, search)
     visibleCount = visible.count
     saveButton.isEnabled = !visible.isEmpty
+    saveFullButton.isEnabled = !log.entries.isEmpty
     updateFooter()
   }
 
@@ -192,20 +205,46 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
     reload()
   }
 
-  @objc private func savePressed() {
-    guard let window else { return }
+  /// Save…: the lines shown.
+  @objc func savePressed() {
     let visible = InstallerLogFormat.visible(log.entries, filter: filter, search: search)
-    let text = InstallerLogFormat.document(visible, filter: filter, search: search)
-    let panel = NSSavePanel()
+    save(
+      InstallerLogFormat.document(
+        visible, filter: filter, search: search, kept: log.truncated ? log.displayLimit : nil),
+      name: "Aurora Installer Log")
+  }
+
+  /// Save Full Log…: every line of every attempt this session, from their files.
+  @objc func saveFullPressed() {
+    save(log.sessionText(), name: "Aurora Installer Full Log")
+  }
+
+  private func save(_ text: String, name: String) {
     let stamp = InstallerLogFormat.timestamp(Date()).prefix(16)
       .replacingOccurrences(of: ":", with: ".")
-    panel.nameFieldStringValue = "Aurora Installer Log \(stamp).log"
+    let fileName = "\(name) \(stamp).log"
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = fileName
     panel.canCreateDirectories = true
-    panel.beginSheetModal(for: window) { response in
-      guard response == .OK, let url = panel.url else { return }
-      do { try Data(text.utf8).write(to: url, options: .atomic) } catch {
-        NSAlert(error: error).beginSheetModal(for: window)
-      }
+    let shown =
+      window.map { window in
+        Self.presentSavePanel(panel, window) { response in
+          guard response == .OK, let url = panel.url else { return }
+          do { try Data(text.utf8).write(to: url, options: .atomic) } catch {
+            NSAlert(error: error).beginSheetModal(for: window)
+          }
+        }
+      } ?? false
+    guard !shown else { return }
+    // No panel: write beside the attempt file and say where.
+    panel.cancel(nil)
+    let url = log.attemptDirectory.appendingPathComponent(fileName)
+    do {
+      try Data(text.utf8).write(to: url, options: .atomic)
+      log.append("Saved the log to \(url.path) (the save panel couldn’t be shown)")
+    } catch {
+      log.append(
+        "Couldn’t save the log to \(url.path): \(error.localizedDescription)", level: .error)
     }
   }
 
@@ -232,12 +271,14 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
           attributes: [
             .font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.secondaryLabelColor,
           ]))
+      let sourceStart = result.length
       result.append(
         NSAttributedString(
           string: source,
           attributes: [
             .font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.tertiaryLabelColor,
           ]))
+      highlight(needle, in: entry.source, at: sourceStart, of: result)
       let color: NSColor =
         switch entry.level {
         case .error: .systemRed
@@ -252,19 +293,26 @@ final class InstallerLogWindowController: NSWindowController, NSWindowDelegate,
             .font: entry.level == .error ? bold : font, .paragraphStyle: paragraph,
             .foregroundColor: color,
           ]))
-      guard !needle.isEmpty else { continue }
-      let body = entry.message as NSString
-      var range = body.range(of: needle, options: .caseInsensitive)
-      while range.location != NSNotFound {
-        result.addAttribute(
-          .backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.55),
-          range: NSRange(location: start + range.location, length: range.length))
-        let next = range.location + range.length
-        range = body.range(
-          of: needle, options: .caseInsensitive,
-          range: NSRange(location: next, length: body.length - next))
-      }
+      highlight(needle, in: entry.message, at: start, of: result)
     }
     return result
+  }
+
+  /// Marks each match of `needle` in `text`, which starts at `offset`.
+  private static func highlight(
+    _ needle: String, in text: String, at offset: Int, of result: NSMutableAttributedString
+  ) {
+    guard !needle.isEmpty else { return }
+    let body = text as NSString
+    var range = body.range(of: needle, options: .caseInsensitive)
+    while range.location != NSNotFound {
+      result.addAttribute(
+        .backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.55),
+        range: NSRange(location: offset + range.location, length: range.length))
+      let next = range.location + range.length
+      range = body.range(
+        of: needle, options: .caseInsensitive,
+        range: NSRange(location: next, length: body.length - next))
+    }
   }
 }

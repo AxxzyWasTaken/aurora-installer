@@ -468,4 +468,79 @@ final class InstallerViewStateTests: XCTestCase {
     logs.apply(filter: .errorsOnly, search: "")
     wait("the error lines") { logs.viewer.displayedText.contains("Recovery preflight failed") }
   }
+
+  func testSaveFallsBackBesideTheAttemptFileAndFullLogKeepsEveryAttempt() throws {
+    InstallerLogWindowController.willShow = { window in
+      window.alphaValue = 0
+      window.ignoresMouseEvents = true
+    }
+    let present = InstallerLogWindowController.presentSavePanel
+    // Where AppKit can show the panel, it says so, and nothing falls back.
+    let (window, _) = show(InstallerModel())
+    let panel = NSSavePanel()
+    XCTAssertTrue(present(panel, window) { _ in })
+    window.endSheet(panel)
+    panel.orderOut(nil)
+    XCTAssertNil(window.attachedSheet)
+    self.window = nil
+    window.orderOut(nil)
+    if let sheetObserver { NotificationCenter.default.removeObserver(sheetObserver) }
+    sheetObserver = nil
+    // As in a Recovery stub that can't show the panel.
+    InstallerLogWindowController.presentSavePanel = { _, _, _ in false }
+    defer {
+      InstallerLogWindowController.willShow = nil
+      InstallerLogWindowController.presentSavePanel = present
+    }
+    let log = InstallerLog.shared
+    log.beginAttempt()
+    log.append("an earlier attempt’s line")
+    log.beginAttempt()
+    log.append("Setup failed: before the attempt was saved", level: .error)
+    let model = InstallerModel()
+    let (_, controller) = show(model)
+    defer { controller.logWindow?.close() }
+    controller.showInstallerLog()
+    let logs = try XCTUnwrap(controller.logWindow)
+    wait("the lines") { logs.viewer.displayedText.contains("before the attempt was saved") }
+    let directory = log.attemptDirectory
+    func saved(_ prefix: String) -> [URL] {
+      ((try? FileManager.default.contentsOfDirectory(
+        at: directory, includingPropertiesForKeys: nil)) ?? [])
+        .filter { $0.lastPathComponent.hasPrefix(prefix) }
+    }
+    for url in saved("Aurora Installer ") { try? FileManager.default.removeItem(at: url) }
+    defer { for url in saved("Aurora Installer ") { try? FileManager.default.removeItem(at: url) } }
+
+    logs.apply(filter: .errorsOnly, search: "")
+    logs.saveButton.performClick(nil)
+    let shown = try XCTUnwrap(saved("Aurora Installer Log ").first)
+    let text = try String(contentsOf: shown, encoding: .utf8)
+    XCTAssertTrue(text.contains("Setup failed: before the attempt was saved"))
+    XCTAssertFalse(text.contains("an earlier attempt’s line"), "Save writes the lines shown")
+    wait("where it went") { log.entries.contains { $0.message.contains(shown.lastPathComponent) } }
+
+    try XCTUnwrap(button("Save Full Log…", in: logs.window?.contentView)).performClick(nil)
+    let full = try XCTUnwrap(saved("Aurora Installer Full Log ").first)
+    let session = try String(contentsOf: full, encoding: .utf8)
+    XCTAssertTrue(session.contains("an earlier attempt’s line"))
+    XCTAssertTrue(session.contains("Setup failed: before the attempt was saved"))
+    XCTAssertTrue(session.contains("=== Attempt "))
+
+    // Search marks the source column as well as the message.
+    let marked = InstallerLogWindowController.text(
+      [
+        InstallerLogEntry(
+          sequence: 1, time: Date(), level: .debug, source: "kmutil", message: "Started #1")
+      ][...], search: "KMUTIL")
+    var highlighted = false
+    marked.enumerateAttribute(
+      .backgroundColor, in: NSRange(location: 0, length: marked.length)
+    ) { value, range, _ in
+      if value != nil, (marked.string as NSString).substring(with: range) == "kmutil" {
+        highlighted = true
+      }
+    }
+    XCTAssertTrue(highlighted)
+  }
 }

@@ -21,7 +21,7 @@ compile_run boot-selection Sources/BootSelection.swift Tests/BootSelectionCheck.
 compile_run installer-log Sources/InstallerLog.swift Tests/InstallerLogCheck.swift
 compile_run log-view Sources/InstallerTheme.swift Sources/LogTextView.swift Tests/LogTextViewCheck.swift
 compile_run sheet-presenter Sources/SheetPresenter.swift Tests/SheetPresenterCheck.swift
-compile_run primary-action Sources/RecoveryPrimaryAction.swift Tests/RecoveryPrimaryActionCheck.swift
+compile_run primary-action Sources/RecoveryPrimaryAction.swift Sources/RecoveryAccountForm.swift Tests/RecoveryPrimaryActionCheck.swift
 compile_run busy-action Sources/InstallerTheme.swift Sources/RecoveryTheme.swift Sources/RecoveryPrimaryAction.swift Sources/RecoveryBusyAction.swift Sources/RecoverySheet.swift Tests/RecoveryBusyActionCheck.swift
 compile_run details-menu Sources/RecoveryDetailsMenu.swift Tests/RecoveryDetailsMenuCheck.swift
 compile_run configuration Sources/RecoveryOwner.swift Sources/InstallConfiguration.swift Tests/InstallConfigurationCheck.swift

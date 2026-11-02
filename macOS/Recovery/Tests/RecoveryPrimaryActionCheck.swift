@@ -45,6 +45,21 @@
       precondition(wait.announcement.hasSuffix("…") && wait.announcement.count > 3)
     }
 
-    print("PASS primary buttons wait disabled with a steady title")
+    // The account hint only explains the installer's own rules.
+    let name: (String) -> Bool = { $0 == "aurora-owner" }
+    let password: (String) -> Bool = { !$0.contains("\n") }
+    func problem(_ user: String, _ first: String, _ second: String) -> String? {
+      RecoveryAccountForm.problem(
+        username: user, password: first, confirmation: second, validName: name,
+        validPassword: password)
+    }
+    precondition(problem("", "", "") == nil, "an empty form is not an error")
+    precondition(problem("Aurora", "", "") == RecoveryAccountForm.usernameProblem)
+    precondition(problem("aurora-owner", "a\nb", "") == RecoveryAccountForm.passwordProblem)
+    precondition(problem("aurora-owner", "secret", "sec") == nil, "half-typed confirmation")
+    precondition(problem("aurora-owner", "secret", "sex") == RecoveryAccountForm.mismatch)
+    precondition(problem("aurora-owner", "secret", "secrets") == RecoveryAccountForm.mismatch)
+    precondition(problem("aurora-owner", "secret", "secret") == nil)
+    print("PASS primary buttons wait disabled with a steady title; account hints follow the rules")
   }
 }

@@ -21,6 +21,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
   private var accountUsernameField: NSTextField?
   private var accountPasswordField: NSSecureTextField?
   private var accountConfirmationField: NSSecureTextField?
+  private var accountHint: NSTextField?
   private var skipButton: NSButton?
   private var issueShowing = false
   private var issueRepair = false
@@ -146,6 +147,9 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
         field.stringValue = model.accountUsername
       }
     }
+    let problem = model.accountFormProblem
+    accountHint?.stringValue = problem ?? ""
+    accountHint?.isHidden = problem == nil
     accountPasswordField?.isEnabled = !model.creatingAccount && !model.restartingWithoutAccount
     accountConfirmationField?.isEnabled = !model.creatingAccount && !model.restartingWithoutAccount
     // The model drops typed passwords on Skip and failures; keep the native fields in step.
@@ -212,6 +216,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     accountUsernameField = nil
     accountPasswordField = nil
     accountConfirmationField = nil
+    accountHint = nil
     skipButton = nil
 
     switch model.stage {
@@ -303,6 +308,15 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     stack.addArrangedSubview(fieldRow("Retype password", field: confirmation))
     accountConfirmationField = confirmation
 
+    // Explains a disabled Create Account. It is last in a top-anchored
+    // stack, so showing it moves nothing above it.
+    let hint = label("", size: 12, alignment: .left)
+    hint.textColor = AuroraTheme.danger
+    hint.preferredMaxLayoutWidth = 380
+    hint.widthAnchor.constraint(equalToConstant: 380).isActive = true
+    hint.isHidden = true
+    stack.addArrangedSubview(hint)
+    accountHint = hint
     place(stack, top: 0)
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }

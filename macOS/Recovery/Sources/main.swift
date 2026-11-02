@@ -52,6 +52,14 @@ final class InstallerModel {
   private var checkingAccount = false
   private var awaitingStartupDiskReturn = false
 
+  /// Why Create Account is unavailable, once the person has typed something.
+  var accountFormProblem: String? {
+    RecoveryAccountForm.problem(
+      username: accountUsername, password: accountPassword, confirmation: accountConfirmation,
+      validName: RecoveryAccountInstaller.validName,
+      validPassword: { (try? RecoveryAccountInstaller.validatePassword(Data($0.utf8))) != nil })
+  }
+
   var canCreateAccount: Bool {
     !creatingAccount && !restartingWithoutAccount
       && RecoveryAccountInstaller.validName(accountUsername)

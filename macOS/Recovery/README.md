@@ -71,7 +71,7 @@ The macOS CI job builds the enrollment app, runs `Recovery/test-all.sh <output>`
 
 The GUI clears password state on completion/dismissal and blanks the native password fields on Skip, Cancel and failures, and owned native command buffers are wiped before release. AppKit field editing and Swift String/Data copies cannot be guaranteed to have no allocator or framework copies; this is a bounded best-effort lifetime policy, not a claim of complete process-memory erasure.
 
-An empty authorization password keeps its sheet open. Return and Tab move through the recovery account fields, and Return in the last one creates the account. View → Show Details (Command-L) opens the details sheet once there is output, and Hide Details closes it; the menu item follows the sheet however it was closed. Sheets grow to fit long messages, and a failure raised while another sheet closes stays dismissible.
+An empty authorization password keeps its sheet open. Return and Tab move through the recovery account fields, and Return in the last one creates the account. Below the fields, one line says why Create Account is unavailable once something has been typed: a username outside the account rules, a password with line breaks, or a retyped password that differs (not while it is still a matching prefix). The account installer's own checks still decide what is accepted. View → Show Details (Command-L) opens the details sheet once there is output, and Hide Details closes it; the menu item follows the sheet however it was closed. Sheets grow to fit long messages, and a failure raised while another sheet closes stays dismissible.
 
 ## Waiting
 

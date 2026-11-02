@@ -211,6 +211,32 @@ final class InstallerViewStateTests: XCTestCase {
     XCTAssertTrue(action.spinner.isHidden)
   }
 
+  func testAccountFormExplainsADisabledCreateAccount() throws {
+    let model = InstallerModel()
+    let (_, controller) = show(model)
+    model.stage = .account
+    let action = try primary(controller)
+    let hint = try XCTUnwrap(
+      views(NSTextField.self, in: controller.view).first {
+        $0.textColor == AuroraTheme.danger
+      })
+    XCTAssertTrue(hint.isHidden, "an empty form is not an error")
+    model.accountUsername = "Aurora Owner"
+    XCTAssertFalse(hint.isHidden)
+    XCTAssertEqual(hint.stringValue, RecoveryAccountForm.usernameProblem)
+    XCTAssertFalse(action.button.isEnabled)
+    model.accountUsername = "aurora-owner"
+    model.accountPassword = "secret"
+    model.accountConfirmation = "secr"
+    XCTAssertTrue(hint.isHidden, "a half-typed confirmation is not reported")
+    model.accountConfirmation = "secrex"
+    XCTAssertEqual(hint.stringValue, RecoveryAccountForm.mismatch)
+    XCTAssertFalse(action.button.isEnabled)
+    model.accountConfirmation = "secret"
+    XCTAssertTrue(hint.isHidden)
+    XCTAssertTrue(action.button.isEnabled)
+  }
+
   func testViewMenuShowsAndHidesDetails() throws {
     let model = InstallerModel()
     let (window, controller) = show(model)

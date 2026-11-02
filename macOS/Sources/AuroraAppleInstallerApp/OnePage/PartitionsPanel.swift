@@ -46,7 +46,9 @@ struct PartitionsPanel: View {
           .font(InstallerTheme.detail).foregroundStyle(InstallerTheme.secondaryText)
           .fixedSize(horizontal: false, vertical: true)
       }
-      Divider()
+      // The rule separates the partitions from the disk overview; it gets
+      // equal extra room above and below it beyond the stack's spacing.
+      Divider().padding(.vertical, 8)
       VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .firstTextBaseline) {
           PartitionSectionTitle(text: "Disk", trailing: PlainLanguage.bytes(layout.totalBytes))

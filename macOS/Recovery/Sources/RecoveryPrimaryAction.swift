@@ -6,11 +6,12 @@ enum Stage: Int, CaseIterable {
 /// What a step's primary button is waiting for. While it waits, the button is
 /// disabled and a spinner turns to its left; VoiceOver hears `announcement`.
 enum RecoveryWait: Equatable {
-  case verifying, creatingAccount, restarting
+  case verifying, preparing, creatingAccount, restarting
 
   var announcement: String {
     switch self {
     case .verifying: return "Checking this Mac…"
+    case .preparing: return "Preparing…"
     case .creatingAccount: return "Creating the recovery account…"
     case .restarting: return "Restarting…"
     }
@@ -30,6 +31,7 @@ struct RecoveryPrimaryAction: Equatable {
     var stage: Stage
     var recoveryInterface = false
     var checkingEnvironment = false
+    var preparingTools = false
     var creatingAccount = false
     var restartingWithoutAccount = false
     var restartingCompletedSetup = false
@@ -47,6 +49,9 @@ struct RecoveryPrimaryAction: Equatable {
       wait = .creatingAccount
     } else if inputs.restartingCompletedSetup || inputs.restartingWithoutAccount {
       wait = .restarting
+    } else if inputs.preparingTools && inputs.stage == .welcome {
+      // Setup starts only after this step, so its failure shows first.
+      wait = .preparing
     } else {
       wait = nil
     }

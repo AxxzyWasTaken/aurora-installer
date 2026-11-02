@@ -33,7 +33,8 @@ final class InstallerModel {
   /// nothing has failed since. Continue then asks for the password at once
   /// while the same check runs again in the background.
   var environmentVerified = false { didSet { changed() } }
-  var readingBootFlags = false { didSet { changed() } }
+  /// Reading the Aura flags and installing the `aura` command after launch.
+  var preparingTools = false { didSet { changed() } }
   var debugEnabled = false { didSet { changed() } }
   var proxyEnabled = false { didSet { changed() } }
   var accountUsername = "" { didSet { changed() } }
@@ -51,6 +52,7 @@ final class InstallerModel {
   var previewNotice: (title: String, message: String)? { didSet { changed() } }
   private var checkingAccount = false
   private var awaitingStartupDiskReturn = false
+  private var previewChecks = 0
 
   /// Why Create Account is unavailable, once the person has typed something.
   var accountFormProblem: String? {
@@ -198,13 +200,23 @@ final class InstallerModel {
   /// main thread, so the window keeps responding while nvram and the volume
   /// remount run.
   func prepareRecoveryTools() {
+    if RecoveryActions.isPreview, let outcome = PreviewSimulation.tools {
+      preparingTools = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + PreviewSimulation.checkSeconds) {
+        self.preparingTools = false
+        if outcome == .fail {
+          self.failure = "The aura command could not be installed (simulated)."
+        }
+      }
+      return
+    }
     guard RecoveryActions.inRecovery else { return }
-    readingBootFlags = true
+    preparingTools = true
     DispatchQueue.global(qos: .userInitiated).async {
       let flags = Result { try RecoveryActions.readBootArguments() }
       let command = Result { try RecoveryActions.installCommand() }
       DispatchQueue.main.async {
-        self.readingBootFlags = false
+        self.preparingTools = false
         switch flags {
         case .success(let value):
           let arguments = value.split(whereSeparator: { $0.isWhitespace })
@@ -217,25 +229,42 @@ final class InstallerModel {
     }
   }
 
+  /// Checks the environment at launch, then prepares the Recovery tools.
+  func startLaunchCheck() {
+    checkEnrollmentEnvironment { passed in
+      if passed { self.prepareRecoveryTools() }
+    }
+  }
+
   /// Checks Recovery, root, the target volume and its paired boot policy,
-  /// then resolves the owner who authorizes enrollment. `ready` runs on
-  /// success and `failed` after a failure has been reported.
-  func checkEnrollmentEnvironment(
-    ready: @escaping () -> Void = {}, failed: @escaping () -> Void = {}
-  ) {
+  /// then resolves the owner who authorizes enrollment. `finished` gets
+  /// whether the check passed, after any failure has been reported.
+  func checkEnrollmentEnvironment(_ finished: @escaping (_ passed: Bool) -> Void = { _ in }) {
     guard !checkingEnvironment else { return }
     if RecoveryActions.isPreview {
-      // Nothing to verify. A preview can simulate how long the check takes.
-      guard PreviewTiming.environmentCheck > 0 else {
-        environmentVerified = true
-        ready()
-        return
+      // Nothing to verify; each check ends as simulated.
+      let outcome = previewChecks == 0 ? PreviewSimulation.firstCheck : PreviewSimulation.recheck
+      previewChecks += 1
+      let finish = {
+        switch outcome {
+        case .pass, .ownerChanged:
+          if outcome == .ownerChanged {
+            self.authorizationOwner = PreviewSimulation.changedOwner
+            self.authorizationUsesSourceOwner = false
+          }
+          self.environmentVerified = true
+          finished(true)
+        case .fail:
+          self.password.removeAll(keepingCapacity: false)
+          self.environmentIssue = .cannotVerify
+          finished(false)
+        }
       }
+      guard PreviewSimulation.checkSeconds > 0 else { return finish() }
       checkingEnvironment = true
-      DispatchQueue.main.asyncAfter(deadline: .now() + PreviewTiming.environmentCheck) {
+      DispatchQueue.main.asyncAfter(deadline: .now() + PreviewSimulation.checkSeconds) {
         self.checkingEnvironment = false
-        self.environmentVerified = true
-        ready()
+        finish()
       }
       return
     }
@@ -255,7 +284,7 @@ final class InstallerModel {
           self.authorizationOwner = owner
           self.authorizationUsesSourceOwner = sourceOwner
           self.environmentVerified = true
-          ready()
+          finished(true)
         }
       } catch {
         InstallerLog.shared.append("Recovery preflight failed: " + error.localizedDescription)
@@ -267,7 +296,7 @@ final class InstallerModel {
           } else {
             self.failure = error.localizedDescription
           }
-          failed()
+          finished(false)
         }
       }
     }
@@ -498,20 +527,38 @@ enum RecoveryBrand {
   }()
 }
 
-/// Preview builds only: `--preview-check-seconds=N` (0 to 30) makes the
-/// simulated environment check take N seconds, so its waiting state can be
-/// reviewed. Real Recovery builds ignore it.
-enum PreviewTiming {
-  static let environmentCheck: Double = {
-    guard RecoveryActions.isPreview,
-      let argument = CommandLine.arguments.first(where: {
-        $0.hasPrefix("--preview-check-seconds=")
-      }),
-      let seconds = Double(String(argument.dropFirst("--preview-check-seconds=".count))),
+/// Preview builds only; Recovery builds ignore it. Simulates the environment
+/// check and tool preparation so their waits and failures can be reviewed:
+/// - `--preview-check-seconds=N` (0 to 30): how long each step takes.
+/// - `--preview-recheck=owner-changed|fail`: how checks after the first end.
+/// - `--preview-tools=pass|fail`: simulate preparing the Recovery tools.
+enum PreviewSimulation {
+  enum CheckOutcome: String {
+    case pass
+    case ownerChanged = "owner-changed"
+    case fail
+  }
+  enum ToolsOutcome: String { case pass, fail }
+
+  static let changedOwner = RecoveryOwner(
+    username: "aurora-owner", uuid: UUID(uuidString: "3F2B9C1E-7A55-4E0B-9D2C-5B6A1F0E8D47")!)
+  static var checkSeconds: Double = {
+    guard let text = value("--preview-check-seconds="), let seconds = Double(text),
       seconds.isFinite
     else { return 0 }
     return min(max(seconds, 0), 30)
   }()
+  /// How the first check ends; tests can make it fail.
+  static var firstCheck = CheckOutcome.pass
+  static var recheck = value("--preview-recheck=").flatMap(CheckOutcome.init) ?? .pass
+  static var tools = value("--preview-tools=").flatMap(ToolsOutcome.init)
+
+  private static func value(_ prefix: String) -> String? {
+    guard RecoveryActions.isPreview,
+      let argument = CommandLine.arguments.first(where: { $0.hasPrefix(prefix) })
+    else { return nil }
+    return String(argument.dropFirst(prefix.count))
+  }
 }
 
 enum DestinationVolume {
@@ -591,7 +638,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       model.resumeAccountSetup()
     } else {
       // Start the check at once: Continue waits for it, with a spinner.
-      model.checkEnrollmentEnvironment { self.model.prepareRecoveryTools() }
+      model.startLaunchCheck()
     }
   }
 

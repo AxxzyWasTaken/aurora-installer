@@ -17,6 +17,12 @@
     welcome.recoveryInterface = true
     precondition(resolve(welcome) == .init(title: "Restore", isEnabled: false, wait: .verifying))
     precondition(RecoveryPrimaryAction.resolve(Inputs(stage: .installing)) == nil)
+    // Continue and Restore also wait while the Recovery tools are prepared.
+    welcome = Inputs(stage: .welcome, preparingTools: true)
+    precondition(resolve(welcome) == .init(title: "Continue", isEnabled: false, wait: .preparing))
+    welcome.recoveryInterface = true
+    precondition(resolve(welcome) == .init(title: "Restore", isEnabled: false, wait: .preparing))
+    precondition(resolve(Inputs(stage: .complete, preparingTools: true)).wait == nil)
 
     // Account: the title stays "Create Account" while it waits.
     var account = Inputs(stage: .account, accountFormValid: true)
@@ -41,7 +47,7 @@
     precondition(resolve(complete).title == "Create Recovery Account")
 
     // Every wait has something to tell VoiceOver.
-    for wait in [RecoveryWait.verifying, .creatingAccount, .restarting] {
+    for wait in [RecoveryWait.verifying, .preparing, .creatingAccount, .restarting] {
       precondition(wait.announcement.hasSuffix("…") && wait.announcement.count > 3)
     }
 

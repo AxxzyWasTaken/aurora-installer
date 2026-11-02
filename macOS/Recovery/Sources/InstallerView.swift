@@ -136,8 +136,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     debugButton?.title = model.debugEnabled ? "Disable Debug" : "Enable Debug"
     proxyButton?.title = model.proxyEnabled ? "Disable Proxy" : "Enable Proxy"
     // The toggles start from the firmware's current flags, read after launch.
-    debugButton?.isEnabled = !model.readingBootFlags
-    proxyButton?.isEnabled = !model.readingBootFlags
+    debugButton?.isEnabled = !model.preparingTools
+    proxyButton?.isEnabled = !model.preparingTools
     skipButton?.title = model.restartingWithoutAccount ? "Restarting…" : "Skip, Restart Now"
     skipButton?.isEnabled = !model.creatingAccount && !model.restartingWithoutAccount
     if let field = accountUsernameField {
@@ -198,7 +198,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
   private var primaryInputs: RecoveryPrimaryAction.Inputs {
     RecoveryPrimaryAction.Inputs(
       stage: model.stage, recoveryInterface: model.recoveryInterface,
-      checkingEnvironment: model.checkingEnvironment, creatingAccount: model.creatingAccount,
+      checkingEnvironment: model.checkingEnvironment, preparingTools: model.preparingTools,
+      creatingAccount: model.creatingAccount,
       restartingWithoutAccount: model.restartingWithoutAccount,
       restartingCompletedSetup: model.restartingCompletedSetup,
       accountAlreadyStarted: model.accountAlreadyStarted,
@@ -505,7 +506,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       return
     }
     guard model.environmentVerified else {
-      model.checkEnrollmentEnvironment { [weak self] in
+      model.checkEnrollmentEnvironment { [weak self] passed in
+        guard passed else { return }
         LaunchTrace.mark("ui.continue.ready")
         self?.showAuthorization(repair: false)
       }
@@ -519,11 +521,13 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     let sourceOwner = model.authorizationUsesSourceOwner
     showAuthorization(repair: false)
     LaunchTrace.mark("ui.continue.ready")
-    model.checkEnrollmentEnvironment(
-      ready: { [weak self] in
+    model.checkEnrollmentEnvironment { [weak self] passed in
+      if passed {
         self?.authorizationRecheckPassed(owner: owner, sourceOwner: sourceOwner)
-      },
-      failed: { [weak self] in self?.authorizationRecheckFailed() })
+      } else {
+        self?.authorizationRecheckFailed()
+      }
+    }
   }
 
   private var authorizationOpen: Bool { authorizationField != nil && !authorizationRepair }
@@ -590,8 +594,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     LaunchTrace.mark("ui.authorization.open")
     authorizationRepair = repair
     let owner =
-      RecoveryActions.inRecovery
-      ? (model.authorizationOwner?.username ?? "the volume owner") : NSUserName()
+      model.authorizationOwner?.username
+      ?? (RecoveryActions.inRecovery ? "the volume owner" : NSUserName())
     var explanation = "Enter password for " + owner + "."
     if !repair {
       explanation +=

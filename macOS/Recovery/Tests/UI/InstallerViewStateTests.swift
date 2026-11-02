@@ -25,7 +25,10 @@ final class InstallerViewStateTests: XCTestCase {
   override func setUp() {
     super.setUp()
     XCTAssertTrue(RecoveryActions.isPreview, "UI state tests need the preview build")
-    XCTAssertEqual(PreviewTiming.environmentCheck, Self.checkSeconds)
+    PreviewSimulation.checkSeconds = Self.checkSeconds
+    PreviewSimulation.firstCheck = .pass
+    PreviewSimulation.recheck = .pass
+    PreviewSimulation.tools = nil
   }
 
   override func tearDown() {
@@ -90,6 +93,23 @@ final class InstallerViewStateTests: XCTestCase {
 
   private func button(_ title: String, in root: NSView?) -> NSButton? {
     views(NSButton.self, in: root).first { $0.title == title }
+  }
+
+  private func labels(in root: NSView?) -> [String] {
+    views(NSTextField.self, in: root).map(\.stringValue)
+  }
+
+  /// Launch check passed, Continue pressed, a password typed into the prompt.
+  private func promptWithPassword(
+    _ model: InstallerModel, _ window: NSWindow, _ controller: InstallerView
+  ) throws -> (NSWindow, NSSecureTextField) {
+    model.checkEnrollmentEnvironment()
+    wait("the launch check") { model.environmentVerified && !model.checkingEnvironment }
+    try primary(controller).button.performClick(nil)
+    let prompt = try XCTUnwrap(window.attachedSheet, "the password prompt opens at once")
+    let field = try XCTUnwrap(views(NSSecureTextField.self, in: prompt.contentView).first)
+    field.stringValue = "first owner's password"
+    return (prompt, field)
   }
 
   func testLaunchCheckSpinsLeftOfACentredDisabledContinue() throws {
@@ -235,6 +255,112 @@ final class InstallerViewStateTests: XCTestCase {
     model.accountConfirmation = "secret"
     XCTAssertTrue(hint.isHidden)
     XCTAssertTrue(action.button.isEnabled)
+  }
+
+  func testLaunchPreparesToolsOnlyAfterAPassingCheck() {
+    PreviewSimulation.tools = .pass
+    let passing = InstallerModel()
+    passing.startLaunchCheck()
+    wait("the launch check") { !passing.checkingEnvironment }
+    XCTAssertTrue(passing.preparingTools, "a passing check prepares the tools")
+    wait("the tools") { !passing.preparingTools }
+
+    PreviewSimulation.firstCheck = .fail
+    let failing = InstallerModel()
+    failing.startLaunchCheck()
+    wait("the launch check") { !failing.checkingEnvironment }
+    XCTAssertEqual(failing.environmentIssue, .cannotVerify)
+    spin(Self.checkSeconds + 0.2)
+    XCTAssertFalse(failing.preparingTools, "a failed check prepares nothing")
+  }
+
+  func testContinueAfterAFailureChecksAgainBeforeAsking() throws {
+    let model = InstallerModel()
+    let (window, controller) = show(model)
+    let action = try primary(controller)
+    model.checkEnrollmentEnvironment()
+    wait("the launch check") { model.environmentVerified }
+    model.failure = "Something went wrong."
+    XCTAssertFalse(model.environmentVerified, "a failure needs a fresh check")
+    let issue = try XCTUnwrap(window.attachedSheet)
+    try XCTUnwrap(button("OK", in: issue.contentView)).performClick(nil)
+    wait("the issue to close") { window.attachedSheet == nil }
+
+    action.button.performClick(nil)
+    XCTAssertNil(window.attachedSheet, "no prompt before the check passes")
+    XCTAssertEqual(action.wait, .verifying)
+    wait("the prompt") { window.attachedSheet != nil }
+    let prompt = try XCTUnwrap(window.attachedSheet)
+    XCTAssertFalse(views(NSSecureTextField.self, in: prompt.contentView).isEmpty)
+    XCTAssertEqual(model.stage, .welcome)
+  }
+
+  func testToolsFailureShowsBeforeSetupCanStart() throws {
+    PreviewSimulation.tools = .fail
+    let model = InstallerModel()
+    let (window, controller) = show(model)
+    let action = try primary(controller)
+    model.startLaunchCheck()
+    wait("the launch check") { !model.checkingEnvironment }
+    XCTAssertEqual(action.wait, .preparing, "Continue waits for the tools")
+    XCTAssertFalse(action.button.isEnabled)
+    // Try to get ahead of the failure: Continue, type, then Install.
+    action.button.performClick(nil)
+    if let prompt = window.attachedSheet,
+      let field = views(NSSecureTextField.self, in: prompt.contentView).first
+    {
+      field.stringValue = "password"
+      wait("the tools to fail") { model.failure != nil }
+      button("Install", in: prompt.contentView)?.performClick(nil)
+    }
+    wait("the tools to fail") { model.failure != nil }
+    spin(0.3)
+    XCTAssertEqual(model.stage, .welcome, "setup never starts behind an error")
+    XCTAssertTrue(model.operations.isEmpty)
+    let sheet = try XCTUnwrap(window.attachedSheet)
+    XCTAssertTrue(labels(in: sheet.contentView).contains("Setup could not finish"))
+  }
+
+  func testRepeatedCheckFindingAnotherOwnerAsksThatOwner() throws {
+    PreviewSimulation.recheck = .ownerChanged
+    let model = InstallerModel()
+    let (window, controller) = show(model)
+    let (first, field) = try promptWithPassword(model, window, controller)
+    XCTAssertTrue(
+      labels(in: first.contentView).contains { $0.hasPrefix("Enter password for \(NSUserName()).") }
+    )
+    try XCTUnwrap(button("Install", in: first.contentView)).performClick(nil)
+    wait("a prompt for the new owner") { window.attachedSheet.map { $0 !== first } ?? false }
+    let second = try XCTUnwrap(window.attachedSheet)
+    let owner = PreviewSimulation.changedOwner.username
+    XCTAssertTrue(
+      labels(in: second.contentView).contains { $0.hasPrefix("Enter password for \(owner).") })
+    XCTAssertTrue(field.stringValue.isEmpty, "the first owner's password is dropped")
+    let secondField = try XCTUnwrap(views(NSSecureTextField.self, in: second.contentView).first)
+    XCTAssertTrue(secondField.stringValue.isEmpty)
+    XCTAssertTrue(secondField.isEnabled)
+    XCTAssertEqual(model.authorizationOwner, PreviewSimulation.changedOwner)
+    spin(0.3)
+    XCTAssertEqual(model.stage, .welcome)
+    XCTAssertTrue(model.operations.isEmpty)
+    XCTAssertTrue(model.password.isEmpty)
+  }
+
+  func testRepeatedCheckFailureClosesThePromptWithoutInstalling() throws {
+    PreviewSimulation.recheck = .fail
+    let model = InstallerModel()
+    let (window, controller) = show(model)
+    let (prompt, field) = try promptWithPassword(model, window, controller)
+    try XCTUnwrap(button("Install", in: prompt.contentView)).performClick(nil)
+    wait("the issue") { window.attachedSheet.map { $0 !== prompt } ?? false }
+    XCTAssertTrue(field.stringValue.isEmpty, "the password is cleared")
+    let issue = try XCTUnwrap(window.attachedSheet)
+    XCTAssertTrue(labels(in: issue.contentView).contains(EnrollmentGateIssue.cannotVerify.title))
+    spin(0.3)
+    XCTAssertEqual(model.stage, .welcome, "nothing is installed")
+    XCTAssertTrue(model.operations.isEmpty)
+    XCTAssertTrue(model.password.isEmpty)
+    XCTAssertFalse(model.environmentVerified)
   }
 
   func testViewMenuShowsAndHidesDetails() throws {

@@ -17,6 +17,20 @@ public enum SignedSensorInputs {
     try combined(data, payload: "FSC2", kind: "calibration", noun: "calibration")
   }
 
+  /// Validate a complete prepared container without carving out its inner IMG4.
+  public static func preparedCalibration(_ data: Data) throws -> Data {
+    if let sealed = try? sealedCalibration(data) { return sealed }
+    try require(
+      data.startIndex == 0 && !data.isEmpty && data.count <= 16 << 20,
+      "Invalid prepared sensor calibration size.")
+    let outer = try FirmwareDER.element(data, at: 0, limit: data.count)
+    try require(
+      outer.tag == 0x30 && outer.whole.count == data.count,
+      "Invalid prepared sensor calibration envelope.")
+    try require(try validCombined(data, outer), "Missing combined sensor calibration.")
+    return data
+  }
+
   /// The calibration the enclave can load. It refuses a standalone FSC2 IMG4
   /// but loads the same IM4P resealed like the root key; an FSCl record
   /// already has the combined layout and is kept as it is.

@@ -404,7 +404,9 @@
       defer { output.cancel() }
       let exited = DispatchSemaphore(value: 0)
       process.terminationHandler = { _ in exited.signal() }
+      let log = InstallerProcessLog.begin(executable, arguments, secrets: [secret, input])
       do { try process.run() } catch {
+        log?.failed("Couldn't start")
         throw RemovalStartupRefusal(reason: "bless couldn’t be started")
       }
       let writer = inputPipe.fileHandleForWriting
@@ -414,9 +416,11 @@
       if exited.wait(timeout: .now() + 120) == .timedOut {
         process.terminate()
         _ = exited.wait(timeout: .now() + 5)
+        log?.failed("Stopped: no answer within two minutes")
         throw RemovalStartupRefusal(reason: "bless didn’t finish within two minutes")
       }
       let captured = output.finish()
+      log?.end(process, standardError: captured.data, truncated: captured.truncated)
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
         let text = EngineStandardErrorRedactor.redact(
           captured.data, truncated: captured.truncated, secrets: [secret])
@@ -516,11 +520,16 @@
       }
       let exited = DispatchSemaphore(value: 0)
       process.terminationHandler = { _ in exited.signal() }
-      try process.run()
+      let log = InstallerProcessLog.begin(executable, arguments)
+      do { try process.run() } catch {
+        log?.failed("Couldn't start")
+        throw error
+      }
       if let timeout {
         if exited.wait(timeout: .now() + .seconds(timeout)) == .timedOut {
           process.terminate()
           _ = exited.wait(timeout: .now() + 5)
+          log?.failed("Stopped: no answer within \(timeout) s")
           throw RemovalFailure(
             message: "macOS didn’t finish the disk operation within \(timeout) seconds.")
         }
@@ -528,8 +537,12 @@
         exited.wait()
       }
       let result = output.finish()
+      // Standard error is read only when it is quoted: after a failure.
+      let failed = process.terminationReason != .exit || process.terminationStatus != 0
+      let standardError = failed ? errors.finish() : (data: Data(), truncated: false)
+      log?.end(process, standardError: standardError.data, truncated: standardError.truncated)
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-        let said = String(decoding: errors.finish().data, as: UTF8.self)
+        let said = String(decoding: standardError.data, as: UTF8.self)
           .split(whereSeparator: \.isNewline)
           .map { $0.trimmingCharacters(in: .whitespaces) }.last { !$0.isEmpty }
         throw RemovalFailure(

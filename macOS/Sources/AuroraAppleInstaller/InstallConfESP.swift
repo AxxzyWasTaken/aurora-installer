@@ -454,9 +454,14 @@
       process.standardOutput = pipe
       process.standardError = FileHandle.nullDevice
       process.standardInput = FileHandle.nullDevice
-      try process.run()
+      let log = InstallerProcessLog.begin("/usr/sbin/diskutil", arguments)
+      do { try process.run() } catch {
+        log?.failed("Couldn't start")
+        throw error
+      }
       let result = pipe.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
+      log?.end(process)
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
         throw InstallConfESPError.mountFailed
       }

@@ -41,7 +41,10 @@
   @MainActor
   @Observable
   public final class InstallerSession {
-    public private(set) var phase: InstallerSessionPhase = .inspecting
+    public private(set) var phase: InstallerSessionPhase = .inspecting {
+      didSet { phaseLog.entered(phase) }
+    }
+    @ObservationIgnored private var phaseLog = InstallerSessionLog()
     public private(set) var recoveryAccount: RecoveryAccountReply?
 
     /// Live per-artifact download progress keyed by role, published from the

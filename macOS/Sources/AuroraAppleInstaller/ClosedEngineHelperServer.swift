@@ -486,10 +486,17 @@
     ) async throws -> (Data, InstallConfHandoff) {
       let registry = jobs
       let observe: @Sendable (String) -> Void = { registry.note(identifier, step: $0) }
-      return try await InstallerTimingRecorder.attempt(operation.rawValue, observe: observe) {
-        try await executeSubmittedPackage(
-          packageDirectory: packageDirectory, authorization: authorization, operation: operation,
-          progress: nil, jobIdentifier: identifier, installConf: installConf)
+      // The job's log takes every line logged while it runs, without the
+      // password even where a tool or library repeats it.
+      return try await InstallerLog.logging(
+        into: registry.log(for: identifier), secrets: [authorization.password]
+      ) {
+        try await InstallerTimingRecorder.attempt(operation.rawValue, observe: observe) {
+          try await executeSubmittedPackage(
+            packageDirectory: packageDirectory, authorization: authorization,
+            operation: operation, progress: nil, jobIdentifier: identifier,
+            installConf: installConf)
+        }
       }
     }
 
@@ -534,10 +541,14 @@
     {
       let registry = jobs
       let observe: @Sendable (String) -> Void = { registry.note(identifier, step: $0) }
-      return try await InstallerTimingRecorder.attempt(
-        EngineHandoffOperation.retryRecoveryAuthorization.rawValue, observe: observe
+      return try await InstallerLog.logging(
+        into: registry.log(for: identifier), secrets: [authorization.password]
       ) {
-        try await retryRegisteredJobAttempt(identifier: identifier, authorization: authorization)
+        try await InstallerTimingRecorder.attempt(
+          EngineHandoffOperation.retryRecoveryAuthorization.rawValue, observe: observe
+        ) {
+          try await retryRegisteredJobAttempt(identifier: identifier, authorization: authorization)
+        }
       }
     }
 
@@ -613,7 +624,7 @@
         await tailer?.stop()
         if case .engineFailed(let report) = error as? PinnedAsahiEngineExecutionError {
           // The redacted stderr tail stays here, root-only; only the notice
-          // travels back to the app.
+          // travels back to the app, and only the notice reaches the log.
           EngineFailureDiagnosticsStore.write(
             report,
             operation: operation.rawValue,

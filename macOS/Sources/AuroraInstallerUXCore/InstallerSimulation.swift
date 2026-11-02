@@ -139,6 +139,7 @@
 
     public func inspect() async throws -> HostDisplay {
       try await tick()
+      SimulatedLog.inspection(supported: engineSupported)
       if let layout = Self.partitionsLayout(scenario) {
         return HostDisplay(
           chipAndSpace: "Simulated Mac · \(PlainLanguage.bytes(layout.totalBytes)) disk",
@@ -195,9 +196,13 @@
       progress: @escaping @Sendable (AssetProgressUpdate) -> Void
     ) async throws -> PlanPreparationDisplay {
       progress(AssetProgressUpdate(stage: .fetchingCatalog))
+      SimulatedLog.catalog(channel: channel)
       try await tick()
       switch scenario {
-      case .channelUnreachable: throw InstallerReleaseConfigurationError.unexpectedHTTPStatus(404)
+      case .channelUnreachable:
+        SimulatedLog.line(
+          .error, "download", "catalog.json failed: The download server answered HTTP 404.")
+        throw InstallerReleaseConfigurationError.unexpectedHTTPStatus(404)
       case .noMacRelease: throw InstallerAssetPreparationError.noMacRelease
       case .modelNotOnChannel:
         throw InstallerAssetPreparationError.notInCatalog(
@@ -210,6 +215,7 @@
           downloadURL: URL(string: "https://example.invalid/simulation")!)
       default: break
       }
+      SimulatedLog.downloadStarted(total: 4_000_000_000)
       for step in 1...5 {
         progress(
           AssetProgressUpdate(
@@ -220,13 +226,19 @@
                 bytesCompleted: UInt64(step) * 800_000_000,
                 totalBytes: 4_000_000_000, phase: step == 5 ? .verified : .downloading)
             ]))
+        if step < 5 { SimulatedLog.downloadProgress(step * 800_000_000, of: 4_000_000_000) }
         try await tick()
-        if step == 2 && scenario == .downloadFailure { throw URLError(.networkConnectionLost) }
+        if step == 2 && scenario == .downloadFailure {
+          SimulatedLog.downloadInterrupted()
+          throw URLError(.networkConnectionLost)
+        }
       }
       if scenario == .invalidDownload {
+        SimulatedLog.downloadMismatch()
         throw ArtifactStageError.digestMismatch(
           expected: "simulation-expected", actual: "simulation-corrupt")
       }
+      SimulatedLog.downloadVerified()
       if scenario == .planFailure {
         throw InstallerAllocationRecommendationError.noEligibleCandidate
       }
@@ -253,6 +265,8 @@
             recommendedAuroraBytes: 77_000_000_000))
       }
       progress(AssetProgressUpdate(stage: .planning))
+      SimulatedLog.line(
+        .progress, "Installer", "Checking this Mac with the release's installation engine")
       try await tick()
       let initial: UInt64 = 137_438_953_472
       let maximum: UInt64 =
@@ -261,6 +275,10 @@
       let requested = min(maximum, max(80_000_000_000, auroraBytes ?? initial))
       let unit = PinnedAsahiPlanRequest.allocationUnitBytes
       let length = scenario == .allocationAligned ? requested - requested % unit : requested
+      SimulatedLog.line(
+        .progress, "Installer",
+        "Planning \(InstallerLog.bytes(length)) for Aurora: resize of disk0s2 (allowed "
+          + "\(InstallerLog.bytes(80_000_000_000)) to \(InstallerLog.bytes(maximum)))")
       return .plan(
         PlanDisplay(
           diskTotalBytes: scenario == .freeSpace ? 900_000_000_000 : 994_662_584_320,
@@ -461,10 +479,13 @@
     ) async throws -> CompletionDisplay {
       // A first attempt whose credentials are refused never gets past them.
       let refused = scenario == .credentialsRejected && lock.withLock { attempts } == 0
+      if hasApprovedPlan { SimulatedLog.jobAccepted(operation) }
+      if refused { SimulatedLog.stepStopped("credential_validation", seconds: 0.81) }
       if operation == .install, hasApprovedPlan, !refused {
         for step in Self.preparationSteps {
           try await tick()
           preparation(step)
+          SimulatedLog.step(step, seconds: 0.2 + Double(step.count % 7) / 10)
         }
       }
       return try await execute(
@@ -489,6 +510,7 @@
         throw EngineXPCSubmissionError.machineOwnerCredentialsRejected
       }
       if scenario == .spaceChanged && attempt == 1 {
+        SimulatedLog.spaceRefused()
         throw EngineXPCSubmissionError.engineFailed(
           EngineFailureNotice(
             reason: .approvedSpaceChanged, exitStatus: 1, diskUnchanged: true,
@@ -496,8 +518,10 @@
       }
       if operation == .retryRecoveryAuthorization { return completion() }
       for (index, line) in Self.journalLines.enumerated() {
+        SimulatedLog.beforeRecord(index, scenario: scenario)
         try await tick()
         journal(scenario == .degradedProgress && index == 5 ? Data("broken\n".utf8) : line)
+        SimulatedLog.record(index, scenario: scenario, operation: operation)
         if index == 5 {
           if scenario == .connectionLost { throw EngineXPCSubmissionError.connectionFailed }
           if scenario == .helperFailure {
@@ -509,6 +533,7 @@
           throw EngineXPCSubmissionError.recoveryAuthorizationFailed
         }
       }
+      SimulatedLog.line(.progress, "helper", "Installation job 3f2a91c0 finished")
       return completion()
     }
 

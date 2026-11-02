@@ -70,6 +70,10 @@ The simulation matrix runs in debug; production session and trust tests run in b
 
 Simulation proves presentation and session behavior. It does not prove hardware compatibility, successful physical installation, Recovery boot, payload validity, notarization, or production deployment. No physical M1 connection is required.
 
+## Installer Log
+
+**Window → Installer Log** (⌘L) shows the simulated session's log. The simulation writes lines shaped like the live installer's and its helper's: downloads with rates, commands, journal records and failures. Hosts, files and numbers are fictitious. The simulated log stays in memory and is never saved to `~/Library/Logs`.
+
 ## Removal
 
 Choose **Installation → Erase Linux…** to dry-test removal independently of
@@ -91,4 +95,4 @@ This is a presentation prototype. It does not create an account or grant ownersh
 
 ## Flow renders
 
-`--render-flow=DIRECTORY` (debug builds only, refused by release builds) drives simulation sessions through the real pages offscreen and writes each step to a PNG: system chooser, Partitions on this Mac (light and dark), Shrink macOS and its size screen, the password sheet, installing, Start in Recovery, Use free space and its size screen, the Erase and Reset sheets, the row's ⋯ menu, the Reset review, no room and two macOS installs. Run it from the preview bundle (`Packaging/build-aurora-preview.sh`) so the app's own resources load. Liquid Glass can't be captured offscreen, so renders draw buttons in the bordered style macOS 15 uses, and the ⋯ menu, an AppKit menu, is drawn from the same items. Sheets are composited over their page.
+`--render-flow=DIRECTORY` (debug builds only, refused by release builds) drives simulation sessions through the real pages offscreen and writes each step to a PNG: system chooser, Partitions on this Mac (light and dark), Shrink macOS and its size screen, the password sheet, installing, Start in Recovery, Use free space and its size screen, the Erase and Reset sheets, the row's ⋯ menu, the Reset review, no room and two macOS installs. It ends with the Installer Log window (see [InstallerLog.md](InstallerLog.md)) at each filter level: mid-download, while the simulated helper runs a command, and after a failed Recovery handoff, with search, in light and dark appearance. The window is drawn with its title bar in an offscreen window. Run it from the preview bundle (`Packaging/build-aurora-preview.sh`) so the app's own resources load. Liquid Glass can't be captured offscreen, so renders draw buttons in the bordered style macOS 15 uses, and the ⋯ menu, an AppKit menu, is drawn from the same items. Sheets are composited over their page.

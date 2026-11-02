@@ -37,7 +37,29 @@ private final class InstallerApplicationDelegate: NSObject, NSApplicationDelegat
         "\(InstallerProductIdentity.appName) refused a duplicate or unsafe launch: \(error)\n",
         stderr)
       NSApplication.shared.terminate(nil)
+      return
     }
+    startInstallerLog()
+  }
+
+  /// The one instance logs into the shared store, and the live installer
+  /// also appends to the person's log file. Simulations stay in memory, so a
+  /// rehearsal never reads as a real installation.
+  private func startInstallerLog() {
+    let store = InstallerLogStore.shared
+    InstallerLog.setProcessBuffer(store.buffer)
+    let simulated =
+      ProcessInfo.processInfo.arguments.contains("--simulate")
+      || ProcessInfo.processInfo.arguments.contains(where: {
+        $0.hasPrefix("--preview-screen=") || $0.hasPrefix("--render-flow=")
+      })
+      || Bundle.main.object(forInfoDictionaryKey: "AuroraPreviewOnly") as? Bool == true
+    if !simulated, let directory = InstallerLogFile.defaultDirectory() {
+      store.persist(to: InstallerLogFile(directory: directory))
+    }
+    InstallerLog.progress(
+      "\(InstallerProductIdentity.appName) \(InstallerVersion.current().map { "\($0)" } ?? "") "
+        + "started" + (simulated ? " (simulation; nothing is saved to disk)" : ""))
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -291,6 +313,10 @@ struct AuroraAppleInstallerApp: App {
     .windowResizability(.contentMinSize)
     .windowStyle(.hiddenTitleBar)
     .commands {
+      CommandGroup(before: .windowList) {
+        InstallerLogMenuItem()
+        Divider()
+      }
       CommandGroup(replacing: .appInfo) {
         Button("About Aurora Installer") {
           NSApplication.shared.orderFrontStandardAboutPanel(options: [
@@ -380,6 +406,14 @@ struct AuroraAppleInstallerApp: App {
         }
       }
     }
+
+    Window(InstallerLogWindow.title, id: InstallerLogWindow.id) {
+      InstallerLogView(store: .shared)
+        .preferredColorScheme(previewColorScheme)
+    }
+    .defaultSize(width: 780, height: 480)
+    // The Window menu's own item, with ⌘L, opens it.
+    .commandsRemoved()
   }
 
   private var previewColorScheme: ColorScheme? {

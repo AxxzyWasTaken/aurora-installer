@@ -25,7 +25,11 @@
       defer { errors.cancel() }
       let exited = DispatchSemaphore(value: 0)
       process.terminationHandler = { _ in exited.signal() }
-      try process.run()
+      let log = InstallerProcessLog.begin("/usr/sbin/diskutil", arguments)
+      do { try process.run() } catch {
+        log?.failed("Couldn't start")
+        throw error
+      }
       let deadline = DispatchTime.now() + .seconds(cleanup ? 15 : 120)
       while exited.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
         let cancelled = !cleanup && Task.isCancelled
@@ -35,9 +39,15 @@
             kill(process.processIdentifier, SIGKILL)
             _ = exited.wait(timeout: .now() + .seconds(2))
           }
+          log?.failed(cancelled ? "Stopped when the task was cancelled" : "Stopped: no answer")
           if cancelled { throw CancellationError() }
           throw NativeInspectionError.queryTimedOut
         }
+      }
+      if let log {
+        let failed = process.terminationReason != .exit || process.terminationStatus != 0
+        let captured = failed ? errors.finish() : (data: Data(), truncated: false)
+        log.end(process, standardError: captured.data, truncated: captured.truncated)
       }
       if !cleanup { try Task.checkCancellation() }
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {

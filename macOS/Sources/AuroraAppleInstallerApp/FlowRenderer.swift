@@ -122,6 +122,113 @@
         let other = await inspected(scenario, selection: selection)
         if let session = other.session { save(await page(session, selection), name) }
       }
+
+      await renderInstallerLog(selection: selection, save: save)
+    }
+
+    // MARK: Installer Log
+
+    /// Window → Installer Log, frozen at the moments a person opens it to
+    /// debug: mid-download, while the helper runs a command, and after the
+    /// installation failed, at each filter level.
+    private static func renderInstallerLog(
+      selection: AuroraInstallationSelection, save: (NSBitmapImageRep?, String) -> Void
+    ) async {
+      let live = InstallerLogStore()
+      InstallerLog.setProcessBuffer(live.buffer)
+      defer { InstallerLog.setProcessBuffer(InstallerLogStore.shared.buffer) }
+      InstallerLog.progress("Aurora Installer started (simulation; nothing is saved to disk)")
+      let session = InstallerSession(
+        environment: InstallerSimulationEnvironment(
+          scenario: .recoveryRetry, delay: .milliseconds(150)),
+        allowsEncryption: selection.distribution.supportsDesktop
+          && InstallerBuildProfile.current.allowsEncryption)
+      await session.inspect()
+      let preparing = Task { await session.continueToPlan() }
+      if await wait(
+        for: live, { $0.contains { $0.activity == "download:aurora-simulated.img.zst" } })
+      {
+        // Two tenths in, so the line shows a rate and the time left.
+        try? await Task.sleep(for: .milliseconds(200))
+        let frozen = freeze(live)
+        save(await log(frozen, .errorsAndProgress), "log-progress-mid-download")
+        save(await log(frozen, .all), "log-all-mid-download")
+      }
+      await preparing.value
+      session.continueToPlanReview()
+      session.setAcknowledged(true)
+      session.approve()
+      session.presentInstallCredentials()
+      guard
+        let authorization = try? MachineOwnerAuthorization(
+          username: "owner", password: Data("simulation".utf8))
+      else { return }
+      let installing = Task { await session.submit(authorization) }
+      if await wait(for: live, { $0.contains { $0.activity == "helper/diskutil#21" } }) {
+        let frozen = freeze(live)
+        save(await log(frozen, .all), "log-all-running-command")
+        save(await log(frozen, .all, dark: true), "log-all-running-command-dark")
+      }
+      await installing.value
+      let failed = freeze(live)
+      save(await log(failed, .errorsOnly), "log-errors-after-failure")
+      save(await log(failed, .errorsAndProgress), "log-progress-after-failure")
+      save(await log(failed, .all), "log-all-after-failure")
+      save(await log(failed, .all, search: "bless", dark: true), "log-search-dark")
+      save(await log(failed, .all, search: "diskutil"), "log-search-diskutil")
+    }
+
+    private static func wait(
+      for store: InstallerLogStore, _ condition: ([InstallerLogEntry]) -> Bool
+    ) async -> Bool {
+      for _ in 0..<600 {
+        store.refresh()
+        if condition(store.running) { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+      }
+      return false
+    }
+
+    /// A copy that stops changing, so the render shows one moment.
+    private static func freeze(_ store: InstallerLogStore) -> InstallerLogStore {
+      let frozen = InstallerLogStore()
+      for entry in store.buffer.snapshot() {
+        frozen.buffer.append(
+          entry.level, source: entry.source, entry.message, time: entry.time,
+          activity: entry.activity, closesActivity: entry.closesActivity)
+      }
+      frozen.refresh()
+      return frozen
+    }
+
+    /// The log window as macOS draws it, title bar included, offscreen.
+    private static func log(
+      _ store: InstallerLogStore, _ filter: InstallerLogFilter, search: String = "",
+      dark: Bool = false
+    ) async -> NSBitmapImageRep? {
+      let size = NSSize(width: 900, height: 560)
+      let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+      let host = NSHostingView(
+        rootView: InstallerLogView(store: store, filter: filter, search: search)
+          .environment(\.colorScheme, dark ? .dark : .light))
+      host.sizingOptions = []
+      let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered,
+        defer: false)
+      window.title = InstallerLogWindow.title
+      window.isReleasedWhenClosed = false
+      window.appearance = appearance
+      window.contentView = host
+      try? await Task.sleep(for: .milliseconds(500))
+      let frame = host.superview ?? host
+      frame.layoutSubtreeIfNeeded()
+      frame.display()
+      guard let image = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return nil }
+      frame.cacheDisplay(in: frame.bounds, to: image)
+      window.contentView = nil
+      window.orderOut(nil)
+      return image
     }
 
     // MARK: Sessions

@@ -36,7 +36,7 @@
       Self(
         snapshot: { try MacRemovalDiskOperator().snapshot(maximumPartitions: 4096) },
         device: { try AppleSiliconHostInspector().inspectIdentity().deviceIdentifier },
-        command: { try AccountNativeCommand.checked($0, $1) },
+        command: { try InstallerLoggedCommand.checked($0, $1) },
         ownerUUID: { name in
           let user = try localUser(name, attributes: [kODAttributeTypeGUID])
           let values = try user.values(forAttribute: kODAttributeTypeGUID) as? [String]

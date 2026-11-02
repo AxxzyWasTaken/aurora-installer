@@ -183,7 +183,7 @@
     }
 
     static func verify(_ app: URL, requirement: String) throws {
-      _ = try AccountNativeCommand.checked(
+      _ = try InstallerLoggedCommand.checked(
         "/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=" + requirement, app.path])
     }
 

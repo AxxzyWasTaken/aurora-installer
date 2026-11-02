@@ -105,6 +105,25 @@ func httpStream(
   if !buffer.isEmpty { try receive(Data(buffer)) }
 }
 
+/// Told about firmware transfers, for the installer's log. Display only: a
+/// message names a host and file, never a key or credential.
+public enum FirmwareTransferLog {
+  public enum Level: Int, Sendable { case error, progress, debug }
+  @TaskLocal public static var observer: (@Sendable (Level, String) -> Void)?
+
+  static func note(_ level: Level, _ message: @autoclosure () -> String) {
+    observer?(level, message())
+  }
+
+  static func name(_ url: URL) -> String {
+    (url.host ?? "unknown host") + "/" + url.lastPathComponent
+  }
+
+  static func bytes(_ count: Int) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
+  }
+}
+
 /// A server error answer; a later attempt may succeed.
 public struct HTTPServerError: Error, Equatable, Sendable {
   public let status: Int
@@ -142,8 +161,9 @@ struct HTTPExchange: Sendable {
     }, sleep: { try await Task.sleep(for: $0) })
 
   /// Retries transient failures with backoff. Cancellation and every other
-  /// failure, and the last transient one, are thrown as they are.
-  func retrying(_ attempt: () async throws -> Void) async throws {
+  /// failure, and the last transient one, are thrown as they are. `label`
+  /// names the transfer in the installer's log.
+  func retrying(_ label: String = "", _ attempt: () async throws -> Void) async throws {
     var waited = 0
     while true {
       try Task.checkCancellation()
@@ -152,6 +172,11 @@ struct HTTPExchange: Sendable {
       } catch {
         guard TransientTransport.isTransient(error), waited < TransientTransport.delays.count
         else { throw error }
+        FirmwareTransferLog.note(
+          .progress,
+          "\(label.isEmpty ? "Firmware transfer" : label) interrupted (\(error)); retrying in "
+            + "\(TransientTransport.delays[waited]) (retry \(waited + 1) of "
+            + "\(TransientTransport.delays.count))")
         try await sleep(TransientTransport.delays[waited])
         waited += 1
       }
@@ -163,9 +188,11 @@ func fetchKey(_ raw: String) async throws -> Data {
   let url = try keyURL(raw)
   var request = URLRequest(url: url)
   request.timeoutInterval = 30
-  return try await httpBytes(request, maximum: 16384, keyPath: url.path) {
+  let key = try await httpBytes(request, maximum: 16384, keyPath: url.path) {
     try require($0.statusCode == 200, "Apple FCS service did not return a key.")
   }
+  FirmwareTransferLog.note(.debug, "Fetched a firmware key from \(url.host ?? "Apple")")
+  return key
 }
 
 func fetchRange(_ source: SourceRecord, record: RangeRecord, base: Int) async throws -> Data {
@@ -193,10 +220,19 @@ func fetchRange(_ source: SourceRecord, record: RangeRecord, base: Int) async th
       try require(
         data.count == record.size && data.sha256 == record.sha256,
         "Firmware range size or SHA-256 mismatch.")
+      FirmwareTransferLog.note(
+        .debug,
+        "Fetched \(FirmwareTransferLog.bytes(record.size)) of "
+          + "\(URL(string: source.url).map(FirmwareTransferLog.name) ?? "a firmware source"); "
+          + "SHA-256 matches")
       return data
     } catch {
       try Task.checkCancellation()
       last = error
+      FirmwareTransferLog.note(
+        attempt < 2 ? .progress : .error,
+        "Firmware range of \(URL(string: source.url).map(FirmwareTransferLog.name) ?? "a source") "
+          + "failed (\(error))" + (attempt < 2 ? "; retrying" : ""))
       if attempt < 2 { try await Task.sleep(for: .milliseconds(250 * (attempt + 1))) }
     }
   }

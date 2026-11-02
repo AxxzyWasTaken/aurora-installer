@@ -270,6 +270,9 @@
     /// The step a preparing or running job is on, such as `source_owner`.
     /// Older helpers never report it.
     public var preparationStep: String? = nil
+    /// The job's Installer Log lines after the cursor the app asked with.
+    /// Older helpers, and requests without a cursor, never carry it.
+    public var log: InstallerLogBatch? = nil
 
     public var initialFailureWithoutDiskChanges: EngineXPCSubmissionError? {
       guard phase == .failed, recoveryAttempt == nil, let failure, failure.diskUnchanged else {
@@ -309,6 +312,36 @@
     }
   }
 
+  extension InstallerJobSnapshot {
+    enum CodingKeys: String, CodingKey {
+      case identifier, bindingDigest, selection, phase, plan, transcript, installConf, failure
+      case journal, journalOffset, recoveryAttempt, recoveryRetryAvailable, startOverAvailable
+      case preparationStep, log
+    }
+
+    /// As synthesized, except that the log is display only: a log this build
+    /// can't read, such as a newer helper's, is left out rather than failing
+    /// the whole job.
+    public init(from decoder: any Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      identifier = try container.decode(UUID.self, forKey: .identifier)
+      bindingDigest = try container.decode(String.self, forKey: .bindingDigest)
+      selection = try container.decode(AuroraInstallationSelection.self, forKey: .selection)
+      phase = try container.decode(InstallerJobPhase.self, forKey: .phase)
+      plan = try container.decodeIfPresent(InstallerJobPlanIdentity.self, forKey: .plan)
+      transcript = try container.decodeIfPresent(Data.self, forKey: .transcript)
+      installConf = try container.decodeIfPresent(InstallConfHandoff.self, forKey: .installConf)
+      failure = try container.decodeIfPresent(InstallerJobFailure.self, forKey: .failure)
+      journal = try container.decode(Data.self, forKey: .journal)
+      journalOffset = try container.decode(UInt64.self, forKey: .journalOffset)
+      recoveryAttempt = try container.decodeIfPresent(UUID.self, forKey: .recoveryAttempt)
+      recoveryRetryAvailable = try container.decode(Bool.self, forKey: .recoveryRetryAvailable)
+      startOverAvailable = try container.decodeIfPresent(Bool.self, forKey: .startOverAvailable)
+      preparationStep = try container.decodeIfPresent(String.self, forKey: .preparationStep)
+      log = try? container.decodeIfPresent(InstallerLogBatch.self, forKey: .log)
+    }
+  }
+
   struct InstallerJobStartRequest: Codable, Sendable {
     let ticket: InstallerJobTicket
     let operation: String
@@ -318,6 +351,10 @@
   struct InstallerJobStatusRequest: Codable, Sendable {
     let ticket: InstallerJobTicket
     let journalOffset: UInt64
+    /// The last Installer Log line the app holds, and the buffer it came
+    /// from. Older apps never send them, and older helpers ignore them.
+    var logSequence: UInt64? = nil
+    var logRing: UUID? = nil
   }
 
   struct InstallerJobRecoveryRequest: Codable, Sendable {
@@ -372,10 +409,18 @@
     /// The step each running job is on. Kept in memory only: a restarted
     /// helper has no running job.
     private var steps = [UUID: String]()
+    /// Each recent job's Installer Log, in memory only and bounded. The app
+    /// reads it while it watches the job; nothing waits on the app.
+    private var logs = [UUID: InstallerLogBuffer]()
+    private var logOrder = [UUID]()
+    static let maximumLogLines = 4_000
+    static let retainedLogs = 4
     private var loaded = false
     private var loadError: (any Error)?
     private static let maximumRecordBytes = 12 * 1_048_576
     private static let maximumRecords = 32
+    /// The largest status reply the app accepts.
+    static let maximumReplyBytes = 12 * 1_048_576
 
     init(
       workingDirectory: URL, work: HelperWorkState,
@@ -437,12 +482,36 @@
         do {
           try persist(record)
           records[record.identifier] = record
+          openLog(record.identifier).append(
+            .progress, source: "helper",
+            "Accepted installation job \(Self.shortName(record.identifier)): "
+              + "\(record.operation) for \(record.selection.profileID)")
           return true
         } catch {
           work.endJob()
           throw error
         }
       }
+    }
+
+    /// The log of a job this helper started, created on first use.
+    func log(for identifier: UUID) -> InstallerLogBuffer {
+      lock.withLock { openLog(identifier) }
+    }
+
+    private func openLog(_ identifier: UUID) -> InstallerLogBuffer {
+      if let existing = logs[identifier] { return existing }
+      let buffer = InstallerLogBuffer(capacity: Self.maximumLogLines)
+      logs[identifier] = buffer
+      logOrder.append(identifier)
+      while logOrder.count > Self.retainedLogs {
+        logs.removeValue(forKey: logOrder.removeFirst())
+      }
+      return buffer
+    }
+
+    static func shortName(_ identifier: UUID) -> String {
+      String(identifier.uuidString.lowercased().prefix(8))
     }
 
     func admitted(_ identifier: UUID, package: ImportedEngineHandoffPackage) throws {
@@ -455,6 +524,10 @@
         record.phase = .running
         try persist(record)
         records[identifier] = record
+        logs[identifier]?.append(
+          .progress, source: "helper",
+          "Imported plan \(package.planDigest.prefix(12)) for \(package.deviceIdentifier) "
+            + "on \(package.storeIdentifier)")
       }
     }
 
@@ -506,8 +579,37 @@
         }
         records[identifier] = record
         holdForInspection = record.phase == .interrupted
+        logOutcome(record)
       }
       return cleanup
+    }
+
+    private func logOutcome(_ record: InstallerJobRecord) {
+      guard let log = logs[record.identifier] else { return }
+      let name = Self.shortName(record.identifier)
+      switch record.phase {
+      case .succeeded:
+        log.append(.progress, source: "helper", "Installation job \(name) finished")
+      case .failed:
+        guard let failure = record.failure else { return }
+        var detail = "\(failure.code)"
+        if let reason = failure.reason {
+          detail += ", reason \(EngineFailureReason(rawValue: reason) ?? .unclassified)"
+        }
+        if let status = failure.exitStatus { detail += ", exit \(status)" }
+        detail += failure.diskUnchanged ? ", disk unchanged" : ", disk may have changed"
+        log.append(
+          .error, source: "helper",
+          "Installation job \(name) failed (\(detail))"
+            + (failure.summary.isEmpty ? "" : ": \(failure.summary)"))
+      case .interrupted:
+        log.append(
+          .error, source: "helper",
+          "Installation job \(name) stopped before its result was saved; it is kept for inspection"
+        )
+      case .preparing, .running:
+        break
+      }
     }
 
     /// The step a job is on, for status while it runs.
@@ -534,13 +636,23 @@
         return (record, running ? steps[record.identifier] : nil)
       }
       let (journal, offset) = readJournal(record, offset: request.journalOffset)
-      return InstallerJobSnapshot(
+      // The app refuses a reply over 12 MB. A transcript can take most of
+      // that, as base64; the log gets what is left.
+      let used = ((record.transcript?.count ?? 0) + journal.count) * 4 / 3 + 65_536
+      let room = min(InstallerLogBatch.maximumBytes, max(0, Self.maximumReplyBytes - used))
+      let log = request.logSequence.flatMap { cursor in
+        lock.withLock { logs[record.identifier] }?.entries(
+          after: cursor, ring: request.logRing, maximumBytes: room)
+      }
+      var snapshot = InstallerJobSnapshot(
         identifier: record.identifier, bindingDigest: record.bindingDigest,
         selection: record.selection, phase: record.phase, plan: record.plan,
         transcript: record.transcript, installConf: record.installConf, failure: record.failure,
         journal: journal, journalOffset: offset, recoveryAttempt: record.recoveryAttempt,
         recoveryRetryAvailable: retryAvailable(record),
         startOverAvailable: abandonAvailable(record), preparationStep: step)
+      snapshot.log = log
+      return snapshot
     }
 
     /// Start over: sets a failed job aside once the person chose to. Only a
@@ -567,6 +679,8 @@
         ).write(JSONEncoder().encode(record), name: name, maximumBytes: Self.maximumRecordBytes)
         try PrivateInstallerJobFiles(directory: directory).remove(name)
         records.removeValue(forKey: record.identifier)
+        logs.removeValue(forKey: record.identifier)
+        logOrder.removeAll { $0 == record.identifier }
         return record.retainedPackageName.map {
           workingDirectory.appendingPathComponent($0, isDirectory: true)
         }
@@ -604,6 +718,9 @@
         do {
           try persist(record)
           records[record.identifier] = record
+          openLog(record.identifier).append(
+            .progress, source: "helper",
+            "Retrying Recovery authorization for job \(Self.shortName(record.identifier))")
           return true
         } catch {
           if !retainsInterruptedHold { work.endJob() }
@@ -884,7 +1001,9 @@
           if !snapshot.journal.isEmpty { journal?(snapshot.journal) }
           switch snapshot.phase {
           case .preparing, .running:
-            try await sleep(snapshot.journal.isEmpty ? .seconds(1) : .milliseconds(100))
+            // Come back soon while the journal or the log has more to give.
+            let busy = !snapshot.journal.isEmpty || snapshot.log?.more == true
+            try await sleep(busy ? .milliseconds(100) : .seconds(1))
           case .succeeded, .failed, .interrupted:
             if let transcript = snapshot.transcript { journal?(transcript) }
             return snapshot

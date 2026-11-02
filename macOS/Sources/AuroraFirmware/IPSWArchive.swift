@@ -44,7 +44,7 @@ public struct IPSWHTTPRangeReader: FirmwareRangeReading {
     request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
     var size: Int?
     var bytes = Data()
-    try await exchange.retrying {
+    try await exchange.retrying("Opening \(FirmwareTransferLog.name(url))") {
       size = nil
       bytes = Data()
       try await exchange.perform(
@@ -61,6 +61,9 @@ public struct IPSWHTTPRangeReader: FirmwareRangeReading {
       if bytes.isEmpty { throw URLError(.networkConnectionLost) }
     }
     guard bytes.count == 1, let size else { throw RestoreFailure("Invalid restore-image length.") }
+    FirmwareTransferLog.note(
+      .progress,
+      "Reading \(FirmwareTransferLog.name(url)) (\(FirmwareTransferLog.bytes(size))) by range")
     return try Self(url: url, sizeBytes: size, exchange: exchange)
   }
 
@@ -92,7 +95,7 @@ public struct IPSWHTTPRangeReader: FirmwareRangeReading {
     let end = offset + count - 1
     var data = Data()
     data.reserveCapacity(count)
-    try await exchange.retrying {
+    try await exchange.retrying("Range of \(FirmwareTransferLog.name(url))") {
       guard data.count < count else { return }
       let start = offset + data.count
       var request = URLRequest(url: url)
@@ -121,6 +124,10 @@ public struct IPSWHTTPRangeReader: FirmwareRangeReading {
       if data.count < count { throw URLError(.networkConnectionLost) }
     }
     try require(data.count == count, "Restore-image range is truncated.")
+    FirmwareTransferLog.note(
+      .debug,
+      "Read \(FirmwareTransferLog.bytes(count)) at offset \(offset) of "
+        + FirmwareTransferLog.name(url))
     return data
   }
 }

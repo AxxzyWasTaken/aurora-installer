@@ -27,7 +27,7 @@
       // The command runner refuses any limit above 90 seconds before starting
       // the process. Without hdiutil's checksum pass an attach takes seconds.
       let command: @Sendable (String, [String]) throws -> Data = {
-        try AccountNativeCommand.checked($0, $1, timeout: 90)
+        try InstallerLoggedCommand.checked($0, $1, timeout: 90)
       }
       do {
         // The image's SHA-256 was verified against the signed plan when it was

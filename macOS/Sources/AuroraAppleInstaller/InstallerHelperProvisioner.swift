@@ -436,12 +436,16 @@
         process.arguments = ["print", "system/\(label)"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        let log = InstallerProcessLog.begin("/bin/launchctl", process.arguments ?? [])
         do {
           try process.run()
         } catch {
+          log?.failed("Couldn't start")
           return false
         }
         process.waitUntilExit()
+        // Not loaded is an answer, not a fault.
+        log?.end(process, failureLevel: .debug)
         return process.terminationStatus == 0
       }.value
     }
@@ -535,9 +539,14 @@
       let output = Pipe()
       process.standardOutput = output
       process.standardError = FileHandle.nullDevice
-      do { try process.run() } catch { return (-1, "") }
+      let log = InstallerProcessLog.begin(path, arguments)
+      do { try process.run() } catch {
+        log?.failed("Couldn't start")
+        return (-1, "")
+      }
       let data = output.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
+      log?.end(process, failureLevel: .debug)
       return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 

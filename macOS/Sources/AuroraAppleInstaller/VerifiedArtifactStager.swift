@@ -309,6 +309,27 @@ public struct VerifiedArtifactStager: Sendable {
     in stagingDirectory: URL,
     progress: ArtifactStagingProgressHandler? = nil
   ) async throws -> StagedInstallerArtifact {
+    guard let log = InstallerDownloadLog.begin(artifact) else {
+      return try await stage(artifact, in: stagingDirectory, progress: progress, log: nil)
+    }
+    do {
+      let staged = try await stage(
+        artifact, in: stagingDirectory, progress: log.observing(progress), log: log)
+      // A reused or bundled file has already said so; this ends a download.
+      log.verified()
+      return staged
+    } catch {
+      log.failed(error)
+      throw error
+    }
+  }
+
+  private func stage(
+    _ artifact: PinnedInstallerArtifact,
+    in stagingDirectory: URL,
+    progress: ArtifactStagingProgressHandler?,
+    log: InstallerDownloadLog?
+  ) async throws -> StagedInstallerArtifact {
     let fileManager = FileManager.default
     try ensureSafeDirectory(stagingDirectory, fileManager: fileManager)
     let destination = stagingDirectory.appendingPathComponent(
@@ -323,6 +344,7 @@ public struct VerifiedArtifactStager: Sendable {
         throw ArtifactStageError.destinationConflict(artifact.fileName)
       }
       removeParts(of: artifact, in: stagingDirectory, fileManager: fileManager)
+      log?.reused()
       report(
         progress,
         artifact: artifact,
@@ -349,6 +371,7 @@ public struct VerifiedArtifactStager: Sendable {
       try Task.checkCancellation()
       try fileManager.moveItem(at: pending, to: destination)
       removeParts(of: artifact, in: stagingDirectory, fileManager: fileManager)
+      log?.copiedFromBundle()
       report(
         progress, artifact: artifact, phase: .verified, bytesCompleted: artifact.expectedSizeBytes)
       return StagedInstallerArtifact(
@@ -362,6 +385,7 @@ public struct VerifiedArtifactStager: Sendable {
     }
 
     guard !artifact.parts.isEmpty else {
+      log?.downloading(from: artifact.sourceURL)
       let onBytes = byteHandler(
         progress,
         artifact: artifact,
@@ -395,7 +419,8 @@ public struct VerifiedArtifactStager: Sendable {
       artifact,
       in: stagingDirectory,
       destination: destination,
-      progress: progress
+      progress: progress,
+      log: log
     )
   }
 
@@ -403,7 +428,8 @@ public struct VerifiedArtifactStager: Sendable {
     _ artifact: PinnedInstallerArtifact,
     in stagingDirectory: URL,
     destination: URL,
-    progress: ArtifactStagingProgressHandler?
+    progress: ArtifactStagingProgressHandler?,
+    log: InstallerDownloadLog?
   ) async throws -> StagedInstallerArtifact {
     let fileManager = FileManager.default
     let parts = artifact.parts
@@ -429,6 +455,8 @@ public struct VerifiedArtifactStager: Sendable {
       }
     }
     let missing = parts.indices.filter { stagedParts[$0] == nil }
+    log?.downloading(
+      from: artifact.sourceURL, parts: parts.count, kept: parts.count - missing.count)
     // A failed part stops new parts from starting, but the ones in flight
     // finish, so a retry keeps every part that was verified.
     var failure: (any Error)?
@@ -438,6 +466,7 @@ public struct VerifiedArtifactStager: Sendable {
         let index = missing[next]
         let part = parts[index]
         next += 1
+        log?.part(index, of: parts.count, from: part.sourceURL, bytes: part.expectedSizeBytes)
         let onBytes: ArtifactByteProgressHandler? = progress.map { handler in
           let report: ArtifactByteProgressHandler = { bytes in
             received.update(index, bytes) { total in

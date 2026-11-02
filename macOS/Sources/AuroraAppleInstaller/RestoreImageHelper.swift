@@ -116,12 +116,15 @@
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = FileHandle.nullDevice
       process.standardError = FileHandle.nullDevice
+      let log = InstallerProcessLog.begin("/usr/bin/codesign", process.arguments ?? [])
       do {
         try process.run()
         process.waitUntilExit()
       } catch {
+        log?.failed("Couldn't start")
         throw RestoreImageHelperError.signatureRejected
       }
+      log?.end(process)
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
         throw RestoreImageHelperError.signatureRejected
       }

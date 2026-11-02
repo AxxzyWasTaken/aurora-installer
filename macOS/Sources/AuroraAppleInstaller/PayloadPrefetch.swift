@@ -262,6 +262,8 @@
         }
         let path = network.current()
         if requiresNetwork && !path.allowsPrefetch {
+          InstallerLog.progress(
+            "Download waiting for Wi-Fi or Ethernet without Low Data Mode", source: "download")
           if completed > 0 {
             setState(.paused(completed: completed, total: total))
           } else {
@@ -281,6 +283,7 @@
               requiredBytes: requiredNow,
               availableBytes: available
             )
+            InstallerLog.error(PayloadPrefetchFailure.reason(for: error), source: "download")
             setState(.failed(PayloadPrefetchFailure.reason(for: error)))
             failWaiters(error)
             return
@@ -337,6 +340,9 @@
             if transientFailures < retryDelays.count {
               let delay = retryDelays[transientFailures]
               transientFailures += 1
+              InstallerLog.progress(
+                "\(PayloadPrefetchFailure.reason(for: error)) Trying again in \(delay) "
+                  + "(retry \(transientFailures) of \(retryDelays.count))", source: "download")
               setState(.paused(completed: completed, total: total))
               do {
                 try await sleep(delay)
@@ -346,6 +352,8 @@
               continue
             }
           }
+          InstallerLog.error(
+            "Download stopped: \(PayloadPrefetchFailure.reason(for: error))", source: "download")
           setState(.failed(PayloadPrefetchFailure.reason(for: error)))
           failWaiters(error)
           return

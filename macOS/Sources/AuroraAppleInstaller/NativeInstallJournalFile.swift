@@ -81,6 +81,7 @@
       where index >= before.split(separator: 10).count {
         InstallerTimingRecorder.current?.record(
           sequence: index + 1, type: record.message.timingType, name: "")
+        InstallerJournalLog.record(sequence: index + 1, type: record.message.timingType, name: "")
       }
     }
 
@@ -171,10 +172,12 @@
       try write(file, bytes: line, offset: off_t(before.count))
       guard fsync(file) == 0 else { throw NativeRecoveryJournalError.writeFailed }
       guard try readJournal() == before + line else { throw NativeRecoveryJournalError.changed }
-      InstallerTimingRecorder.current?.record(
-        sequence: before.split(separator: 10).count + 1, type: type,
-        name: payload["name"] as? String ?? payload["identifier"] as? String
-          ?? payload["outcome"] as? String ?? "")
+      let recordName =
+        payload["name"] as? String ?? payload["identifier"] as? String
+        ?? payload["outcome"] as? String ?? ""
+      let sequence = before.split(separator: 10).count + 1
+      InstallerTimingRecorder.current?.record(sequence: sequence, type: type, name: recordName)
+      InstallerJournalLog.record(sequence: sequence, type: type, name: recordName)
     }
 
     func publishEvidence(_ bytes: Data, identifier: String) throws {

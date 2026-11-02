@@ -103,7 +103,11 @@
           process.standardError = FileHandle.nullDevice
           let exited = DispatchSemaphore(value: 0)
           process.terminationHandler = { _ in exited.signal() }
-          try process.run()
+          let log = InstallerProcessLog.begin(executable, arguments)
+          do { try process.run() } catch {
+            log?.failed("Couldn't start")
+            throw error
+          }
           let deadline = DispatchTime.now() + .seconds(300)
           while exited.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
             if Task.isCancelled || DispatchTime.now() >= deadline {
@@ -112,10 +116,12 @@
                 kill(process.processIdentifier, SIGKILL)
                 _ = exited.wait(timeout: .now() + .seconds(2))
               }
+              log?.failed(Task.isCancelled ? "Stopped when the task was cancelled" : "Stopped")
               try Task.checkCancellation()
               throw NativeOSPartitionError.commandFailed
             }
           }
+          log?.end(process)
           guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             throw NativeOSPartitionError.commandFailed
           }

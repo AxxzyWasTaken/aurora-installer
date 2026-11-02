@@ -190,6 +190,14 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
   func inspect() async throws -> HostDisplay {
     try await prefetch.waitForRetirement()
     let host = try await inspectCurrentHost()
+    InstallerLog.progress(
+      "This Mac: \(host.identity.model) (\(host.identity.deviceIdentifier)), "
+        + "\(host.identity.chip), macOS \(host.macOSVersion); APFS container "
+        + "\(host.storage.containerIdentifier) on \(host.storage.physicalStoreIdentifier), "
+        + "\(InstallerLog.bytes(host.storage.containerFreeBytes)) free")
+    InstallerLog.debug(
+      "Power: \(host.powerSource); FileVault \(host.fileVaultEnabled ? "on" : "off"); "
+        + "eligibility: \(host.eligibility)")
 
     var engine: ValidatedEngineTranscript?
     var transcript: Data?
@@ -215,6 +223,14 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     } catch {
       engineFailure =
         "The disk compatibility check failed. Installation is unavailable. Details: \(String(describing: error))"
+    }
+    if let engineFailure {
+      InstallerLog.error(engineFailure)
+    } else if let engine {
+      InstallerLog.progress(
+        "Disk check: \(engine.deviceIdentifier) is \(engine.support); "
+          + "\(knownInstallations.count) known installation(s), "
+          + "\(engine.inventory?.candidates.count ?? 0) place(s) Aurora could go")
     }
 
     lock.withLock {
@@ -395,6 +411,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     let configuration = try loadConfiguration()
     let workspace = try installerWorkspace()
     let channel = ReleaseChannelPreference().resolve(configuration: configuration)
+    InstallerLog.progress(
+      "Fetching the signed release catalog for \(selection.profileID) on the "
+        + "\(channel.rawValue) channel")
     let catalogStore = AcceptedCatalogIdentityStore(
       directory: workspace.state,
       channel: channel
@@ -430,6 +449,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       selectedLane = channel.rawValue
     }
     try catalogStore.store(release.assets.catalogIdentity)
+    InstallerLog.progress(
+      "Catalog verified: payload \(release.assets.payload.fileURL.lastPathComponent) "
+        + "(\(InstallerLog.bytes(release.assets.payload.artifact.expectedSizeBytes)))")
     Self.discardStaleDownloads(
       in: workspace.staging, keeping: release.assets.metadata.fileURL.deletingLastPathComponent())
     // The payload is pinned by the verified catalog and does not depend on the
@@ -448,6 +470,7 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     let payloadBytesOnDisk = prefetch.bytesOnDisk(for: release.assets.payload)
     let planningReserve = release.assets.planningReserveBytes(
       payloadBytesOnDisk: payloadBytesOnDisk)
+    InstallerLog.progress("Checking this Mac with the release's installation engine")
     let freshHost = try await inspectCurrentHost()
     try requirePreparation(generation)
     guard freshHost.identity == host.identity else { throw InstallerAppError.hostChanged }
@@ -534,6 +557,7 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       let staging = try await stagingRequirement(
         deviceIdentifier: host.identity.deviceIdentifier, metadata: release.assets.metadata)
       try requirePreparation(generation)
+      InstallerLog.debug("Staging on macOS needs \(InstallerLog.bytes(staging))")
       // Sampled just before the free space, so download progress between the
       // two can only overstate what is still to come.
       let payloadBytes = release.assets.payload.artifact.expectedSizeBytes
@@ -546,6 +570,10 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     }
     let candidate = recommendation.candidate
     let requestedLengthBytes = recommendation.requestedLengthBytes
+    InstallerLog.progress(
+      "Planning \(InstallerLog.bytes(requestedLengthBytes)) for Aurora: \(candidate.kind) of "
+        + "\(candidate.sourceIdentifier) (allowed \(InstallerLog.bytes(recommendation.minimumBytes)) "
+        + "to \(InstallerLog.bytes(recommendation.maximumBytes)))")
 
     let prepared = try await InstallerPlanPreparationCoordinator()
       .prepareExecution(
@@ -640,8 +668,19 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
   func ensureHelper(
     _ authorization: MachineOwnerAuthorization, reenablingSwitchedOff: Bool
   ) async throws {
-    try await InstallerHelperSetup.ensure(
-      authorization, reenablingSwitchedOff: reenablingSwitchedOff)
+    InstallerLog.progress(
+      "Making the installation service ready (now \(helperStatus.status))"
+        + (reenablingSwitchedOff ? "; turning it back on in Login Items" : ""))
+    do {
+      try await InstallerLog.redacting(authorization) {
+        try await InstallerHelperSetup.ensure(
+          authorization, reenablingSwitchedOff: reenablingSwitchedOff)
+      }
+    } catch {
+      InstallerLog.error("The installation service isn’t ready: \(error)")
+      throw error
+    }
+    InstallerLog.progress("The installation service is ready")
   }
 
   // MARK: Shutdown
@@ -662,8 +701,10 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     )
     do {
       _ = try event.sendEvent(options: [.noReply], timeout: 3)
+      InstallerLog.progress("Asked macOS to shut down")
       return true
     } catch {
+      InstallerLog.error("macOS didn’t accept the shutdown request: \(error)")
       return false
     }
   }
@@ -925,33 +966,43 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       preparation: preparation)
     let coordinator = InstallerExecutionCoordinator()
     let progress: InstallerExecutionProgress
+    InstallerLog.progress(
+      "Handing the approved plan \(prepared.review.identity.bindingDigest.prefix(12)) to the "
+        + "installation service (\(operation))")
     do {
-      switch operation {
-      case .install:
-        progress = try await coordinator.execute(
-          prepared,
-          approval: approval,
-          configuration: configuration,
-          handoffDirectory: workspace.handoff,
-          machineOwnerAuthorization: authorization,
-          journalProgress: journal,
-          jobContext: jobContext
-        )
-      case .retryRecoveryAuthorization:
-        progress = try await coordinator.retryRecoveryAuthorization(
-          prepared,
-          approval: approval,
-          configuration: configuration,
-          handoffDirectory: workspace.handoff,
-          machineOwnerAuthorization: authorization,
-          journalProgress: journal,
-          jobContext: jobContext
-        )
+      // Nothing logged while the password is in hand can carry it.
+      progress = try await InstallerLog.redacting(authorization) {
+        switch operation {
+        case .install:
+          try await coordinator.execute(
+            prepared,
+            approval: approval,
+            configuration: configuration,
+            handoffDirectory: workspace.handoff,
+            machineOwnerAuthorization: authorization,
+            journalProgress: journal,
+            jobContext: jobContext
+          )
+        case .retryRecoveryAuthorization:
+          try await coordinator.retryRecoveryAuthorization(
+            prepared,
+            approval: approval,
+            configuration: configuration,
+            handoffDirectory: workspace.handoff,
+            machineOwnerAuthorization: authorization,
+            journalProgress: journal,
+            jobContext: jobContext
+          )
+        }
       }
     } catch let EngineXPCSubmissionError.engineFailed(notice) {
       EngineFailureUserLog.write(notice, operation: String(describing: operation))
       throw EngineXPCSubmissionError.engineFailed(notice)
+    } catch {
+      InstallerLog.error("The installation service reported: \(error)")
+      throw error
     }
+    InstallerLog.progress("The installation service finished: next \(progress.nextAction)")
     let installConf = jobContext.installConfHandoff ?? .notRecorded
     let handoffOperation: EngineHandoffOperation =
       operation == .retryRecoveryAuthorization ? .retryRecoveryAuthorization : .install

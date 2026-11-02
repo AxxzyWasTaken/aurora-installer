@@ -678,14 +678,16 @@
     /// Read-only. `otherBuild` looks up a job another build of this installer
     /// recorded, for example before the installer was updated; the lookup
     /// hint itself is left as it is.
+    /// `logSequence` asks for the job's Installer Log lines after that one.
     public func jobStatus(
-      _ hint: PendingInstallerJob, journalOffset: UInt64 = 0, otherBuild: Bool = false
+      _ hint: PendingInstallerJob, journalOffset: UInt64 = 0, otherBuild: Bool = false,
+      logSequence: UInt64? = nil
     ) async throws -> InstallerJobSnapshot {
       try admit(hint, otherBuild: otherBuild)
       try hint.ticket.validate()
       let request = try JSONEncoder().encode(
         InstallerJobStatusRequest(
-          ticket: hint.ticket, journalOffset: journalOffset))
+          ticket: hint.ticket, journalOffset: journalOffset, logSequence: logSequence))
       let snapshot = try await jobCall { proxy, reply in
         proxy.jobStatus(request: request, reply: reply)
       }
@@ -763,12 +765,18 @@
 
     /// Read-only polling needs no credential and survives replacing the GUI.
     /// `otherBuild` observes a job another build of this installer recorded.
+    /// While it watches, the helper's log lines for the job join this app's
+    /// Installer Log.
     public func observeJob(_ hint: PendingInstallerJob, otherBuild: Bool = false) async throws
       -> InstallerJobSnapshot
     {
-      try await InstallerJobObservation.wait(
+      let log = InstallerLog.current.map(HelperLogReader.init)
+      return try await InstallerJobObservation.wait(
         fetch: { offset in
-          try await self.jobStatus(hint, journalOffset: offset, otherBuild: otherBuild)
+          let snapshot = try await self.jobStatus(
+            hint, journalOffset: offset, otherBuild: otherBuild, logSequence: log?.cursor)
+          log?.read(snapshot.log)
+          return snapshot
         },
         journal: journalProgress, preparation: jobContext?.preparation)
     }
@@ -1124,6 +1132,32 @@
       let candidate = continuation
       continuation = nil
       return candidate
+    }
+  }
+
+  /// Copies a job's log lines from the helper into the app's log, keeping
+  /// the cursor between polls. Lines the helper dropped before the app read
+  /// them are counted in the log.
+  final class HelperLogReader: @unchecked Sendable {
+    private let destination: InstallerLogBuffer
+    private let lock = NSLock()
+    private var next: UInt64 = 0
+
+    init(_ destination: InstallerLogBuffer) { self.destination = destination }
+
+    var cursor: UInt64 { lock.withLock { next } }
+
+    func read(_ batch: InstallerLogBatch?) {
+      guard let batch else { return }
+      lock.withLock {
+        next = batch.cursor
+        if batch.missed > 0 {
+          destination.append(
+            .progress, source: "Installer",
+            "\(batch.missed) helper log lines were dropped before they could be read")
+        }
+        destination.ingest(batch.entries, sourcePrefix: "helper")
+      }
     }
   }
 #endif

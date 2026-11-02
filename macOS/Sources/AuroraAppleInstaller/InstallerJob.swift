@@ -270,6 +270,9 @@
     /// The step a preparing or running job is on, such as `source_owner`.
     /// Older helpers never report it.
     public var preparationStep: String? = nil
+    /// The job's Installer Log lines after the cursor the app asked with.
+    /// Older helpers, and requests without a cursor, never carry it.
+    public var log: InstallerLogBatch? = nil
 
     public var initialFailureWithoutDiskChanges: EngineXPCSubmissionError? {
       guard phase == .failed, recoveryAttempt == nil, let failure, failure.diskUnchanged else {
@@ -318,6 +321,9 @@
   struct InstallerJobStatusRequest: Codable, Sendable {
     let ticket: InstallerJobTicket
     let journalOffset: UInt64
+    /// The last Installer Log line the app holds. Older apps never send it,
+    /// and older helpers ignore it.
+    var logSequence: UInt64? = nil
   }
 
   struct InstallerJobRecoveryRequest: Codable, Sendable {
@@ -372,6 +378,12 @@
     /// The step each running job is on. Kept in memory only: a restarted
     /// helper has no running job.
     private var steps = [UUID: String]()
+    /// Each recent job's Installer Log, in memory only and bounded. The app
+    /// reads it while it watches the job; nothing waits on the app.
+    private var logs = [UUID: InstallerLogBuffer]()
+    private var logOrder = [UUID]()
+    static let maximumLogLines = 4_000
+    static let retainedLogs = 4
     private var loaded = false
     private var loadError: (any Error)?
     private static let maximumRecordBytes = 12 * 1_048_576
@@ -437,12 +449,36 @@
         do {
           try persist(record)
           records[record.identifier] = record
+          openLog(record.identifier).append(
+            .progress, source: "helper",
+            "Accepted installation job \(Self.shortName(record.identifier)): "
+              + "\(record.operation) for \(record.selection.profileID)")
           return true
         } catch {
           work.endJob()
           throw error
         }
       }
+    }
+
+    /// The log of a job this helper started, created on first use.
+    func log(for identifier: UUID) -> InstallerLogBuffer {
+      lock.withLock { openLog(identifier) }
+    }
+
+    private func openLog(_ identifier: UUID) -> InstallerLogBuffer {
+      if let existing = logs[identifier] { return existing }
+      let buffer = InstallerLogBuffer(capacity: Self.maximumLogLines)
+      logs[identifier] = buffer
+      logOrder.append(identifier)
+      while logOrder.count > Self.retainedLogs {
+        logs.removeValue(forKey: logOrder.removeFirst())
+      }
+      return buffer
+    }
+
+    static func shortName(_ identifier: UUID) -> String {
+      String(identifier.uuidString.lowercased().prefix(8))
     }
 
     func admitted(_ identifier: UUID, package: ImportedEngineHandoffPackage) throws {
@@ -455,6 +491,10 @@
         record.phase = .running
         try persist(record)
         records[identifier] = record
+        logs[identifier]?.append(
+          .progress, source: "helper",
+          "Imported plan \(package.planDigest.prefix(12)) for \(package.deviceIdentifier) "
+            + "on \(package.storeIdentifier)")
       }
     }
 
@@ -506,8 +546,37 @@
         }
         records[identifier] = record
         holdForInspection = record.phase == .interrupted
+        logOutcome(record)
       }
       return cleanup
+    }
+
+    private func logOutcome(_ record: InstallerJobRecord) {
+      guard let log = logs[record.identifier] else { return }
+      let name = Self.shortName(record.identifier)
+      switch record.phase {
+      case .succeeded:
+        log.append(.progress, source: "helper", "Installation job \(name) finished")
+      case .failed:
+        guard let failure = record.failure else { return }
+        var detail = "\(failure.code)"
+        if let reason = failure.reason {
+          detail += ", reason \(EngineFailureReason(rawValue: reason) ?? .unclassified)"
+        }
+        if let status = failure.exitStatus { detail += ", exit \(status)" }
+        detail += failure.diskUnchanged ? ", disk unchanged" : ", disk may have changed"
+        log.append(
+          .error, source: "helper",
+          "Installation job \(name) failed (\(detail))"
+            + (failure.summary.isEmpty ? "" : ": \(failure.summary)"))
+      case .interrupted:
+        log.append(
+          .error, source: "helper",
+          "Installation job \(name) stopped before its result was saved; it is kept for inspection"
+        )
+      case .preparing, .running:
+        break
+      }
     }
 
     /// The step a job is on, for status while it runs.
@@ -533,14 +602,19 @@
         let running = record.phase == .preparing || record.phase == .running
         return (record, running ? steps[record.identifier] : nil)
       }
+      let log = request.logSequence.flatMap { cursor in
+        lock.withLock { logs[record.identifier] }?.entries(after: cursor)
+      }
       let (journal, offset) = readJournal(record, offset: request.journalOffset)
-      return InstallerJobSnapshot(
+      var snapshot = InstallerJobSnapshot(
         identifier: record.identifier, bindingDigest: record.bindingDigest,
         selection: record.selection, phase: record.phase, plan: record.plan,
         transcript: record.transcript, installConf: record.installConf, failure: record.failure,
         journal: journal, journalOffset: offset, recoveryAttempt: record.recoveryAttempt,
         recoveryRetryAvailable: retryAvailable(record),
         startOverAvailable: abandonAvailable(record), preparationStep: step)
+      snapshot.log = log
+      return snapshot
     }
 
     /// Start over: sets a failed job aside once the person chose to. Only a
@@ -567,6 +641,8 @@
         ).write(JSONEncoder().encode(record), name: name, maximumBytes: Self.maximumRecordBytes)
         try PrivateInstallerJobFiles(directory: directory).remove(name)
         records.removeValue(forKey: record.identifier)
+        logs.removeValue(forKey: record.identifier)
+        logOrder.removeAll { $0 == record.identifier }
         return record.retainedPackageName.map {
           workingDirectory.appendingPathComponent($0, isDirectory: true)
         }
@@ -604,6 +680,9 @@
         do {
           try persist(record)
           records[record.identifier] = record
+          openLog(record.identifier).append(
+            .progress, source: "helper",
+            "Retrying Recovery authorization for job \(Self.shortName(record.identifier))")
           return true
         } catch {
           if !retainsInterruptedHold { work.endJob() }

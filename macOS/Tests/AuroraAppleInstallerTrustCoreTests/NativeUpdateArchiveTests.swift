@@ -126,6 +126,7 @@
       for member in plan.copies.map(\.member) {
         XCTAssertFalse(member.contains("decoy") || member.contains("excluded"), member)
         XCTAssertFalse(member.hasPrefix("AssetData/payloadv2"), member)
+        XCTAssertFalse(member.hasSuffix(".dmg"), member)
       }
       XCTAssertEqual(plan.linkTargets.count, 3)
       XCTAssertEqual(plan.recoveryMember.name, NativeRestoreSourceLayout.updateRecoveryMember)
@@ -192,12 +193,17 @@
     }
 
     func testAnUpdateArchiveThatPatchesAnEarlierImageIsRefusedByName() async throws {
-      do {
-        _ = try await plan(Self.vectors().archive("delta"))
-        XCTFail("A delta Recovery image was planned")
-      } catch {
-        XCTAssertEqual(
-          error as? NativeFirmwareSelectionError, .updateArchiveOnly(version: "14.8.3"))
+      // A delta header, and archives that also lack the whole image, the
+      // Bootability bundle or the BaseSystem entry: each is named as an
+      // update archive the stub can't use, not as a failed verification.
+      for name in ["delta", "no-image", "delta-incomplete"] {
+        do {
+          _ = try await plan(Self.vectors().archive(name))
+          XCTFail("\(name): an update archive without a whole Recovery image was planned")
+        } catch {
+          XCTAssertEqual(
+            error as? NativeFirmwareSelectionError, .updateArchiveOnly(version: "14.8.3"), name)
+        }
       }
     }
 
@@ -321,6 +327,287 @@
           + NativeStubStagingRequirement.directoryBytes)
       XCTAssertEqual(requirement.largestDecodeBytes, 0)
       XCTAssertTrue(plan.readMembers.contains(plan.recoveryMember))
+    }
+
+    func testARecoveryImageWithoutAUDIFTrailerIsNeverPublished() async throws {
+      let fixture = try NativeStubFileTests.ExecutionFixture(deviceIdentifier: "apple,j613")
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let plan = try await plan(Self.vectors().archive("no-trailer"))
+      let execution = NativeStubFilesExecution(
+        package: fixture.package, approved: fixture.approved,
+        plan: plan, owner: geteuid(), platform: fixture.platform, cache: nil)
+      do {
+        try await execution.prepare(
+          journal: fixture.journal, authorization: fixture.authorization,
+          sourceBootstrap: fixture.bootstrap)
+        XCTFail("A Recovery image without a UDIF trailer was published")
+      } catch {
+        XCTAssertEqual(error as? NativeStubFileError, .invalidImage)
+      }
+      let recovery = recoveryPath(fixture)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+      XCTAssertEqual(
+        try FileManager.default.contentsOfDirectory(
+          atPath: recovery.deletingLastPathComponent().path), [])
+    }
+
+    /// Answers reads from memory, and runs `action` once, on the first read
+    /// inside `span` after it is armed.
+    final class BodyRead: @unchecked Sendable {
+      private let lock = NSLock()
+      private var span: Range<Int>?
+      private var action: (() throws -> Void)?
+
+      func arm(_ span: Range<Int>, action: @escaping () throws -> Void) {
+        lock.withLock {
+          self.span = span
+          self.action = action
+        }
+      }
+
+      func check(offset: Int) throws {
+        let action: (() throws -> Void)? = lock.withLock {
+          guard let span, span.contains(offset) else { return nil }
+          defer { self.action = nil }
+          return self.action
+        }
+        try action?()
+      }
+    }
+
+    struct Source: FirmwareRangeReading {
+      let bytes: Data
+      let body: BodyRead
+      var sizeBytes: Int { bytes.count }
+      func read(offset: Int, count: Int) async throws -> Data {
+        try Task.checkCancellation()
+        try body.check(offset: offset)
+        return bytes.subdata(in: offset..<(offset + count))
+      }
+    }
+
+    /// Cancels a task, also when asked before the task is known.
+    final class Canceller: @unchecked Sendable {
+      private let lock = NSLock()
+      private var task: Task<Void, Error>?
+      private var requested = false
+
+      func set(_ task: Task<Void, Error>) {
+        lock.withLock {
+          self.task = task
+          if requested { task.cancel() }
+        }
+      }
+
+      func cancel() {
+        lock.withLock {
+          requested = true
+          task?.cancel()
+        }
+      }
+    }
+
+    /// An execution over the full vector whose Recovery member body read
+    /// can be intercepted.
+    func interceptable(_ fixture: NativeStubFileTests.ExecutionFixture) async throws -> (
+      execution: NativeStubFilesExecution, body: BodyRead, span: Range<Int>
+    ) {
+      let body = BodyRead()
+      let plan = try await NativeStubFilePlan(
+        archive: IPSWArchive.open(Source(bytes: Self.vectors().archive("full"), body: body)),
+        source: Self.selection(Self.updateArchive()),
+        deviceClass: "j613ap", boardID: 0x30, chipID: 0x8122)
+      let start = try await plan.archive.dataOffset(for: plan.recoveryMember)
+      let execution = NativeStubFilesExecution(
+        package: fixture.package, approved: fixture.approved,
+        plan: plan, owner: geteuid(), platform: fixture.platform, cache: nil)
+      return (execution, body, start..<(start + plan.recoveryMember.compressedSize))
+    }
+
+    func assertRecoveryInstalled(
+      _ fixture: NativeStubFileTests.ExecutionFixture, file: StaticString = #filePath,
+      line: UInt = #line
+    ) throws {
+      let recovery = recoveryPath(fixture)
+      XCTAssertEqual(
+        SHA256.hash(data: try Data(contentsOf: recovery)).map { String(format: "%02x", $0) }
+          .joined(), try Self.vectors().recoverySHA256, file: file, line: line)
+      XCTAssertEqual(
+        try FileManager.default.contentsOfDirectory(
+          atPath: recovery.deletingLastPathComponent().path), [recovery.lastPathComponent],
+        file: file, line: line)
+    }
+
+    func testCancellingDuringTheDecodePublishesNothingAndTheStageResumes() async throws {
+      let fixture = try NativeStubFileTests.ExecutionFixture(deviceIdentifier: "apple,j613")
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let (execution, body, span) = try await interceptable(fixture)
+      let canceller = Canceller()
+      body.arm(span) { canceller.cancel() }
+      let task = Task {
+        try await execution.prepare(
+          journal: fixture.journal, authorization: fixture.authorization,
+          sourceBootstrap: fixture.bootstrap)
+      }
+      canceller.set(task)
+      do {
+        try await task.value
+        XCTFail("A cancelled decode completed")
+      } catch {
+        XCTAssertTrue(error is CancellationError, "\(error)")
+      }
+      let recovery = recoveryPath(fixture)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+      XCTAssertEqual(
+        try FileManager.default.contentsOfDirectory(
+          atPath: recovery.deletingLastPathComponent().path), [])
+      try await execution.prepare(
+        journal: fixture.journal, authorization: fixture.authorization,
+        sourceBootstrap: fixture.bootstrap)
+      try assertRecoveryInstalled(fixture)
+    }
+
+    func testAnInterruptedDecodeIsRedoneFromTheStart() async throws {
+      let fixture = try NativeStubFileTests.ExecutionFixture(deviceIdentifier: "apple,j613")
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let (execution, body, span) = try await interceptable(fixture)
+      body.arm(span) { throw URLError(.networkConnectionLost) }
+      do {
+        try await execution.prepare(
+          journal: fixture.journal, authorization: fixture.authorization,
+          sourceBootstrap: fixture.bootstrap)
+        XCTFail("An interrupted decode completed")
+      } catch {
+        XCTAssertEqual((error as? URLError)?.code, .networkConnectionLost, "\(error)")
+      }
+      // A helper that stopped mid-decode leaves its private partial file.
+      let recovery = recoveryPath(fixture)
+      let group = fixture.snapshot.containers[1].volumes.first { $0.roles == ["System"] }!.group!
+      let partial = recovery.deletingLastPathComponent().appendingPathComponent(
+        ".aurora-stub-"
+          + NativeStubFileStore.hash(
+            Data(
+              (fixture.approved.planDigest + ":" + group
+                + "/usr/standalone/firmware/arm64eBaseSystem.dmg").utf8)))
+      XCTAssertTrue(
+        FileManager.default.createFile(
+          atPath: partial.path, contents: Data(repeating: 0x72, count: 4096),
+          attributes: [.posixPermissions: 0o600]))
+      try await execution.prepare(
+        journal: fixture.journal, authorization: fixture.authorization,
+        sourceBootstrap: fixture.bootstrap)
+      try assertRecoveryInstalled(fixture)
+    }
+
+    func testAnImagePublishedBeforeItsReceiptIsAdoptedOnResume() async throws {
+      let fixture = try NativeStubFileTests.ExecutionFixture(deviceIdentifier: "apple,j613")
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let (execution, _, _) = try await interceptable(fixture)
+      try await execution.prepare(
+        journal: fixture.journal, authorization: fixture.authorization,
+        sourceBootstrap: fixture.bootstrap)
+      func evidence(_ identifier: String) -> URL {
+        URL(fileURLWithPath: fixture.journal.path + "." + identifier + ".evidence")
+      }
+      let receipt = try Data(contentsOf: evidence("native-stub-files"))
+      // Roll the stage back to the moment the image was published: its
+      // receipt, and everything after it, never written.
+      var index = 0
+      while FileManager.default.fileExists(atPath: evidence("native-stub-file-\(index)").path) {
+        let saved = try JSONDecoder().decode(
+          NativeStubFilesExecution.Installed.self,
+          from: Data(contentsOf: evidence("native-stub-file-\(index)")))
+        if saved.path.hasSuffix("usr/standalone/firmware/arm64eBaseSystem.dmg") { break }
+        index += 1
+      }
+      let first = index
+      while FileManager.default.fileExists(atPath: evidence("native-stub-file-\(index)").path) {
+        let saved = try JSONDecoder().decode(
+          NativeStubFilesExecution.Installed.self,
+          from: Data(contentsOf: evidence("native-stub-file-\(index)")))
+        if index > first {
+          let volume = fixture.snapshot.containers[1].volumes.first { $0.roles == [saved.role] }!
+          try FileManager.default.removeItem(
+            at: fixture.mounts.appendingPathComponent(volume.identifier + "/" + saved.path))
+        }
+        try FileManager.default.removeItem(at: evidence("native-stub-file-\(index)"))
+        index += 1
+      }
+      XCTAssertGreaterThan(index, first + 1)
+      for identifier in ["native-stub-files", "native-stub-links"] {
+        try FileManager.default.removeItem(at: evidence(identifier))
+      }
+      try await execution.prepare(
+        journal: fixture.journal, authorization: fixture.authorization,
+        sourceBootstrap: fixture.bootstrap)
+      try assertRecoveryInstalled(fixture)
+      XCTAssertEqual(try Data(contentsOf: evidence("native-stub-files")), receipt)
+    }
+
+    /// What the restore cache keeps once the stage has run, against what
+    /// planning counted for it: the count must never fall short.
+    func cachedAndPlanned(
+      _ archive: Data, url: URL, fixture: NativeStubFileTests.ExecutionFixture,
+      deviceClass: String, boardID: UInt64, chipID: UInt64
+    ) async throws -> (kept: UInt64, planned: UInt64, largestBody: UInt64) {
+      let root = fixture.directory.appendingPathComponent("cache")
+      let reader = try NativeStubRestoreCache(
+        source: NativeStubFileTests.Source(bytes: archive), root: root, owner: geteuid(),
+        identity: NativeStubRestoreCache.identity(url: url, bytes: archive.count))
+      let plan = try await NativeStubFilePlan(
+        archive: IPSWArchive.open(reader),
+        source: NativeFirmwareSelection(
+          version: url.pathExtension == "ipsw" ? "26.6.2" : "14.8.3", sourceURL: url,
+          stubBytes: 0),
+        deviceClass: deviceClass, boardID: boardID, chipID: chipID)
+      let planned = NativeStubStagingRequirement(
+        plan: plan, decoded: try await NativeStubStagingRequirement.decodedMembers(of: plan),
+        includingPlanningReads: true
+      ).cacheBytes
+      try await NativeStubFilesExecution(
+        package: fixture.package, approved: fixture.approved,
+        plan: plan, owner: geteuid(), platform: fixture.platform, cache: reader
+      ).prepare(
+        journal: fixture.journal, authorization: fixture.authorization,
+        sourceBootstrap: fixture.bootstrap)
+      let kept = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        .filter { $0.hasSuffix(".bin") }
+        .reduce(UInt64(0)) { total, name in
+          let size =
+            try FileManager.default.attributesOfItem(
+              atPath: root.appendingPathComponent(name).path)[.size] as! NSNumber
+          return total + size.uint64Value
+        }
+      return (kept, planned, UInt64(plan.readMembers.map(\.compressedSize).max() ?? 0))
+    }
+
+    func testTheCacheKeepsNoMoreThanPlanningCountedForEitherLayout() async throws {
+      let update = try NativeStubFileTests.ExecutionFixture(deviceIdentifier: "apple,j613")
+      defer { try? FileManager.default.removeItem(at: update.directory) }
+      let archive = try await cachedAndPlanned(
+        Self.vectors().archive("full"), url: Self.updateArchive(), fixture: update,
+        deviceClass: "j613ap", boardID: 0x30, chipID: 0x8122)
+      let restore = try NativeStubFileTests.ExecutionFixture()
+      defer { try? FileManager.default.removeItem(at: restore.directory) }
+      let image = try await cachedAndPlanned(
+        XCTUnwrap(
+          JSONDecoder().decode(
+            NativeStubFileTests.Vectors.self,
+            from: Data(
+              contentsOf: XCTUnwrap(
+                Bundle.module.url(
+                  forResource: "native-stub-files", withExtension: "json",
+                  subdirectory: "Fixtures")))
+          ).vectors.first { $0.name == "fallback" }
+        ).archive, url: XCTUnwrap(URL(string: "https://updates.cdn-apple.com/test.ipsw")),
+        fixture: restore, deviceClass: "j700ap", boardID: 1, chipID: 2)
+      for (name, result) in [("update archive", archive), ("restore image", image)] {
+        // Each fixture has a member of 64 KiB or more, which the cache keeps
+        // as read rather than in shared windows.
+        XCTAssertGreaterThanOrEqual(result.largestBody, 65_536, name)
+        XCTAssertGreaterThanOrEqual(result.kept, result.largestBody, name)
+        XCTAssertLessThanOrEqual(result.kept, result.planned, name)
+      }
     }
 
     // MARK: Apple's archive

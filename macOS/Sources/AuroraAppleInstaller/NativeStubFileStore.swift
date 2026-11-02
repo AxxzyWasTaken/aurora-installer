@@ -48,9 +48,9 @@
       }
     }
 
-    /// An update archive's whole-image patch stream, decoded as it arrives.
-    /// Nothing is published until the member's CRC and the image's length
-    /// and SHA-1 have been checked.
+    /// An update archive's whole disk image, decoded from its patch stream as
+    /// it arrives. Nothing is published until the member's CRC, the image's
+    /// length and SHA-1, and its UDIF trailer have been checked.
     func updateImage(
       _ member: IPSWArchiveMember, image: UpdateArchiveFullImage.Header, archive: IPSWArchive,
       at path: String, compressed: Bool = false, mode: mode_t = 0o644
@@ -59,17 +59,25 @@
         writer in
         let decoder = UpdateArchiveFullImage.Decoder(header: image)
         var hash = SHA256()
+        var tail = Data()
         try await archive.stream(
           member, maximumBytes: 8 << 30, maximumCompressedBytes: 8 << 30
         ) { bytes in
           try decoder.consume(bytes) { chunk in
             hash.update(data: chunk)
+            tail = Data((chunk.count >= 512 ? chunk : tail + chunk).suffix(512))
             try writer.append(chunk)
           }
         }
         try decoder.finish()
+        guard Self.isDiskImageTrailer(tail) else { throw NativeStubFileError.invalidImage }
         return NativeStubFileIdentity(bytes: image.outputBytes, sha256: Self.hex(hash.finalize()))
       }
+    }
+
+    /// Whether `tail`, a file's last 512 bytes, is a UDIF trailer.
+    static func isDiskImageTrailer(_ tail: Data) -> Bool {
+      tail.count == 512 && tail.prefix(4) == Data("koly".utf8)
     }
 
     func local(_ source: URL, at path: String, compressed: Bool) async throws

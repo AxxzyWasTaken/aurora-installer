@@ -31,16 +31,20 @@ XZ_CHUNK = bytes.fromhex(
     "a8000afc020000000000595a"
 )
 RECOVERY_MEMBER = "AssetData/payloadv2/basesystem_patches/arm64eBaseSystem.dmg"
-FRAMEWORK = "AssetData/Restore/BootabilityBundle/Restore/Bootability/BootabilityBrain.framework/"
+BOOTABILITY = "AssetData/Restore/BootabilityBundle/"
+FRAMEWORK = BOOTABILITY + "Restore/Bootability/BootabilityBrain.framework/"
 
 
-def recovery_image():
-    tail = b"i" * 512 + b"koly" + bytes(508)
-    return XZ_INPUT + b"r" * CHUNK + tail, [(XZ_INPUT, XZ_CHUNK), (b"r" * CHUNK, None), (tail, None)]
+def recovery_image(stored=CHUNK, trailer=b"koly"):
+    """An image of an XZ chunk, a stored chunk and a short stored tail."""
+    tail = b"i" * 512 + trailer + bytes(508)
+    body = b"r" * stored
+    return XZ_INPUT + body + tail, [(XZ_INPUT, XZ_CHUNK), (body, None), (tail, None)]
 
 
 def patch_stream(image, chunks, control=0, corrupt=False):
-    stream = bytearray(b"pbzx" + struct.pack(">Q", CHUNK))
+    size = max(len(output) for output, _ in chunks)
+    stream = bytearray(b"pbzx" + struct.pack(">Q", size))
     for output, stored in chunks:
         body = stored if stored is not None else output
         if corrupt and stored is None and output.startswith(b"r"):
@@ -50,7 +54,7 @@ def patch_stream(image, chunks, control=0, corrupt=False):
     return header + hashlib.sha1(image).digest() + bytes(stream)
 
 
-def manifest():
+def manifest(base_system=True):
     def identity(board, device, behavior, variant, components):
         return dict(
             ApBoardID=board,
@@ -61,15 +65,19 @@ def manifest():
             Manifest={key: dict(Info=info) for key, info in components.items()},
         )
 
+    # BaseSystem, OS and RestoreRamDisk name files outside AssetData/boot,
+    # as in Apple's archive; the stub copies none of them.
     update = {
-        "BaseSystem": dict(Path="../Restore/022-00000-000.dmg"),
+        "BaseSystem": dict(Path="../Restore/022-20791-031.dmg"),
         "KernelCache": dict(Path="kernelcache.release.mac15g"),
         "iBoot": dict(Path="Firmware/all_flash/iBoot.j613.RELEASE.im4p", IsLoadedByiBoot=True),
         "AOP": dict(Path="Firmware/AOP/aopfw.im4p", IsFUDFirmware=True),
-        "RestoreRamDisk": dict(Path="excluded-ramdisk.dmg"),
-        "OS": dict(Path="excluded-os.dmg"),
+        "RestoreRamDisk": dict(Path="../usr/standalone/update/ramdisk/arm64eSURamDisk.dmg"),
+        "OS": dict(Path="../Restore/094-04655-023.dmg"),
         "Cryptex1,SystemOS": dict(Path="excluded-cryptex.dmg"),
     }
+    if not base_system:
+        del update["BaseSystem"]
     selected = identity("0x30", "j613ap", "Update", "macOS Customer Software Update", update)
     erase = identity(
         "0x30", "j613ap", "Erase", "macOS Customer", {"KernelCache": dict(Path="decoy.im4p")}
@@ -78,8 +86,8 @@ def manifest():
     return dict(BuildIdentities=[erase, other, selected]), selected
 
 
-def archive(recovery_member):
-    document, _ = manifest()
+def archive(recovery_member, bootability=True, base_system=True):
+    document, _ = manifest(base_system)
     version = dict(
         ProductVersion="14.8.3", ProductUserVisibleVersion="14.8.3", ProductBuildVersion="23J220"
     )
@@ -110,6 +118,12 @@ def archive(recovery_member):
         FRAMEWORK + "Versions/Current": b"A",
     }
     files.update(links)
+    if recovery_member is None:
+        del files[RECOVERY_MEMBER]
+    if not bootability:
+        for name in [name for name in files if name.startswith(BOOTABILITY)]:
+            del files[name]
+        links = {}
     directories = sorted(
         {"/".join(name.split("/")[: index + 1]) + "/" for name in files for index in range(2)
          if name.count("/") > index}
@@ -129,19 +143,33 @@ def archive(recovery_member):
 
 
 def vectors():
-    image, chunks = recovery_image()
+    # The full image's stored chunk is cached as a range of its own: 64 KiB
+    # or more.
+    image, chunks = recovery_image(stored=96 * 1024)
+    small, small_chunks = recovery_image()
+    unmarked, unmarked_chunks = recovery_image(trailer=b"none")
     assert lzma.decompress(XZ_CHUNK) == XZ_INPUT
+
+    def encoded(data):
+        return base64.b64encode(data).decode()
+
     _, selected = manifest()
+    delta = patch_stream(small, small_chunks, control=1)
     result = [
-        dict(name="full", archive=base64.b64encode(archive(patch_stream(image, chunks))).decode()),
+        dict(name="full", archive=encoded(archive(patch_stream(image, chunks)))),
+        dict(name="delta", archive=encoded(archive(delta))),
+        # Update archives that can't build a stub, each missing more than the
+        # whole Recovery image.
+        dict(name="no-image", archive=encoded(archive(None, bootability=False))),
         dict(
-            name="delta",
-            archive=base64.b64encode(archive(patch_stream(image, chunks, control=1))).decode(),
+            name="delta-incomplete",
+            archive=encoded(archive(delta, bootability=False, base_system=False)),
         ),
         dict(
             name="corrupt",
-            archive=base64.b64encode(archive(patch_stream(image, chunks, corrupt=True))).decode(),
+            archive=encoded(archive(patch_stream(small, small_chunks, corrupt=True))),
         ),
+        dict(name="no-trailer", archive=encoded(archive(patch_stream(unmarked, unmarked_chunks)))),
     ]
     return dict(
         vectors=result,

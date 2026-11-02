@@ -84,7 +84,8 @@
    "b359258c9d41d3df15a6d400f712a0f3ba0e8882": "fleet14f = aurora-silicon/linux aurora-wip b359258c9d41 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 2a79ba73 / 071cd214), kernel -p3 0",
    "b35adc7ede082dd5e910e1b0d01fd84d7df27833": "fleet14g = aurora-silicon/linux aurora-wip b35adc7ede08 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots bef16656 / 44162b90), kernel -p3 0",
    "52f0a6bee13baf7311123b88f5d5913ca039539c": "fleet14h = aurora-silicon/linux aurora-wip 52f0a6bee13b with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots c2cc4b5c / 100d4b88), kernel -p3 0",
-   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots df93e51d / a049a876), kernel -p3 0"
+   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots df93e51d / a049a876), kernel -p3 0",
+   "f1534999589662d5a0fd84b8a4b2b0f886661930": "fleet14p = aurora-silicon/linux integration/aurora f15349995896 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-03 (boots 055ee569 / 3e21364a), kernel -p3 0"
   },
   "j413ap": {
    "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
@@ -93,7 +94,8 @@
    "b359258c9d41d3df15a6d400f712a0f3ba0e8882": "fleet14f = aurora-silicon/linux aurora-wip b359258c9d41 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots d07b5fa4 / 997b66b4), kernel -p3 0",
    "b35adc7ede082dd5e910e1b0d01fd84d7df27833": "fleet14g = aurora-silicon/linux aurora-wip b35adc7ede08 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots a859afc3 / 8a25544b), kernel -p3 0",
    "52f0a6bee13baf7311123b88f5d5913ca039539c": "fleet14h = aurora-silicon/linux aurora-wip 52f0a6bee13b with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots bbabb6d8 / ef50a397), kernel -p3 0",
-   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots b82cbb8d / 109ee782), kernel -p3 0"
+   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots b82cbb8d / 109ee782), kernel -p3 0",
+   "f1534999589662d5a0fd84b8a4b2b0f886661930": "fleet14p = aurora-silicon/linux integration/aurora f15349995896 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-03 (boots 5f057e8f / 1e9bdb12), kernel -p3 0"
   },
   "j700ap": {
    "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
@@ -102,7 +104,8 @@
    "b359258c9d41d3df15a6d400f712a0f3ba0e8882": "fleet14f = aurora-silicon/linux aurora-wip b359258c9d41 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 400c5abb / 020b502f), kernel -p3 0",
    "b35adc7ede082dd5e910e1b0d01fd84d7df27833": "fleet14g = aurora-silicon/linux aurora-wip b35adc7ede08 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 6f4b7944 / 685190fc), kernel -p3 0",
    "52f0a6bee13baf7311123b88f5d5913ca039539c": "fleet14h = aurora-silicon/linux aurora-wip 52f0a6bee13b with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots a43ea86e / 92ce51df), kernel -p3 0",
-   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 670f441a / 4ce0ca02), kernel -p3 0"
+   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 670f441a / 4ce0ca02), kernel -p3 0",
+   "f1534999589662d5a0fd84b8a4b2b0f886661930": "fleet14p = aurora-silicon/linux integration/aurora f15349995896 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-03 (boots 2e327e69 / 03ce33a2), kernel -p3 0"
   },
   "j616sap": {
    "052924773992f3fd51ce2861f0e8202cd46619a6": "fleet14 = aurora-silicon/linux aurora-wip 052924773992 plus PR 747 (cpuinfo model name, no driver change), promoted to default after a one-shot and a warm reboot on 2026-11-01",
@@ -111,7 +114,8 @@
    "b359258c9d41d3df15a6d400f712a0f3ba0e8882": "fleet14f = aurora-silicon/linux aurora-wip b359258c9d41 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 1818ca7e / 5b4f5241), kernel -p3 0",
    "b35adc7ede082dd5e910e1b0d01fd84d7df27833": "fleet14g = aurora-silicon/linux aurora-wip b35adc7ede08 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots 5edeb721 / 447b8dbd), kernel -p3 0",
    "52f0a6bee13baf7311123b88f5d5913ca039539c": "fleet14h = aurora-silicon/linux aurora-wip 52f0a6bee13b with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots c2ff6083 / 7b075ffb), kernel -p3 0",
-   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots befdb102 / 0617e0f3), kernel -p3 0"
+   "e1524e6135e9cdb47f124cdf11c757470f0443c8": "fleet14l = aurora-silicon/linux aurora-wip e1524e6135e9 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-02 (boots befdb102 / 0617e0f3), kernel -p3 0",
+   "f1534999589662d5a0fd84b8a4b2b0f886661930": "fleet14p = aurora-silicon/linux integration/aurora f15349995896 with no local merges, promoted after a one-shot and a warm reboot on 2026-11-03 (boots 9c2abcd4 / f3395411), kernel -p3 0"
   }
  },
  "proven_kernels_note": "Kernel source commits each board has booted as its default kernel. The distribution build uses its own configuration, so an image boot is still a hardware step."

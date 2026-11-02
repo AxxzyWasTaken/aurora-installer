@@ -1,6 +1,9 @@
 import AppKit
 
 @main struct Check {
+  /// Pixel snapping on a 1x display can shift a view by half a point.
+  static let snap: CGFloat = 0.5
+
   static func frame(_ view: NSView) -> NSRect {
     view.window?.contentView?.layoutSubtreeIfNeeded()
     return view.convert(view.bounds, to: nil)
@@ -30,7 +33,7 @@ import AppKit
     let waiting = RecoveryPrimaryAction(title: "Continue", isEnabled: false, wait: .verifying)
     action.apply(idle)
     let resting = frame(continueButton)
-    precondition(abs(resting.midX - 390) < 0.5, "Continue is not centred: \(resting)")
+    precondition(abs(resting.midX - 390) <= snap, "Continue is not centred: \(resting)")
     precondition(action.spinner.isHidden && continueButton.isEnabled)
 
     action.apply(waiting)
@@ -43,8 +46,8 @@ import AppKit
     precondition(continueButton.accessibilityHelp() == RecoveryWait.verifying.announcement)
     let spinner = frame(action.spinner)
     precondition(
-      abs(spinner.maxX + RecoveryBusyAction.gap - resting.minX) < 0.5
-        && abs(spinner.midY - resting.midY) < 0.5, "spinner \(spinner) is not left of \(resting)")
+      abs(spinner.maxX + RecoveryBusyAction.gap - resting.minX) <= snap
+        && abs(spinner.midY - resting.midY) <= snap, "spinner \(spinner) is not left of \(resting)")
 
     action.apply(idle)
     precondition(frame(continueButton) == resting && action.spinner.isHidden)
@@ -69,7 +72,7 @@ import AppKit
       row.centerYAnchor.constraint(equalTo: root.centerYAnchor),
     ])
     let visible = frame(restore.button).union(frame(proxy))
-    precondition(abs(visible.midX - 390) < 0.5, "the repair row is not centred: \(visible)")
+    precondition(abs(visible.midX - 390) <= snap, "the repair row is not centred: \(visible)")
     restore.apply(.init(title: "Restore", isEnabled: false, wait: .verifying))
     precondition(frame(restore.button).union(frame(proxy)) == visible, "the spinner moved the row")
 

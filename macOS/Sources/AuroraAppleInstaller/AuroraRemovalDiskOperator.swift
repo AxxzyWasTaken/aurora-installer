@@ -310,6 +310,42 @@
       return .other(name.isEmpty ? identifier : name)
     }
 
+    func startupStore(_ snapshot: RemovalSnapshot) throws -> String? {
+      guard let variables = try? startupTools(.nvramPrint) else { return nil }
+      var override: String?
+      for line in String(decoding: variables, as: UTF8.self).split(whereSeparator: \.isNewline) {
+        let fields = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+        if fields[0] == "alt-boot-volume", fields.count > 1 { override = String(fields[1]) }
+      }
+      // A one-time choice decides the next startup.
+      if let override { return RemovalBootTarget(nvram: override)?.store }
+      guard let raw = try? startupTools(.blessGetBoot) else { return nil }
+      let device = String(decoding: raw, as: UTF8.self).trimmingCharacters(
+        in: .whitespacesAndNewlines)
+      guard device.hasPrefix("/dev/disk"), !device.contains(" "),
+        let info = try? plist(["info", "-plist", String(device.dropFirst(5))]),
+        let stores = info["APFSPhysicalStores"] as? [[String: Any]], stores.count == 1,
+        let store = stores[0]["APFSPhysicalStore"] as? String,
+        let storeInfo = try? plist(["info", "-plist", store])
+      else { return nil }
+      return try? uuid(storeInfo, "DiskUUID")
+    }
+
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws {
+      let volumes = snapshot.containers.first { $0.storeUUID == partition.uuid }?.volumes
+      let identifiers =
+        partition.type == "Apple_APFS"
+        ? (volumes ?? []).map(\.identifier).filter { !$0.isEmpty } : [partition.identifier]
+      for identifier in identifiers {
+        guard let info = try? plist(["info", "-plist", identifier]),
+          let mount = info["MountPoint"] as? String, !mount.isEmpty
+        else { continue }
+        do { _ = try run(["unmount", identifier]) } catch {
+          throw RemovalFailure(message: RemovalText.busy(partition, snapshot), complete: true)
+        }
+      }
+    }
+
     /// The volume group of the running macOS, after proving `/` is still on
     /// the macOS store that removal returns the space to.
     private func bootedGroup(_ snapshot: RemovalSnapshot) throws -> String {

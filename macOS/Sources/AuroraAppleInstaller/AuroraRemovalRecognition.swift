@@ -456,6 +456,14 @@
 
     static let eraseTargetGone =
       "The partitions you chose to erase aren’t on the disk as they were, or they can’t be erased. Check the disk again and choose what to erase. Nothing was changed."
+    /// A volume in use when Erase unmounts it, without force.
+    static func busy(_ part: RemovalPartition, _ snapshot: RemovalSnapshot) -> String {
+      let volume = snapshot.containers.first { $0.storeUUID == part.uuid }?.volumes.first?.name
+      let name = volume ?? (part.name.isEmpty ? part.identifier : part.name)
+      return
+        "“\(name)” is in use and couldn’t be unmounted: eject it first, or quit the apps using it, then try again. Nothing was changed."
+    }
+
     static let eraseUnreadable =
       "The disk’s partitions couldn’t be read consistently, so nothing can be erased. Nothing was changed."
 

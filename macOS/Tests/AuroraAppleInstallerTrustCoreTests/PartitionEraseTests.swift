@@ -251,8 +251,11 @@
       }
     }
 
-    func testAFailedStepStopsWithoutGrowingMacOSAndKeepsTheRecord() async throws {
-      let fixture = try Fixture.twoInstallations(failAt: 2)
+    // MARK: Review findings
+
+    func testABusyVolumeIsRefusedBeforeAnythingIsRecorded() async throws {
+      let fixture = try Fixture.twoInstallations()
+      fixture.disk.busy = [Fixture.auroraMembers[2]]
       let root = try temporaryDirectory()
       defer { try? FileManager.default.removeItem(at: root) }
       let service = server(root: root, fixture: fixture)
@@ -263,18 +266,242 @@
         ticketID: ticket.id, confirmation: ticket.confirmation, authorization: authorization(),
         erasing: Fixture.auroraStub)
       XCTAssertFalse(result.completed)
-      XCTAssertTrue(result.requiresReview)
-      XCTAssertTrue(result.message.hasPrefix("Erase stopped"), result.message)
-      XCTAssertFalse(fixture.disk.operations.contains { $0.hasPrefix("grow:") })
-      // The interrupted record blocks any further disk change until reviewed.
+      XCTAssertFalse(result.requiresReview)
+      XCTAssertTrue(result.message.contains("eject it first"), result.message)
+      XCTAssertTrue(result.message.hasSuffix("Nothing was changed."), result.message)
+      XCTAssertTrue(fixture.disk.operations.isEmpty)
+      let records = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        .filter { $0.hasPrefix("removal-") }
+      XCTAssertEqual(records, [])
+      // Nothing blocks a fresh review.
+      _ = try await service.removal(
+        ticketID: nil, confirmation: "", authorization: nil, erasing: Fixture.auroraStub)
+    }
+
+    func testAFailedFirstDeletionLeavesTheInstallerUsable() async throws {
+      for failAt in [1, 2] {
+        let fixture = try Fixture.twoInstallations(failAt: failAt)
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = server(root: root, fixture: fixture)
+        let review = try await service.removal(
+          ticketID: nil, confirmation: "", authorization: nil, erasing: Fixture.auroraStub)
+        let ticket = try XCTUnwrap(review.ticket)
+        let result = try await service.removal(
+          ticketID: ticket.id, confirmation: ticket.confirmation, authorization: authorization(),
+          erasing: Fixture.auroraStub)
+        XCTAssertFalse(result.completed)
+        XCTAssertFalse(result.requiresReview, result.message)
+        XCTAssertTrue(
+          result.message.contains(failAt == 1 ? "Nothing was erased" : "1 of its 4 partitions"),
+          result.message)
+        // The disk is the reviewed layout minus what went: a fresh scan
+        // plans what is left.
+        let next = try await service.removal(
+          ticketID: nil, confirmation: "", authorization: nil,
+          erasing: failAt == 1 ? Fixture.auroraStub : Fixture.auroraMembers[1])
+        XCTAssertNotNil(next.ticket, next.message)
+      }
+    }
+
+    func testAFailedDeletionThatLeftTheDiskUnexpectedStaysForReview() async throws {
+      let fixture = try Fixture.twoInstallations()
+      fixture.disk.removesThenFails = Fixture.auroraMembers[1]
+      let root = try temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let service = server(root: root, fixture: fixture)
+      let review = try await service.removal(
+        ticketID: nil, confirmation: "", authorization: nil, erasing: Fixture.auroraStub)
+      let ticket = try XCTUnwrap(review.ticket)
+      let result = try await service.removal(
+        ticketID: ticket.id, confirmation: ticket.confirmation, authorization: authorization(),
+        erasing: Fixture.auroraStub)
+      XCTAssertTrue(result.requiresReview, result.message)
       do {
         _ = try await service.removal(
           ticketID: nil, confirmation: "", authorization: nil, erasing: Fixture.fedoraStub)
-        XCTFail("an interrupted removal must block a new one")
-      } catch {
-        XCTAssertTrue(
-          (error as? RemovalFailure)?.message.hasPrefix("An earlier removal didn’t finish") == true)
+        XCTFail("an unexplained layout must block further changes")
+      } catch {}
+    }
+
+    func testAnUnreadableBootloaderKeepsEveryEFIPartition() throws {
+      var fixture = try Fixture.base()
+      fixture.addContainer(
+        uuid: Fixture.uuid(801), size: 2_499_805_184, after: 1 << 30,
+        volumes: Fixture.systemVolumes("Asahi", number: 81),
+        systems: [
+          NativeSystemVolumeFacts(
+            group: Fixture.uuid(819), label: "Asahi", stub: true, version: "13.5")
+        ])
+      let esp = fixture.add("EFI", uuid: Fixture.uuid(811), size: 500 << 20, after: 2 << 30)
+      fixture.add("Linux Filesystem", uuid: Fixture.uuid(812), size: 4 << 30)
+      XCTAssertThrowsError(
+        try AuroraRemovalPlan(erasing: esp, disks: fixture.disk, collect: fixture.collect)
+      ) {
+        XCTAssertEqual(
+          ($0 as? RemovalFailure)?.message,
+          "The bootloader of “Asahi” couldn’t be read, so any EFI partition might be the one it starts from. Erase “Asahi” first. Nothing was changed."
+        )
       }
+      // The container itself may still go.
+      XCTAssertNoThrow(
+        try AuroraRemovalPlan(
+          erasing: Fixture.uuid(801), disks: fixture.disk, collect: fixture.collect))
+    }
+
+    func testABootObjectThatCantBeReadIsUnknownNotAnInspectionFailure() {
+      struct Refusing: RemovalFileReading {
+        func read(_ components: [String], limit: Int) throws -> Data? {
+          throw RemovalFailure(message: "too large")
+        }
+      }
+      struct Missing: RemovalFileReading {
+        func read(_ components: [String], limit: Int) throws -> Data? { nil }
+      }
+      struct Naming: RemovalFileReading {
+        let value: String
+        func read(_ components: [String], limit: Int) throws -> Data? {
+          Data("STACKBOT\(value)\0".utf8)
+        }
+      }
+      XCTAssertNil(NativeDiskCollector.bootPartitions(Refusing()))
+      XCTAssertNil(NativeDiskCollector.bootPartitions(Missing()))
+      XCTAssertEqual(NativeDiskCollector.bootPartitions(Naming(value: "other=1")), [])
+      XCTAssertEqual(
+        NativeDiskCollector.bootPartitions(
+          Naming(value: "chosen.asahi,efi-system-partition=\(Fixture.uuid(811).lowercased())")),
+        [Fixture.uuid(811)])
+    }
+
+    func testApplesPartitionsAreProtectedByPositionToo() throws {
+      let base = try Fixture.base()
+      var snapshot = base.disk.state
+      // Retype Apple's first and last partitions; position still protects them.
+      snapshot.partitions = snapshot.partitions.map {
+        $0.type == "Apple_APFS_ISC" || $0.type == "Apple_APFS_Recovery"
+          ? RemovalPartition(
+            identifier: $0.identifier, uuid: $0.uuid, type: "Linux Filesystem",
+            offset: $0.offset, size: $0.size, name: $0.name)
+          : $0
+      }
+      // A partition in the gap before macOS.
+      let iscEnd = snapshot.partitions.first { $0.type == "Linux Filesystem" }!.end
+      snapshot.partitions.append(
+        RemovalPartition(
+          identifier: "disk0s9", uuid: Fixture.uuid(950), type: "Linux Filesystem",
+          offset: iscEnd + 4096, size: 1 << 20, name: ""))
+      let disk = NativeCollectedDisk(snapshot: snapshot, containers: base.facts.value)
+      for part in snapshot.partitions where part.uuid != snapshot.macOSStoreUUID {
+        XCTAssertEqual(
+          NativePartitionErase.refusal(members: [part], disk: disk),
+          "Apple’s system partitions are never erased.", part.identifier)
+      }
+    }
+
+    func testAnAPFSContainerThatIsntListedOrLooksLikeMacOSIsKept() throws {
+      var fixture = try Fixture.base()
+      let unlisted = fixture.add(
+        "Apple_APFS", uuid: Fixture.uuid(901), size: 20 << 30, after: 1 << 30)
+      var volumes = Fixture.systemVolumes("Looks Stubbed", number: 92)
+      volumes.append(RemovalVolume(uuid: Fixture.uuid(929), name: "VM", roles: ["VM"]))
+      let swap = fixture.addContainer(
+        uuid: Fixture.uuid(902), size: 30 << 30, after: 1 << 30, volumes: volumes,
+        systems: [
+          NativeSystemVolumeFacts(
+            group: Fixture.uuid(929), label: "Looks Stubbed", stub: true, version: "26.6",
+            bootPartitions: [])
+        ])
+      let disk = try fixture.collect()
+      XCTAssertEqual(
+        NativePartitionErase.refusal(
+          members: disk.snapshot.partitions.filter { $0.uuid == unlisted }, disk: disk),
+        "disk0s4 couldn’t be listed as an APFS container, so it can’t be told apart from a macOS installation."
+      )
+      XCTAssertEqual(
+        NativePartitionErase.refusal(
+          members: disk.snapshot.partitions.filter { $0.uuid == swap }, disk: disk),
+        "“Looks Stubbed” is a macOS installation or another full system, and Erase never deletes one."
+      )
+    }
+
+    func testTheStartupDiskChangesOnlyWhenTheRowHoldsWhatTheMacStartsFrom() throws {
+      let fixture = try Fixture.twoInstallations()
+      fixture.disk.startupState = .other("Fedora Linux")
+      fixture.disk.startupStoreUUID = Fixture.fedoraStub
+      let aurora = try AuroraRemovalPlan(
+        erasing: Fixture.auroraStub, disks: fixture.disk, collect: fixture.collect)
+      XCTAssertNil(aurora.startup)
+      XCTAssertNil(aurora.ticket(id: UUID()).startupDisk)
+      try AuroraRemovalExecutor(disks: fixture.disk, collect: fixture.collect).execute(aurora) {
+        _ in
+      }
+      XCTAssertTrue(fixture.disk.startupWrites.isEmpty)
+      let fedora = try AuroraRemovalPlan(
+        erasing: Fixture.fedoraStub, disks: fixture.disk, collect: fixture.collect)
+      XCTAssertEqual(fedora.startup, .other("Fedora Linux"))
+    }
+
+    func testOnlyTheErasedRowsJournalsAreRetired() async throws {
+      let fixture = try Fixture.twoInstallations()
+      let root = try temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let journals = root.appendingPathComponent("execution-journals")
+      try FileManager.default.createDirectory(at: journals, withIntermediateDirectories: false)
+      let aurora = try XCTUnwrap(
+        fixture.disk.state.partitions.first { $0.uuid == Fixture.auroraStub })
+      let fedora = try XCTUnwrap(
+        fixture.disk.state.partitions.first { $0.uuid == Fixture.fedoraStub })
+      func journal(_ name: String, offset: UInt64, length: UInt64) throws {
+        let line = try JSONSerialization.data(withJSONObject: [
+          "type": "plan", "payload": ["offset_bytes": offset, "length_bytes": length],
+        ])
+        try (line + Data([10])).write(to: journals.appendingPathComponent(name + ".jsonl"))
+        try Data("evidence".utf8).write(
+          to: journals.appendingPathComponent(name + ".jsonl.apfs-target-prepared.evidence"))
+      }
+      try journal("a", offset: aurora.offset, length: 8 << 30)
+      try journal("b", offset: fedora.offset, length: 8 << 30)
+      try Data("not a journal".utf8).write(to: journals.appendingPathComponent("c.jsonl"))
+      let service = server(root: root, fixture: fixture)
+      let review = try await service.removal(
+        ticketID: nil, confirmation: "", authorization: nil, erasing: Fixture.auroraStub)
+      let ticket = try XCTUnwrap(review.ticket)
+      let result = try await service.removal(
+        ticketID: ticket.id, confirmation: ticket.confirmation, authorization: authorization(),
+        erasing: Fixture.auroraStub)
+      XCTAssertTrue(result.completed, result.message)
+      XCTAssertEqual(
+        Set(try FileManager.default.contentsOfDirectory(atPath: journals.path)),
+        ["b.jsonl", "b.jsonl.apfs-target-prepared.evidence", "c.jsonl"])
+      let retired = root.appendingPathComponent(
+        "retired-execution-journals/\(ticket.id.uuidString)")
+      XCTAssertEqual(
+        Set(try FileManager.default.contentsOfDirectory(atPath: retired.path)),
+        ["a.jsonl", "a.jsonl.apfs-target-prepared.evidence"])
+    }
+
+    func testARowWithoutAStartupContainerRetiresTheJournalItOverlaps() async throws {
+      var fixture = try Fixture.base()
+      let esp = fixture.add("EFI", uuid: Fixture.uuid(811), size: 500 << 20, after: 2 << 30)
+      fixture.add("Linux Filesystem", uuid: Fixture.uuid(812), size: 4 << 30)
+      let root = try temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let journals = root.appendingPathComponent("execution-journals")
+      try FileManager.default.createDirectory(at: journals, withIntermediateDirectories: false)
+      let start = try XCTUnwrap(fixture.disk.state.partitions.first { $0.uuid == esp }).offset
+      let line = try JSONSerialization.data(withJSONObject: [
+        "type": "plan", "payload": ["offset_bytes": start - (2 << 30), "length_bytes": 8 << 30],
+      ])
+      try (line + Data([10])).write(to: journals.appendingPathComponent("stale.jsonl"))
+      let service = server(root: root, fixture: fixture)
+      let review = try await service.removal(
+        ticketID: nil, confirmation: "", authorization: nil, erasing: esp)
+      let ticket = try XCTUnwrap(review.ticket, review.message)
+      let result = try await service.removal(
+        ticketID: ticket.id, confirmation: ticket.confirmation, authorization: authorization(),
+        erasing: esp)
+      XCTAssertTrue(result.completed, result.message)
+      XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: journals.path), [])
     }
 
     // MARK: The helper service

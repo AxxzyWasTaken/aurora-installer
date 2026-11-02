@@ -214,6 +214,12 @@
     /// The unallocated extent left afterwards, joined with its neighbours.
     let freedOffset: UInt64
     let freedBytes: UInt64
+
+    /// The span the erased partitions covered.
+    func extent(of members: [RemovalPartition]) -> Range<UInt64> {
+      let start = members.map(\.offset).min() ?? freedOffset
+      return start..<max(start, members.map(\.end).max() ?? start)
+    }
   }
 
   enum RemovalStartup: Codable, Equatable, Sendable {
@@ -341,11 +347,23 @@
         anchor: anchor.uppercased(), name: region.name, memberUUIDs: region.memberUUIDs,
         freedOffset: freed?.offset ?? region.offsetBytes,
         freedBytes: freed?.length ?? members.reduce(0) { $0 + $1.size })
-      // Only a startup container or the EFI partition it starts from can be
-      // what the Mac starts up from now.
-      let touchesStartup = members.contains { ["Apple_APFS", "EFI"].contains($0.type) }
-      let startup = touchesStartup ? try disks.startup(snapshot) : .macOS
-      self.startup = startup == .macOS ? nil : startup
+      startup = try Self.erasedStartup(members: members, disks: disks, snapshot: snapshot)
+    }
+
+    /// What the Mac starts up from, when the erased row holds it. An unknown
+    /// target counts as held when the row has a container.
+    static func erasedStartup(
+      members: [RemovalPartition], disks: any RemovalDiskOperating, snapshot: RemovalSnapshot
+    ) throws -> RemovalStartup? {
+      guard members.contains(where: { $0.type == "Apple_APFS" }) else { return nil }
+      let startup = try disks.startup(snapshot)
+      guard startup != .macOS else { return nil }
+      if let store = try disks.startupStore(snapshot),
+        !members.contains(where: { $0.uuid.caseInsensitiveCompare(store) == .orderedSame })
+      {
+        return nil
+      }
+      return startup
     }
 
     /// The row with this first partition, when Erase may delete it.
@@ -367,15 +385,9 @@
       return region
     }
 
-    /// Execution checks the startup disk before deleting, and sets macOS as
-    /// it when it isn't. An erase does so whenever it deletes a startup
-    /// container or an EFI partition, the only things the Mac can start up
-    /// from, even when macOS was the startup disk at review.
-    var setsMacOSStartupFirst: Bool {
-      kind == .eraseToFreeSpace
-        ? members.contains { ["Apple_APFS", "EFI"].contains($0.type) }
-        : installation != nil || partial != nil
-    }
+    /// Removal checks the startup disk before deleting, and sets macOS as it
+    /// when it isn't.
+    var setsMacOSStartupFirst: Bool { installation != nil || partial != nil }
 
     /// The erase deletes a startup container, whose installer journals are
     /// then stale.
@@ -555,6 +567,24 @@
     func deleteContainer(_ stub: RemovalPartition, disk: String) throws
     func erasePartition(_ partition: RemovalPartition, disk: String) throws
     func growContainer(_ macOS: RemovalPartition, disk: String) throws
+    /// The physical store the Mac starts up from next; nil when unknown.
+    func startupStore(_ snapshot: RemovalSnapshot) throws -> String?
+    /// Unmounts the partition's mounted volumes, without force. Throws when
+    /// one is in use.
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws
+  }
+
+  extension RemovalDiskOperating {
+    func startupStore(_ snapshot: RemovalSnapshot) throws -> String? { nil }
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws {}
+  }
+
+  /// A deletion failed, and a fresh scan shows the disk as reviewed minus
+  /// what was already removed.
+  struct RemovalStopped: Error, Sendable {
+    let removed: Int
+    let total: Int
+    let detail: String
   }
 
   struct AuroraRemovalExecutor: Sendable {
@@ -603,7 +633,16 @@
         }
         guard region.memberUUIDs == erased.memberUUIDs else { throw changed }
       }
-      if plan.setsMacOSStartupFirst {
+      // Read-only, before any record: a volume in use refuses here.
+      for member in plan.members {
+        try disks.unmountVolumes(of: plan.live(member, in: first), in: first)
+      }
+      let checksStartup =
+        plan.kind == .eraseToFreeSpace
+        ? try AuroraRemovalPlan.erasedStartup(members: plan.members, disks: disks, snapshot: first)
+          != nil || plan.startup != nil
+        : plan.setsMacOSStartupFirst
+      if checksStartup {
         let startup = try disks.startup(first)
         if startup != .macOS {
           guard let reviewed = plan.startup, startup == reviewed else {
@@ -644,11 +683,23 @@
         try plan.validate(current, removed: removed)
         let target = try plan.live(member, in: current)
         try record("removing-\(member.uuid)")
-        if plan.kind == .eraseToFreeSpace ? member.type == "Apple_APFS" : index == 0 {
-          // Without a new name, current macOS deletes the physical store too.
-          try disks.deleteContainer(target, disk: current.disk)
-        } else {
-          try disks.erasePartition(target, disk: current.disk)
+        do {
+          if plan.kind == .eraseToFreeSpace ? member.type == "Apple_APFS" : index == 0 {
+            // Without a new name, current macOS deletes the physical store too.
+            try disks.deleteContainer(target, disk: current.disk)
+          } else {
+            try disks.erasePartition(target, disk: current.disk)
+          }
+        } catch {
+          // A disk that is the reviewed layout minus what went is safe to plan
+          // again from a fresh scan, so the record doesn't block what follows.
+          guard plan.kind == .eraseToFreeSpace || removed.isEmpty,
+            let after = try? disks.snapshot(), (try? plan.validate(after, removed: removed)) != nil
+          else { throw error }
+          try record("stopped")
+          throw RemovalStopped(
+            removed: removed.count, total: plan.members.count,
+            detail: (error as? RemovalFailure)?.message ?? error.localizedDescription)
         }
         removed.insert(member.uuid)
         try plan.validate(disks.snapshot(), removed: removed)

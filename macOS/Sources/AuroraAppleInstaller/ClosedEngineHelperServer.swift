@@ -384,7 +384,11 @@
               } ?? "The free space is now part of macOS."
           }
           do {
-            if approved.plan.erasesStartupContainer {
+            if let erased = approved.plan.erased {
+              try retireExecutionJournals(
+                in: workingDirectory, removal: approved.ticket.id,
+                overlapping: erased.extent(of: approved.plan.members))
+            } else if approved.plan.erasesStartupContainer {
               try retireExecutionJournals(in: workingDirectory, removal: approved.ticket.id)
             }
           } catch {
@@ -392,6 +396,22 @@
               " The installer couldn’t clear its record of the earlier installation, so installing again at the same size may not work."
           }
           return AuroraRemovalReply(completed: true, message: message)
+        } catch let stopped as RemovalStopped {
+          // The disk is the reviewed layout minus what went; nothing to review.
+          let plan = approved.plan
+          var message: String
+          if let erased = plan.erased {
+            message =
+              stopped.removed == 0
+              ? "Erase stopped: \(stopped.detail) Nothing was erased, and the disk is as it was."
+              : "Erase stopped after \(stopped.removed) of its \(stopped.total) partitions of “\(erased.name)” were erased: \(stopped.detail) The rest is as it was; check the disk again to erase it."
+          } else {
+            message = "\(stopped.detail) No disk changes were made."
+          }
+          if plan.startup != nil {
+            message += " Your Mac now starts up from macOS “\(plan.macOSName)”."
+          }
+          return AuroraRemovalReply(message: message)
         } catch {
           let detail = (error as? RemovalFailure)?.message ?? "macOS could not complete removal."
           let message: String
@@ -429,7 +449,7 @@
         guard properties.isRegularFile == true, properties.isSymbolicLink != true,
           let journal = try? JSONDecoder().decode(
             RemovalJournalPhase.self, from: Data(contentsOf: entry)),
-          journal.phase == "complete"
+          ["complete", "stopped"].contains(journal.phase)
         else {
           throw RemovalFailure(
             message:
@@ -1097,6 +1117,49 @@
   /// a reinstall at the same size finds its earlier journal complete and
   /// reports success without writing anything. They are kept for diagnosis
   /// under `retired-execution-journals/<removal ticket>`.
+  /// Moves aside only the journals whose planned extent overlaps `erased`,
+  /// with their evidence. Journals of other installations stay.
+  func retireExecutionJournals(
+    in workingDirectory: URL, removal: UUID, overlapping erased: Range<UInt64>
+  ) throws {
+    let journals = workingDirectory.appendingPathComponent(
+      "execution-journals", isDirectory: true)
+    guard FileManager.default.fileExists(atPath: journals.path) else { return }
+    let names = try FileManager.default.contentsOfDirectory(atPath: journals.path)
+    let stale = names.filter { name in
+      guard name.hasSuffix(".jsonl"),
+        let extent = plannedExtent(journals.appendingPathComponent(name))
+      else { return false }
+      return extent.overlaps(erased)
+    }
+    guard !stale.isEmpty else { return }
+    let retired = workingDirectory.appendingPathComponent(
+      "retired-execution-journals/\(removal.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: retired, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    for journal in stale {
+      for name in names where name == journal || name.hasPrefix(journal + ".") {
+        try FileManager.default.moveItem(
+          at: journals.appendingPathComponent(name), to: retired.appendingPathComponent(name))
+      }
+    }
+  }
+
+  /// A journal's planned extent, from its plan record; nil when it has none.
+  private func plannedExtent(_ journal: URL) -> Range<UInt64>? {
+    guard let data = try? Data(contentsOf: journal), data.count <= 8 << 20 else { return nil }
+    for line in data.split(separator: 10) {
+      guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+        object["type"] as? String == "plan", let payload = object["payload"] as? [String: Any],
+        let offset = (payload["offset_bytes"] as? NSNumber)?.uint64Value,
+        let length = (payload["length_bytes"] as? NSNumber)?.uint64Value, length > 0,
+        !offset.addingReportingOverflow(length).overflow
+      else { continue }
+      return offset..<(offset + length)
+    }
+    return nil
+  }
+
   func retireExecutionJournals(in workingDirectory: URL, removal: UUID) throws {
     let journals = workingDirectory.appendingPathComponent(
       "execution-journals", isDirectory: true)

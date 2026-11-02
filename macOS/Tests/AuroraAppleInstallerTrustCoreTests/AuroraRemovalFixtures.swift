@@ -304,6 +304,12 @@
     var operations = [String]()
     var evidenceReads = 0
     var limitOverride: UInt64?
+    /// What the Mac starts up from, as a store UUID; nil when unknown.
+    var startupStoreUUID: String?
+    var unmounted = [String]()
+    /// Removes this partition, then reports a failure anyway.
+    var removesThenFails: String?
+    var busy = Set<String>()
     var afterPlanning: ((FakeRemovalDisk) -> Void)?
     let failAt: Int?
     let skipGrowth: Bool
@@ -329,6 +335,13 @@
       return RemovalEvidence(files: files)
     }
     func startup(_ snapshot: RemovalSnapshot) throws -> RemovalStartup { startupState }
+    func startupStore(_ snapshot: RemovalSnapshot) throws -> String? { startupStoreUUID }
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws {
+      guard !busy.contains(partition.uuid) else {
+        throw RemovalFailure(message: RemovalText.busy(partition, snapshot), complete: true)
+      }
+      unmounted.append(partition.uuid)
+    }
     func setMacOSStartup(
       _ snapshot: RemovalSnapshot, nextOnly: Bool, authorization: MachineOwnerAuthorization
     ) throws {
@@ -348,6 +361,10 @@
       state.containers.removeAll { $0.storeUUID == stub.uuid }
     }
     func erasePartition(_ partition: RemovalPartition, disk: String) throws {
+      if removesThenFails == partition.uuid {
+        state.partitions.removeAll { $0.uuid == partition.uuid }
+        throw RemovalFailure(message: "diskutil reported a failure after erasing")
+      }
       try record("erase:\(partition.uuid)")
       state.partitions.removeAll { $0.uuid == partition.uuid }
     }

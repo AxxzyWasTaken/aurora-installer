@@ -424,6 +424,7 @@
     static func preflightFailure(stage: NativePreflightStage, error: any Error)
       -> (EngineFailureReason, String)
     {
+      if TransientTransport.isTransient(error) { return (.networkUnavailable, networkSummary) }
       if let shortfall = error as? MacOSFreeSpaceShortfall {
         return (.macOSSpaceRequired, shortfall.summary)
       }

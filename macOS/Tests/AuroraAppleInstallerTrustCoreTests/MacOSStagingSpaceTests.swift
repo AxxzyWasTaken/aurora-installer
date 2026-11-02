@@ -8,13 +8,13 @@
   final class MacOSStagingSpaceTests: XCTestCase {
     typealias Read = NativeStubStagingRequirement.Read
     private let gib: UInt64 = 1 << 30
-    /// The M2 Pro's macOS container when its install stopped: 8.33 GiB free.
-    private let machomeFree: UInt64 = 8_944_269_393
+    /// A macOS container with 8.33 GiB free.
+    private let lowFree: UInt64 = 8_944_269_393
 
     /// The macOS 13.5 restore image (UniversalMac_13.5_22G74, 12,893,195,726
-    /// bytes) as the stub stage reads it for a J414s: every selected member's
+    /// bytes) as the stub stage reads it for one board: every selected member's
     /// local record offset and stored size, from the image's ZIP directory.
-    static let thirteenFiveJ414s: [Read] = [
+    static let thirteenFiveReads: [Read] = [
       Read(name: "022-15462-082.dmg", recordOffset: 0, compressedSize: 651_410_105),
       Read(
         name: "BootabilityBundle/Restore/Bootability/BootabilityBrain.framework/BootabilityBrain",
@@ -194,16 +194,16 @@
       Read(name: "SystemVersion.plist", recordOffset: 12_772_036_359, compressedSize: 301),
     ]
 
-    func testThirteenFiveOnTheM2ProNeedsMoreThanTheEightGigabytesItHad() {
+    func testThirteenFiveNeedsMoreThanEightGigabytesFree() {
       // No AEA member: only the cache's floor, its ranges and the last range.
       let stage = NativeStubStagingRequirement(
-        cacheBytes: NativeStubStagingRequirement.cacheBytes(reading: Self.thirteenFiveJ414s),
+        cacheBytes: NativeStubStagingRequirement.cacheBytes(reading: Self.thirteenFiveReads),
         largestDecodeBytes: 0)
       XCTAssertEqual(stage.cacheBytes, 728_376_625)
       XCTAssertEqual(stage.requiredFreeBytes, 11_474_183_473)
-      XCTAssertGreaterThan(stage.requiredFreeBytes, machomeFree)
+      XCTAssertGreaterThan(stage.requiredFreeBytes, lowFree)
       let shortfall = MacOSFreeSpaceShortfall(
-        requiredBytes: stage.requiredFreeBytes, availableBytes: machomeFree)
+        requiredBytes: stage.requiredFreeBytes, availableBytes: lowFree)
       XCTAssertEqual(
         shortfall.summary,
         "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
@@ -213,7 +213,7 @@
       // what is written to macOS before the stage starts.
       let planning = NativeStubStagingRequirement(
         cacheBytes: NativeStubStagingRequirement.cacheBytes(
-          reading: Self.thirteenFiveJ414s + Self.thirteenFivePlanning)
+          reading: Self.thirteenFiveReads + Self.thirteenFivePlanning)
           + NativeStubStagingRequirement.directoryBytes,
         largestDecodeBytes: 0)
       let planned = planning.requiredFreeBytes + NativeStubStagingEstimator.planningMarginBytes
@@ -221,9 +221,9 @@
       XCTAssertGreaterThan(planned, stage.requiredFreeBytes)
     }
 
-    /// Reads Apple's restore images the way planning does. The 13.5 figure
-    /// must match the recorded layout above; the 26.6 image for the MacBook
-    /// Neo must find both of its encrypted members.
+    /// Reads Apple's restore images the way planning does: the 13.5 figure
+    /// matches the recorded layout, and the 26.6 image's encrypted members
+    /// are found.
     func testOptInLiveEstimatesMatchTheRecordedLayouts() async throws {
       guard ProcessInfo.processInfo.environment["AURORA_LIVE_STAGING_ESTIMATE"] == "1" else {
         throw XCTSkip("Explicit live restore-image probe only")
@@ -261,20 +261,20 @@
       }
     }
 
-    func testTheM2ProFreeExtentPlanIsRefusedBeforeApprovalWithTheNumbers() throws {
+    func testAFreeExtentPlanIsRefusedBeforeApprovalWithTheNumbers() throws {
       // The free extent next to macOS: a free plan never shrinks macOS, so
       // nothing but this check stood between it and the stub stage.
       let free = candidate(kind: "free", source: "disk0", length: 42_949_672_960)
       let recommendation = try InstallerAllocationRecommendation(inventory: inventory([free]))
       XCTAssertThrowsError(
         try MacOSStagingAdmission.admit(
-          recommendation, macOSStoreIdentifier: "disk0s2", macOSFreeBytes: machomeFree,
+          recommendation, macOSStoreIdentifier: "disk0s2", macOSFreeBytes: lowFree,
           outstandingDownloadBytes: 0, stagingBytes: 12_557_937_290)
       ) {
         let shortfall = $0 as? MacOSFreeSpaceShortfall
         XCTAssertEqual(
           shortfall,
-          MacOSFreeSpaceShortfall(requiredBytes: 12_557_937_290, availableBytes: machomeFree))
+          MacOSFreeSpaceShortfall(requiredBytes: 12_557_937_290, availableBytes: lowFree))
         XCTAssertEqual(
           shortfall?.summary,
           "macOS needs 12.6 GB free to prepare the installation and has 8.9 GB. "
@@ -344,7 +344,7 @@
     }
 
     func testDecodingAnEncryptedRecoveryImageNeedsItTwiceAboveTheDecodeFloor() {
-      // macOS 26.6 for the MacBook Neo: its Recovery image is a 1.14 GB AEA.
+      // A 1.14 GB encrypted Recovery image.
       let recovery: UInt64 = 1_140_850_688
       let stage = NativeStubStagingRequirement(
         cacheBytes: 1_440_999_687, largestDecodeBytes: recovery)
@@ -427,7 +427,7 @@
       XCTAssertEqual(counter.reads, [1 << 20, 1 << 20, 4 << 20])
     }
 
-    func testEveryM3MacIsRefusedBeforeApprovalForItsUpdateArchiveFirmware() async throws {
+    func testUpdateArchiveFirmwareIsRefusedBeforeApproval() async throws {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
       defer { try? FileManager.default.removeItem(at: root) }
@@ -447,9 +447,8 @@
           fileName: "metadata.json", expectedDigest: SHA256Digest(hashing: data).rawValue,
           expectedSizeBytes: UInt64(data.count)),
         fileURL: url, reusedExistingFile: false)
-      // An M3 MacBook Pro on macOS 15, and an M3 MacBook Air on macOS 26.6.2:
-      // the policy's last compatible firmware for both is 14.8.3, which Apple
-      // ships only as an update archive.
+      // On older and current firmware alike, the last compatible entry for
+      // these boards is an update archive.
       for (device, hardware) in [
         (
           "apple,j504",

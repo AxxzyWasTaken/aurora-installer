@@ -425,7 +425,7 @@
     }
 
     /// Every stage preflights, then the stub stage finds macOS short of the
-    /// space it stages there, as on the M2 Pro with 8.33 GiB free.
+    /// space it stages there.
     private struct ShortOfSpaceFilesFixture: NativeStubFilesPreparing, NativeStubFilesExecuting {
       var preflightError: (any Error & Sendable)? = nil
       var prepareError: (any Error & Sendable)? = nil
@@ -447,7 +447,7 @@
       }
     }
 
-    static let m2ProShortfall = MacOSFreeSpaceShortfall(
+    static let lowSpaceShortfall = MacOSFreeSpaceShortfall(
       requiredBytes: 11_474_183_473, availableBytes: 8_944_269_393)
 
     private func closureExecutor(
@@ -469,12 +469,12 @@
           esp: esp, marker: fixture.root.appendingPathComponent("finished")))
     }
 
-    func testTheM2ProStagingShortfallIsReportedAsMacOSSpaceBeforeAnyDiskChange() async throws {
+    func testAStagingShortfallIsReportedAsMacOSSpaceBeforeAnyDiskChange() async throws {
       for files in [
         // The check that runs once every stage has preflighted,
-        ShortOfSpaceFilesFixture(stagingError: Self.m2ProShortfall),
+        ShortOfSpaceFilesFixture(stagingError: Self.lowSpaceShortfall),
         // and the cache's own floor while the stub plan is read.
-        ShortOfSpaceFilesFixture(preflightError: Self.m2ProShortfall),
+        ShortOfSpaceFilesFixture(preflightError: Self.lowSpaceShortfall),
       ] {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -522,7 +522,7 @@
     func testStubStageFailuresAfterDiskChangesNameTheirCause() async throws {
       for (error, reason, summary): (any Error & Sendable, EngineFailureReason, String) in [
         (
-          Self.m2ProShortfall, .macOSSpaceRequired,
+          Self.lowSpaceShortfall, .macOSSpaceRequired,
           "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
             + "Free up 2.6 GB, then try again."
         ),
@@ -592,7 +592,7 @@
         ).0, .macOSUpdateRequired)
       // No preflight cause is ever told as a release mismatch.
       for error: any Error in [
-        Self.m2ProShortfall, NativeStubFileError.cacheFull,
+        Self.lowSpaceShortfall, NativeStubFileError.cacheFull,
         NativeStubFileError.freeSpaceUnavailable,
         NativeStubFileError.invalidPlan, NativePreflightRefusalProbe.any,
       ] {

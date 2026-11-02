@@ -270,6 +270,20 @@
       return bytes
     }
 
+    /// Bytes of the ranges kept on disk that overlap any of `spans`.
+    func cachedBytes(overlapping spans: [Range<Int>]) throws -> UInt64 {
+      var total: UInt64 = 0
+      for name in try FileManager.default.contentsOfDirectory(atPath: root.path)
+      where name.hasSuffix(".bin") {
+        let parts = name.dropLast(4).split(separator: "-")
+        guard parts.count == 2, let offset = Int(parts[0]), let count = Int(parts[1]), count > 0
+        else { continue }
+        let range = offset..<(offset + count)
+        if spans.contains(where: { $0.overlaps(range) }) { total += UInt64(count) }
+      }
+      return total
+    }
+
     func retire() throws {
       try FileManager.default.removeItem(at: root)
     }

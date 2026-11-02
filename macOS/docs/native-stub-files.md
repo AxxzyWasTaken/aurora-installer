@@ -19,7 +19,11 @@ For the images in the sealed policy the stage needs about 11.5 GB for macOS 13.5
 The requirement is checked twice, both before the first disk change:
 
 - **Planning** (`NativeStubStagingEstimator`, `MacOSStagingAdmission`) reads the image's directory, manifest and the restored members' prefixes, keeping small reads in memory. It adds the planning reads, the download still to come and a 1 GiB margin for the helper's own files before the stage (Recovery template, firmware ranges) and other macOS writes. It then refuses a plan macOS can't hold, or lowers the largest size of a macOS resize. The helper's APFS clones of the downloads share their blocks, so only their full-copy fallback, which the resize reserve already withholds, would need more.
-- **The helper** computes the same requirement from the cached plan once every stage has preflighted (`requireStagingSpace`). It skips the check when the stage already completed. Before APFS preparation, it adds the plan's length when the plan shrinks the macOS container.
+- **The helper** computes the same requirement from the cached plan once every stage has preflighted (`requireStagingSpace`). It leaves out ranges an earlier attempt already cached for the image, and skips the check when the stage already completed. It adds the part of a macOS resize the partition map shows is still to come, so a resize that already happened isn't counted again.
+
+Planning applies the check to free, resize and replacement plans. When the cap would fall below a recommended size, the largest size falls back to the candidate's own minimum before the plan is refused.
+
+A floor reached during the stage is reported as what fetching the rest of the stage needs, not as that one read's need.
 
 A shortfall at either point, or at any of the stage's own floors later, is a `MacOSFreeSpaceShortfall`. The notice reason is `macOSSpaceRequired`, with a summary such as "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. Free up 2.6 GB, then try again." Free space is `statfs` `f_bavail` of the helper's directory, which leaves out purgeable space Finder may count.
 

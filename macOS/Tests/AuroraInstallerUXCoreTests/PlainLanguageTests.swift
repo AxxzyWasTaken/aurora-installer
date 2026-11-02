@@ -278,7 +278,7 @@
       }
     }
 
-    func testTheM2ProSpaceFailureShowsItsNumbersAndNeverAReleaseMismatch() throws {
+    func testASpaceFailureShowsItsNumbersAndNeverAReleaseMismatch() throws {
       let summary =
         "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
         + "Free up 2.6 GB, then try again."
@@ -359,11 +359,11 @@
           + "Free up 3.7 GB, then try again. The disk has not been changed.")
       XCTAssertTrue(try XCTUnwrap(space.remedy).contains("Check again"))
 
-      let m3 = PlainLanguage.failure(
+      let archive = PlainLanguage.failure(
         for: InstallerPlanPreparationError.firmwareArchiveUnsupported(version: "14.8.3"))
-      XCTAssertTrue(m3.plainDetail.contains("macOS 14.8.3"), m3.plainDetail)
-      XCTAssertTrue(m3.plainDetail.contains("update archive"), m3.plainDetail)
-      XCTAssertTrue(m3.plainDetail.hasSuffix("The disk has not been changed."))
+      XCTAssertTrue(archive.plainDetail.contains("macOS 14.8.3"), archive.plainDetail)
+      XCTAssertTrue(archive.plainDetail.contains("update archive"), archive.plainDetail)
+      XCTAssertTrue(archive.plainDetail.hasSuffix("The disk has not been changed."))
 
       let update = PlainLanguage.failure(
         for: InstallerPlanPreparationError.macOSUpdateRequired(version: "13.5"))

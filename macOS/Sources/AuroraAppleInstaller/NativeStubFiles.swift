@@ -152,9 +152,13 @@
           requiredBytes: max(whole.requiredFreeBytes, shortfall.requiredBytes),
           availableBytes: shortfall.availableBytes)
       }
+      // What earlier attempts already cached for this image is on disk.
+      let cached = try await reader.cachedBytes(
+        overlapping: NativeStubStagingRequirement.spans(plan.readMembers))
       let staging = NativeStubStagingRequirement(
         plan: plan, decoded: try await NativeStubStagingRequirement.decodedMembers(of: plan),
-        includingPlanningReads: false)
+        includingPlanningReads: false
+      ).remaining(cachedBytes: cached)
       return NativeStubFilesExecution(
         package: package, approved: approved,
         plan: plan, owner: owner, platform: platform, cache: reader, staging: staging)
@@ -179,16 +183,25 @@
     var freeBytes: @Sendable (URL) -> UInt64? = { NativeStubRestoreCache.freeBytes($0) }
     var firmwarePlan: NativeStubFilePlan? { plan }
 
-    /// The free bytes the stage needs now, or nil once it completed: it then
-    /// reads nothing again. Until APFS preparation, a plan that shrinks the
-    /// macOS container still takes its length from the space the stage sees.
-    static func stagingFreeBytes(
-      _ stage: UInt64, checkpoints: [String], macOSShrinkBytes: () throws -> UInt64
-    ) rethrows -> UInt64? {
+    /// The free bytes the stage needs now, or nil once it completed.
+    static func stagingFreeBytes(_ stage: UInt64, checkpoints: [String], pendingShrink: UInt64)
+      -> UInt64?
+    {
       if checkpoints.contains("stub-and-esp-installed") { return nil }
-      guard !checkpoints.contains("apfs-target-prepared") else { return stage }
-      let (sum, overflow) = stage.addingReportingOverflow(try macOSShrinkBytes())
+      let (sum, overflow) = stage.addingReportingOverflow(pendingShrink)
       return overflow ? .max : sum
+    }
+
+    /// The part of a macOS resize not yet done, read from the partition map:
+    /// the macOS container still covering the new partition's extent.
+    static func pendingShrinkBytes(
+      kind: String, source: RemovalPartition?, macOSStoreUUID: String, offsetBytes: UInt64,
+      lengthBytes: UInt64
+    ) -> UInt64 {
+      guard kind == "resize", let source, source.uuid == macOSStoreUUID,
+        source.end > offsetBytes
+      else { return 0 }
+      return min(lengthBytes, source.end - offsetBytes)
     }
 
     func requireStagingSpace(journal: URL) throws {
@@ -200,15 +213,18 @@
         ? []
         : try AppleInstallerTrustCore().validateEngineTranscript(saved).checkpoints.map(
           \.identifier)
+      var pending: UInt64 = 0
+      if approved.candidateKind == "resize" {
+        let snapshot = try platform.environment.snapshot()
+        pending = Self.pendingShrinkBytes(
+          kind: approved.candidateKind,
+          source: snapshot.partitions.first { $0.identifier == approved.sourceIdentifier },
+          macOSStoreUUID: snapshot.macOSStoreUUID, offsetBytes: approved.offsetBytes,
+          lengthBytes: approved.lengthBytes)
+      }
       guard
-        let required = try Self.stagingFreeBytes(
-          staging.requiredFreeBytes, checkpoints: checkpoints,
-          macOSShrinkBytes: {
-            guard approved.candidateKind == "resize" else { return 0 }
-            let snapshot = try platform.environment.snapshot()
-            let source = snapshot.partitions.first { $0.identifier == approved.sourceIdentifier }
-            return source?.uuid == snapshot.macOSStoreUUID ? approved.lengthBytes : 0
-          })
+        let required = Self.stagingFreeBytes(
+          staging.requiredFreeBytes, checkpoints: checkpoints, pendingShrink: pending)
       else { return }
       guard let free = freeBytes(package.packageURL.deletingLastPathComponent()) else {
         throw NativeStubFileError.freeSpaceUnavailable
@@ -219,6 +235,32 @@
     }
 
     func prepare(
+      journal: URL, authorization: MachineOwnerAuthorization,
+      sourceBootstrap: NativeSourceBootstrap
+    ) async throws {
+      do {
+        try await populate(
+          journal: journal, authorization: authorization, sourceBootstrap: sourceBootstrap)
+      } catch let shortfall as MacOSFreeSpaceShortfall {
+        throw try await stillNeeded(after: shortfall)
+      }
+    }
+
+    /// A floor reached mid-stage names one read's need; report what fetching
+    /// the rest of the stage needs, when that is more.
+    private func stillNeeded(after shortfall: MacOSFreeSpaceShortfall) async throws
+      -> MacOSFreeSpaceShortfall
+    {
+      let spans = NativeStubStagingRequirement.spans(plan.readMembers)
+      let cached = try await cache?.cachedBytes(overlapping: spans) ?? 0
+      let whole = NativeStubStagingRequirement(
+        plan: plan, decoded: [], includingPlanningReads: false)
+      let rest = whole.remaining(cachedBytes: cached).fetchingFreeBytes
+      return MacOSFreeSpaceShortfall(
+        requiredBytes: max(rest, shortfall.requiredBytes), availableBytes: shortfall.availableBytes)
+    }
+
+    private func populate(
       journal: URL, authorization: MachineOwnerAuthorization,
       sourceBootstrap: NativeSourceBootstrap
     ) async throws {

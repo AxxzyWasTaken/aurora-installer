@@ -46,26 +46,10 @@
     }
   }
 
-  /// The free space the restore stub stage needs on macOS.
-  ///
-  /// The stage keeps what it reads from the restore image in a cache on the
-  /// macOS data volume and decodes Apple Encrypted Archives there before it
-  /// copies them to the new container. Each step refuses to start below a
-  /// floor, and this mirrors those checks:
-  ///
-  /// - every cached range needs `floorBytes` plus twice its size free, so the
-  ///   last range needs the floor, everything cached before it, and itself;
-  /// - a decode needs the floor plus the member plus `decodeHeadroomBytes`
-  ///   free once the member is staged, then writes two more copies of it
-  ///   (the decoder's workspace copy and the decrypted image) while it keeps
-  ///   at least the floor free.
-  ///
-  /// `floorBytes` keeps macOS usable while the installer stages files: below
-  /// about 10 GB free, macOS updates, swap and app caches start to fail. It
-  /// belongs to this engine: the reference engine keeps its range cache in
-  /// memory and writes only small firmware files on macOS. `decodeHeadroomBytes` is the
-  /// largest member a stub plan may decode, so a staged member always leaves
-  /// room for the decoder's copy of it, whatever its size.
+  /// The free space the restore stub stage needs on macOS, mirroring the
+  /// stage's own checks: the cache floor, everything it caches and its
+  /// largest range, and for an encrypted member the decode check plus the
+  /// decoder's two copies. See docs/native-stub-files.md.
   struct NativeStubStagingRequirement: Equatable, Sendable {
     static let floorBytes = NativeStubRestoreCache.reserveBytes
     static let decodeHeadroomBytes: UInt64 = 8 << 30
@@ -105,12 +89,30 @@
     let largestDecodeBytes: UInt64
 
     var requiredFreeBytes: UInt64 {
-      let fetching = Self.floorBytes + cacheBytes + Self.largestRangeBytes
+      let fetching = fetchingFreeBytes
       guard largestDecodeBytes > 0 else { return fetching }
       return max(
         fetching,
         Self.decodeFreeBytes(memberBytes: largestDecodeBytes) + cacheBytes
           + largestDecodeBytes)
+    }
+
+    /// The same requirement once `cachedBytes` of the stage's reads are kept.
+    func remaining(cachedBytes: UInt64) -> Self {
+      Self(
+        cacheBytes: cacheBytes - min(cacheBytes, cachedBytes),
+        largestDecodeBytes: largestDecodeBytes)
+    }
+
+    /// What fetching the rest needs, without any decode.
+    var fetchingFreeBytes: UInt64 { Self.floorBytes + cacheBytes + Self.largestRangeBytes }
+
+    /// The archive spans the stage reads for these members: each local
+    /// record and its body.
+    static func spans(_ members: [IPSWArchiveMember]) -> [Range<Int>] {
+      members.map {
+        $0.localHeaderOffset..<($0.localHeaderOffset + recordBytes + $0.compressedSize)
+      }
     }
 
     /// The free space a decode needs once its member is staged.
@@ -270,7 +272,7 @@
   /// prepared, before the person approves anything.
   public struct NativeStubStagingEstimator: Sendable {
     /// The helper's own files before the stub stage, such as the Recovery
-    /// template (at most 128 MiB) and a MacBook Neo's firmware ranges, and
+    /// template (at most 128 MiB) and firmware ranges, and
     /// ordinary macOS writes between planning and staging.
     public static let planningMarginBytes: UInt64 = 1 << 30
 
@@ -339,7 +341,7 @@
       }
       let candidate = recommendation.candidate
       guard candidate.kind == "resize", candidate.sourceIdentifier == macOSStoreIdentifier else {
-        guard ["free", "resize"].contains(candidate.kind), macOSFreeBytes < needed else {
+        guard ["free", "resize", "replace"].contains(candidate.kind), macOSFreeBytes < needed else {
           return recommendation
         }
         throw MacOSFreeSpaceShortfall(requiredBytes: needed, availableBytes: macOSFreeBytes)
@@ -348,7 +350,7 @@
       // stage runs: the largest size must still leave macOS what it needs.
       let ceiling = macOSFreeBytes > needed ? macOSFreeBytes - needed : 0
       guard let limited = recommendation.limited(toMaximumBytes: ceiling) else {
-        let (required, overflow) = needed.addingReportingOverflow(recommendation.minimumBytes)
+        let (required, overflow) = needed.addingReportingOverflow(recommendation.floorBytes)
         throw MacOSFreeSpaceShortfall(
           requiredBytes: overflow ? .max : required, availableBytes: macOSFreeBytes)
       }

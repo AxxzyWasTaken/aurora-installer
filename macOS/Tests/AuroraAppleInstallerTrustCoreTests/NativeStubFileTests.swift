@@ -953,13 +953,114 @@
     func testStagingSpaceCountsAPendingMacOSShrinkAndNothingOnceTheStageIsDone() {
       func required(_ checkpoints: [String], shrink: UInt64 = 40 << 30) -> UInt64? {
         NativeStubFilesExecution.stagingFreeBytes(
-          12 << 30, checkpoints: checkpoints, macOSShrinkBytes: { shrink })
+          12 << 30, checkpoints: checkpoints, pendingShrink: shrink)
       }
       XCTAssertEqual(required([]), 52 << 30)
       XCTAssertEqual(required([], shrink: 0), 12 << 30)
-      XCTAssertEqual(required(["apfs-target-prepared"]), 12 << 30)
+      XCTAssertEqual(required(["apfs-target-prepared"], shrink: 0), 12 << 30)
       XCTAssertNil(required(["apfs-target-prepared", "stub-and-esp-installed"]))
       XCTAssertEqual(required([], shrink: .max), .max)
+    }
+
+    func testARetryCountsOnlyWhatTheCacheDoesntHoldYet() async throws {
+      let directory = try root()
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let window = NativeStubRestoreCache.windowBytes
+      let image = try XCTUnwrap(URL(string: "https://updates.cdn-apple.com/fixture.ipsw"))
+      let identity = try NativeStubRestoreCache.identity(url: image, bytes: 8 * window)
+      let cache = try NativeStubRestoreCache(
+        source: CountingSource(sizeBytes: 8 * window),
+        root: NativeStubRestoreCache.root(in: directory, identity: identity), owner: geteuid(),
+        identity: identity)
+      // One body range kept as read, and one short read's window.
+      _ = try await cache.read(offset: 2 * window, count: 256 << 10)
+      _ = try await cache.read(offset: 5 * window + 10, count: 30)
+      let overlapping = try await cache.cachedBytes(overlapping: [
+        (2 * window)..<(2 * window + 100), (5 * window)..<(5 * window + 64),
+      ])
+      XCTAssertEqual(overlapping, UInt64(256 << 10) + UInt64(window))
+      let elsewhere = try await cache.cachedBytes(overlapping: [0..<window])
+      XCTAssertEqual(elsewhere, 0)
+      let stage = NativeStubStagingRequirement(cacheBytes: 10 << 30, largestDecodeBytes: 0)
+      XCTAssertEqual(stage.remaining(cachedBytes: overlapping).cacheBytes, (10 << 30) - overlapping)
+      XCTAssertEqual(stage.remaining(cachedBytes: 20 << 30).cacheBytes, 0)
+    }
+
+    func testAPendingMacOSShrinkCountsOnlyUntilItHappened() {
+      let macOS = RemovalPartition(
+        identifier: "disk0s2", uuid: "M", type: "Apple_APFS", offset: 1 << 30, size: 400 << 30,
+        name: "")
+      let offset = (1 << 30) + (300 << 30) as UInt64
+      func pending(_ source: RemovalPartition, kind: String = "resize") -> UInt64 {
+        NativeStubFilesExecution.pendingShrinkBytes(
+          kind: kind, source: source, macOSStoreUUID: "M", offsetBytes: offset,
+          lengthBytes: 100 << 30)
+      }
+      XCTAssertEqual(pending(macOS), 100 << 30)
+      var shrunk = macOS
+      shrunk.size = 300 << 30
+      XCTAssertEqual(pending(shrunk), 0)
+      XCTAssertEqual(pending(macOS, kind: "free"), 0)
+      let other = RemovalPartition(
+        identifier: "disk0s4", uuid: "O", type: "Apple_APFS", offset: 1 << 30, size: 400 << 30,
+        name: "")
+      XCTAssertEqual(pending(other), 0)
+    }
+
+    func testRunningOutOfSpaceMidStageReportsWhatTheStageStillNeeds() async throws {
+      let fixture = try ExecutionFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let vector = try XCTUnwrap(vectors().vectors.first { $0.success })
+      let gate = SpaceGate()
+      let archive = try await IPSWArchive.open(SpaceSource(bytes: vector.archive, gate: gate))
+      let plan = try await NativeStubFilePlan(
+        archive: archive,
+        source: NativeFirmwareSelection(
+          version: "26.6.2", sourceURL: URL(string: "https://updates.cdn-apple.com/test.ipsw")!,
+          stubBytes: 6_000_000_000),
+        deviceClass: "j700ap", boardID: 1, chipID: 2)
+      let staging = NativeStubStagingRequirement(
+        plan: plan, decoded: [], includingPlanningReads: false)
+      let execution = NativeStubFilesExecution(
+        package: fixture.package, approved: fixture.approved, plan: plan, owner: geteuid(),
+        platform: fixture.platform, cache: nil, staging: staging)
+      gate.arm()
+      do {
+        try await execution.prepare(
+          journal: fixture.journal, authorization: fixture.authorization,
+          sourceBootstrap: fixture.bootstrap)
+        XCTFail("the stage ran without its space")
+      } catch let shortfall as MacOSFreeSpaceShortfall {
+        // Not the one read's floor: everything the stage still has to fetch.
+        XCTAssertEqual(
+          shortfall.requiredBytes,
+          NativeStubStagingRequirement.floorBytes + staging.cacheBytes
+            + NativeStubStagingRequirement.largestRangeBytes)
+        XCTAssertEqual(shortfall.availableBytes, SpaceSource.free)
+      }
+    }
+
+    final class SpaceGate: @unchecked Sendable {
+      private let lock = NSLock()
+      private var armed = false
+      func arm() { lock.withLock { armed = true } }
+      var isArmed: Bool { lock.withLock { armed } }
+    }
+
+    /// Refuses every read once armed, as the cache does below its floor.
+    struct SpaceSource: FirmwareRangeReading {
+      static let free: UInt64 = 9 << 30
+      let bytes: Data
+      let gate: SpaceGate
+      var sizeBytes: Int { bytes.count }
+      func read(offset: Int, count: Int) async throws -> Data {
+        if gate.isArmed {
+          throw MacOSFreeSpaceShortfall(
+            requiredBytes: NativeStubStagingRequirement.floorBytes + UInt64(2 * count),
+            availableBytes: Self.free)
+        }
+        return bytes.subdata(in: offset..<(offset + count))
+      }
     }
 
     func testAtomicPublicationPreservesConflictsAndRejectsLinksAndResumesOwnedTemps() async throws {

@@ -46,7 +46,8 @@ public enum UpdateArchiveFullImage {
       }
       try require(
         output > 0 && output <= UpdateArchiveFullImage.maximumOutputBytes && stream > 12
-          && memberBytes == UpdateArchiveFullImage.headerBytes + stream,
+          && memberBytes >= UpdateArchiveFullImage.headerBytes
+          && stream == memberBytes - UpdateArchiveFullImage.headerBytes,
         "Update archive image lengths disagree with its archive member.")
       outputBytes = output
       streamBytes = stream

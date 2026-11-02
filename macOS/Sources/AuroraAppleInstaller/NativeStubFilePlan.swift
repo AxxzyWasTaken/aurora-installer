@@ -227,8 +227,8 @@
       }
       guard copies.count <= 10000,
         copies.reduce(
-          UInt64(recoveryMember.sizeBytes), { $0 + UInt64(members[$1.member]!.sizeBytes) }) <= 16
-          << 30
+          UInt64(recoveryImage?.outputBytes ?? recoveryMember.sizeBytes),
+          { $0 + UInt64(members[$1.member]!.sizeBytes) }) <= 16 << 30
       else { throw NativeStubFileError.invalidPlan }
       // Admit every selected local record before disk preparation. Links are
       // confined to the selected framework tree and are never extraction paths.

@@ -108,6 +108,20 @@ final class UpdateArchiveImageTests: XCTestCase {
         empty.prefix(UpdateArchiveFullImage.headerBytes), memberBytes: empty.count))
   }
 
+  func testAnOversizedStreamLengthIsRefusedWithoutOverflow() {
+    let (_, member) = Self.wholeImage()
+    for stream in [Int.max, Int.max - UpdateArchiveFullImage.headerBytes + 1] {
+      var header = Data(member.prefix(UpdateArchiveFullImage.headerBytes))
+      header.replaceSubrange(32..<40, with: Self.little(stream).prefix(8))
+      XCTAssertThrowsError(try UpdateArchiveFullImage.Header(header, memberBytes: member.count))
+      XCTAssertThrowsError(try UpdateArchiveFullImage.Header(header, memberBytes: 8 << 30))
+    }
+    XCTAssertThrowsError(
+      try UpdateArchiveFullImage.Header(
+        member.prefix(UpdateArchiveFullImage.headerBytes),
+        memberBytes: UpdateArchiveFullImage.headerBytes - 1))
+  }
+
   func testTheOutputMustMatchApplesSHA1() {
     let (image, _) = Self.wholeImage()
     var changed = image

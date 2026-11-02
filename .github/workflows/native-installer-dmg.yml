@@ -5,6 +5,11 @@ on:
       profiles-revision:
         description: Immutable aurora-distributions commit with matching signed catalogs
         required: true
+      test-local-payloads:
+        description: Test DMG with local payload cache, CI artifact only; publish-release must be false
+        type: boolean
+        default: false
+        required: true
       version:
         description: Installer marketing version
         default: '0.1.0'
@@ -32,6 +37,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
       AURORA_DEVELOPER_BUILD: '1'
+      AURORA_LOCAL_PAYLOAD_TEST_BUILD: ${{ inputs.test-local-payloads && '1' || '0' }}
       AURORA_SIGNING_KEYCHAIN_TIMEOUT: '5400'
     defaults:
       run:
@@ -45,8 +51,14 @@ jobs:
         env:
           PROFILES_REVISION: ${{ inputs.profiles-revision }}
           APP_VERSION: ${{ inputs.version }}
+          LOCAL_PAYLOAD_TEST: ${{ inputs.test-local-payloads }}
+          PUBLISH_RELEASE: ${{ inputs.publish-release }}
         run: |
           set -euo pipefail
+          if [[ $LOCAL_PAYLOAD_TEST == true && $PUBLISH_RELEASE == true ]]; then
+            echo 'Local payload test builds are CI artifacts only and cannot be published.' >&2
+            exit 1
+          fi
           [[ $PROFILES_REVISION =~ ^[0-9a-f]{40}$ ]]
           [[ $APP_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ $(uname -m) == arm64 ]]
@@ -139,7 +151,18 @@ jobs:
         run: |
           set -euo pipefail
           xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests Recovery/Package.swift Recovery/Sources Recovery/Tests
-          xcodebuildmcp swift-package build --package-path "$PWD" --configuration release 2>&1 | tee "$RUNNER_TEMP/evidence/build.log"
+          configuration=release
+          if [[ $AURORA_LOCAL_PAYLOAD_TEST_BUILD == 1 ]]; then configuration=debug; fi
+          # A release build with the opt-in set must still ignore local files.
+          AURORA_LOCAL_PAYLOAD_TEST_BUILD=1 xcodebuildmcp swift-package test \
+            --package-path "$PWD" --configuration release --filter 'VerifiedArtifactStagerTests.testLocal' \
+            2>&1 | tee "$RUNNER_TEMP/evidence/local-source-release.log"
+          if [[ $configuration == debug ]]; then
+            xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug \
+              --filter 'VerifiedArtifactStagerTests.testLocal' \
+              2>&1 | tee "$RUNNER_TEMP/evidence/local-source-test.log"
+          fi
+          xcodebuildmcp swift-package build --package-path "$PWD" --configuration "$configuration" 2>&1 | tee "$RUNNER_TEMP/evidence/build.log"
           bash Recovery/build-recovery.sh "$RUNNER_TEMP/recovery-template" 2>&1 | tee "$RUNNER_TEMP/evidence/recovery.log"
       - name: Sign, notarize and package the tiny application
         env:
@@ -176,8 +199,14 @@ jobs:
               assert hashlib.sha256(data).hexdigest()==record['catalog_sha256'],profile
               assert json.loads(data)['sequence']==record['sequence'],profile
           PYPROFILES
+          expected=disabled
+          if [[ $AURORA_LOCAL_PAYLOAD_TEST_BUILD == 1 ]]; then expected=enabled; fi
+          python3 Packaging/check-local-payload-policy.py --expected "$expected" "$app" \
+            | tee "$RUNNER_TEMP/evidence/local-source-policy.txt"
           bash Packaging/notarize-app.sh "$app"
-          bash Packaging/make-download-dmg.sh "$app" "$RUNNER_TEMP/download/Aurora-Installer-$AURORA_APP_VERSION.dmg"
+          suffix=
+          if [[ $AURORA_LOCAL_PAYLOAD_TEST_BUILD == 1 ]]; then suffix=-local-test; fi
+          bash Packaging/make-download-dmg.sh "$app" "$RUNNER_TEMP/download/Aurora-Installer-$AURORA_APP_VERSION$suffix.dmg"
           cp "$RUNNER_TEMP/release/profile-manifest.json" "$RUNNER_TEMP/evidence/"
           shasum -a 256 "$RUNNER_TEMP/download/"*.dmg > "$RUNNER_TEMP/evidence/dmg.sha256"
           PACKAGE
@@ -192,12 +221,12 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: notarized-installer-dmg
+          name: ${{ inputs.test-local-payloads && 'test-local-payload-installer-dmg' || 'notarized-installer-dmg' }}
           path: ${{ runner.temp }}/download/*.dmg
           if-no-files-found: error
           retention-days: 14
   prerelease:
-    if: inputs.publish-release
+    if: inputs.publish-release && !inputs.test-local-payloads
     needs: build
     runs-on: ubuntu-24.04
     permissions:

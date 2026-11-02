@@ -268,6 +268,7 @@ public struct VerifiedArtifactStager: Sendable {
   private let promoter: AtomicArtifactFilePromoter
   private let bundledArtifactDirectory: URL?
   private let requiresBundledArtifacts: Bool
+  private let localPayloadDirectory: URL?
 
   public init() {
     downloader = ProgressReportingArtifactDownloader()
@@ -275,18 +276,23 @@ public struct VerifiedArtifactStager: Sendable {
     bundledArtifactDirectory = Bundle.main.resourceURL?.appendingPathComponent("Artifacts")
     requiresBundledArtifacts =
       Bundle.main.object(forInfoDictionaryKey: "AuroraOfflineBundle") as? Bool == true
+    localPayloadDirectory = InstallerLocalPayloadPolicy.directory()
   }
 
   init(
     downloader: any ArtifactDownloading,
     promoter: AtomicArtifactFilePromoter = AtomicArtifactFilePromoter(),
     bundledArtifactDirectory: URL? = nil,
-    requiresBundledArtifacts: Bool = false
+    requiresBundledArtifacts: Bool = false,
+    localPayloadDirectory: URL? = nil
   ) {
     self.downloader = downloader
     self.promoter = promoter
     self.bundledArtifactDirectory = bundledArtifactDirectory
     self.requiresBundledArtifacts = requiresBundledArtifacts
+    self.localPayloadDirectory = localPayloadDirectory.flatMap {
+      InstallerLocalPayloadPolicy.directory(requested: $0)
+    }
   }
 
   public func matches(_ artifact: PinnedInstallerArtifact, at fileURL: URL) -> Bool {
@@ -294,7 +300,17 @@ public struct VerifiedArtifactStager: Sendable {
   }
 
   public func requiresNetwork(for artifact: PinnedInstallerArtifact) -> Bool {
-    !requiresBundledArtifacts && bundledSource(for: artifact) == nil
+    !requiresBundledArtifacts && localSource(for: artifact) == nil
+      && bundledSource(for: artifact) == nil
+  }
+
+  private func localSource(for artifact: PinnedInstallerArtifact) -> URL? {
+    guard let directory = localPayloadDirectory,
+      artifact.role == "payload" || artifact.role == "metadata"
+    else { return nil }
+    // Digest directories let profiles with the same metadata filename coexist.
+    return directory.appendingPathComponent(String(artifact.expectedDigest.dropFirst(7)))
+      .appendingPathComponent(artifact.fileName)
   }
 
   private func bundledSource(for artifact: PinnedInstallerArtifact) -> URL? {
@@ -337,15 +353,16 @@ public struct VerifiedArtifactStager: Sendable {
       )
     }
 
-    if let source = bundledSource(for: artifact) {
-      // Every bundled artifact must match the authenticated catalog exactly.
+    if let source = localSource(for: artifact) ?? bundledSource(for: artifact) {
+      // Untrusted local files and bundled artifacts use the same authenticated
+      // whole-file digest and size as a download. Recheck the staged copy too.
       try verify(artifact, at: source)
       try Task.checkCancellation()
       let pending = stagingDirectory.appendingPathComponent(".pending-\(UUID().uuidString)")
       defer { try? fileManager.removeItem(at: pending) }
       try fileManager.copyItem(at: source, to: pending)
-      try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pending.path)
       try verify(artifact, at: pending)
+      try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pending.path)
       try Task.checkCancellation()
       try fileManager.moveItem(at: pending, to: destination)
       removeParts(of: artifact, in: stagingDirectory, fileManager: fileManager)

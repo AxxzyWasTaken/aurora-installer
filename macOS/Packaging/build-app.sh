@@ -31,6 +31,17 @@ build_jobs="${AURORA_BUILD_JOBS:-10}"
   || fail "AURORA_BUILD_JOBS must be a positive integer"
 export CARGO_BUILD_JOBS="$build_jobs"
 
+# Local payload support is compiled only in an explicitly requested debug test
+# build. Release configuration always compiles it out.
+build_configuration=release
+swift_test_arguments=()
+if [[ ${AURORA_LOCAL_PAYLOAD_TEST_BUILD:-0} == "1" ]]; then
+  [[ ${AURORA_DEVELOPER_BUILD:-0} == "1" ]] \
+    || fail "local payload test builds require a sealed developer build"
+  build_configuration=debug
+  swift_test_arguments=(-Xswiftc -O -Xswiftc -gnone)
+fi
+
 marketing_version="${AURORA_APP_VERSION:-0.1.0}"
 # SMJobBless never replaces a helper with a lower build, so a developer build
 # defaults to its UTC build minute (YYMMDDHHMM): each one installs over the
@@ -196,12 +207,13 @@ swift_tool="$(xcrun --find swift)"
 (
   cd "$package_directory"
   "$swift_tool" build \
-    --configuration release \
+    --configuration "$build_configuration" \
+    "${swift_test_arguments[@]}" \
     --jobs "$build_jobs"
 )
 binary_directory="$({
   cd "$package_directory"
-  "$swift_tool" build --configuration release --show-bin-path
+  "$swift_tool" build --configuration "$build_configuration" --show-bin-path
 })"
 
 assembly_root="$(mktemp -d "$output_directory/.aurora-app.XXXXXX")"
@@ -231,7 +243,8 @@ fi
 (
   cd "$package_directory"
   "$swift_tool" build \
-    --configuration release \
+    --configuration "$build_configuration" \
+    "${swift_test_arguments[@]}" \
     --jobs "$build_jobs" \
     --product AuroraAppleInstallerHelper \
     "${helper_link_arguments[@]}"
@@ -413,6 +426,10 @@ fi
 codesign --force --sign "$signing_identity" \
   "${timestamp_arguments[@]}" \
   --options runtime \
+  "$assembled_app"
+
+python3 "$script_directory/check-local-payload-policy.py" \
+  --expected "$([[ $build_configuration == debug ]] && echo enabled || echo disabled)" \
   "$assembled_app"
 
 codesign --verify --deep --strict --verbose=2 "$assembled_app"

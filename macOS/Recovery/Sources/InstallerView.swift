@@ -33,10 +33,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
   /// Install was pressed while this Mac was still being checked again; the
   /// password waits in its field and installation starts once the check passes.
   private var authorizationSubmitPending = false
-  private var detailsSheet: NSWindow?
-  private var detailsViewer: LogTextView?
-  private var copyButton: NSButton?
-  private var copyingLog = false
+  /// Window → Installer Log; made the first time it is opened.
+  private(set) var logWindow: InstallerLogWindowController?
 
   init(model: InstallerModel) {
     self.model = model
@@ -48,9 +46,6 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       self?.authorizationProceed = nil
       self?.authorizationSpinner = nil
       self?.authorizationSubmitPending = false
-      self?.detailsSheet = nil
-      self?.detailsViewer = nil
-      self?.copyButton = nil
       self?.refresh()
     }
   }
@@ -163,10 +158,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     authorizationSpinner?.show(holdingPassword ? .verifying : nil)
     authorizationProceed?.isEnabled = !holdingPassword
     authorizationField?.isEnabled = !holdingPassword
-    copyButton?.title = copyingLog ? "Copying…" : "Copy Log"
-    copyButton?.isEnabled = !copyingLog
-    detailsViewer?.update(
-      text: log.text.isEmpty ? model.operations.joined(separator: "\n") : log.text)
+    if logWindow?.isShowing == true { logWindow?.reload() }
     if (model.environmentIssue != nil || model.failure != nil) && !issueShowing
       && sheets.active == nil
     {
@@ -677,74 +669,24 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     closePanel()
   }
 
-  /// What View → Show Details / Hide Details does now.
-  var detailsMenuState: RecoveryDetailsMenu.State {
-    RecoveryDetailsMenu.state(
-      showing: detailsShowing, available: detailsAvailable,
-      otherSheetShowing: sheets.active != nil)
-  }
-
-  private var detailsShowing: Bool { detailsSheet != nil && sheets.active === detailsSheet }
-
-  /// Nothing has run before the first check starts on the welcome screen.
-  private var detailsAvailable: Bool {
-    model.stage != .welcome || !log.text.isEmpty || !model.operations.isEmpty
-  }
-
-  /// View → Show Details / Hide Details.
-  @objc func toggleDetails(_ sender: Any?) {
-    if detailsShowing {
-      closePanel()
-    } else if detailsMenuState.isEnabled {
-      showDetails()
+  /// Window → Installer Log: opens the log beside the installer, or closes it.
+  @objc func toggleInstallerLog(_ sender: Any?) {
+    if logWindow?.isShowing == true {
+      logWindow?.close()
+    } else {
+      showInstallerLog()
     }
+  }
+
+  func showInstallerLog() {
+    let controller = logWindow ?? InstallerLogWindowController(log: log)
+    logWindow = controller
+    controller.show()
   }
 
   func validateMenuItem(_ item: NSMenuItem) -> Bool {
-    guard item.action == #selector(toggleDetails(_:)) else { return true }
-    return RecoveryDetailsMenu.validate(item, state: detailsMenuState)
-  }
-
-  private func showDetails() {
-    let viewer = LogTextView(
-      text: log.text.isEmpty ? model.operations.joined(separator: "\n") : log.text)
-    viewer.translatesAutoresizingMaskIntoConstraints = false
-    viewer.widthAnchor.constraint(equalToConstant: 474).isActive = true
-    detailsViewer = viewer
-    let copy = RecoverySecondaryButton(
-      title: "Copy Log", target: self, action: #selector(copyLogPressed))
-    copyButton = copy
-    let done = RecoveryPrimaryButton(
-      title: "Done", target: self, action: #selector(donePanelPressed))
-    done.keyEquivalent = "\r"
-    let panel = RecoverySheet(
-      title: "Installation details",
-      message:
-        "Boot security is reduced only for this Aurora installation. Your macOS security settings are unchanged."
-        + (log.truncated
-          ? " Showing recent output. Copy Log includes this attempt’s full log." : ""),
-      width: 550, height: 480, body: viewer, bodyHeight: 290, buttons: [copy, done])
-    if present(panel) { detailsSheet = panel }
-  }
-
-  @objc private func copyLogPressed() {
-    guard !copyingLog else { return }
-    copyingLog = true
-    refresh()
-    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-      guard let self else { return }
-      let result = Result { try self.log.fullText() }
-      DispatchQueue.main.async {
-        self.copyingLog = false
-        self.refresh()
-        switch result {
-        case .success(let text):
-          NSPasteboard.general.clearContents()
-          NSPasteboard.general.setString(text, forType: .string)
-        case .failure(let error): self.model.failure = error.localizedDescription
-        }
-      }
-    }
+    guard item.action == #selector(toggleInstallerLog(_:)) else { return true }
+    return RecoveryLogMenu.validate(item, showing: logWindow?.isShowing == true)
   }
 
   @objc private func donePanelPressed() {
@@ -756,7 +698,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     let issue = model.environmentIssue
     issueRepair = issue?.canRepairStartupSelection == true
     let primary = RecoveryPrimaryButton(
-      title: issueRepair ? "Set Startup Disk and Shut Down" : "Show details",
+      title: issueRepair ? "Set Startup Disk and Shut Down" : "Show Log",
       target: self, action: #selector(issuePrimaryPressed))
     let cancel = RecoverySecondaryButton(
       title: issueRepair ? "Cancel" : "OK", target: self,
@@ -780,7 +722,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     if repair {
       model.repairRecoveryBoot { [weak self] in self?.showAuthorization(repair: true) }
     } else {
-      showDetails()
+      showInstallerLog()
     }
   }
 

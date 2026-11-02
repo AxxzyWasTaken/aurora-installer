@@ -147,7 +147,8 @@ final class InstallerModel {
           self.stage = .complete
         }
       } catch {
-        InstallerLog.shared.append("Recovery account setup failed: " + error.localizedDescription)
+        InstallerLog.shared.append(
+          "Recovery account setup failed: " + error.localizedDescription, level: .error)
         DispatchQueue.main.async {
           self.creatingAccount = false
           self.failure = error.localizedDescription
@@ -176,7 +177,7 @@ final class InstallerModel {
       do {
         try RecoveryActions.skipRecoveryAccountAndRestart()
       } catch {
-        InstallerLog.shared.append("Restart failed: " + error.localizedDescription)
+        InstallerLog.shared.append("Restart failed: " + error.localizedDescription, level: .error)
         DispatchQueue.main.async {
           self.restartingWithoutAccount = false
           self.failure = error.localizedDescription
@@ -246,6 +247,9 @@ final class InstallerModel {
       let outcome = previewChecks == 0 ? PreviewSimulation.firstCheck : PreviewSimulation.recheck
       previewChecks += 1
       let finish = {
+        #if AURORA_STEP2_PREVIEW
+          PreviewLog.check(passed: outcome != .fail)
+        #endif
         switch outcome {
         case .pass, .ownerChanged:
           if outcome == .ownerChanged {
@@ -287,7 +291,8 @@ final class InstallerModel {
           finished(true)
         }
       } catch {
-        InstallerLog.shared.append("Recovery preflight failed: " + error.localizedDescription)
+        InstallerLog.shared.append(
+          "Recovery preflight failed: " + error.localizedDescription, level: .error)
         DispatchQueue.main.async {
           self.checkingEnvironment = false
           self.password.removeAll(keepingCapacity: false)
@@ -405,7 +410,7 @@ final class InstallerModel {
           let account = try RecoveryActions.recoveryAccount()
           DispatchQueue.main.async { self.showAccountStep(account) }
         } catch {
-          InstallerLog.shared.append("Setup failed: " + error.localizedDescription)
+          InstallerLog.shared.append("Setup failed: " + error.localizedDescription, level: .error)
           DispatchQueue.main.async {
             if let issue = error as? EnrollmentGateIssue {
               self.environmentIssue = issue
@@ -428,11 +433,22 @@ final class InstallerModel {
       for (index, step) in self.steps.enumerated() {
         if Task.isCancelled { return }
         self.currentOperation = step
+        #if AURORA_STEP2_PREVIEW
+          let command = PreviewLog.step(step)
+        #endif
         for tick in 0..<12 {
           try? await Task.sleep(nanoseconds: 80_000_000)
-          if Task.isCancelled { return }
+          if Task.isCancelled {
+            #if AURORA_STEP2_PREVIEW
+              command?.finish(status: 15, reason: "Stopped when setup was reset")
+            #endif
+            return
+          }
           self.progress = (Double(index) + Double(tick + 1) / 12) / Double(self.steps.count)
         }
+        #if AURORA_STEP2_PREVIEW
+          command?.finish(status: 0)
+        #endif
         self.operations.append("\(step) — simulated")
       }
       if !self.recoveryInterface { self.accountOptional = true }
@@ -468,7 +484,7 @@ final class InstallerModel {
           }
           try RecoveryActions.restartCompletedSetup()
         } catch {
-          InstallerLog.shared.append("Restart failed: " + error.localizedDescription)
+          InstallerLog.shared.append("Restart failed: " + error.localizedDescription, level: .error)
           DispatchQueue.main.async {
             self.restartingCompletedSetup = false
             self.failure = error.localizedDescription
@@ -609,6 +625,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     LaunchTrace.mark("delegate.didFinishLaunching")
     NSApp.appearance = NSAppearance(named: .darkAqua)
+    #if AURORA_STEP2_PREVIEW
+      if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--render-log=") }) {
+        NSApp.setActivationPolicy(.accessory)
+        RecoveryLogRenderer.run(
+          directory: URL(fileURLWithPath: String(argument.dropFirst("--render-log=".count))))
+        NSApp.terminate(nil)
+        return
+      }
+    #endif
     // One fixed window: keep AppKit's tab items out of the View menu.
     NSWindow.allowsAutomaticWindowTabbing = false
     let window = InstallerWindow()
@@ -682,13 +707,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     edit.addItem(
       withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
-    // View → Show Details / Hide Details opens and closes the window's details sheet.
-    if let controller {
-      menu.addItem(
-        RecoveryDetailsMenu.makeMenuItem(
-          target: controller, action: #selector(InstallerView.toggleDetails(_:))))
-    }
-
     let utilities = submenu("Utilities")
     let terminal = utilities.addItem(
       withTitle: "Terminal", action: #selector(openTerminal(_:)), keyEquivalent: "t")
@@ -703,6 +721,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     windows.addItem(
       withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)),
       keyEquivalent: "")
+    // Window → Installer Log opens and closes the log window, as in Apple's Installer.
+    if let controller {
+      RecoveryLogMenu.addItem(
+        to: windows, target: controller, action: #selector(InstallerView.toggleInstallerLog(_:)))
+    }
     NSApp.windowsMenu = windows
     let help = submenu("Help")
     let previewHelp = help.addItem(

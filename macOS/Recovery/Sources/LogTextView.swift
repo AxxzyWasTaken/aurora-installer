@@ -56,9 +56,27 @@ final class LogTextView: NSScrollView {
 
   func update(text: String) {
     guard editor.string != text else { return }
+    change { _ in editor.string = text }
+  }
+
+  /// Replaces the styled text, keeping the reader's place.
+  func update(attributed text: NSAttributedString) {
+    change { $0.setAttributedString(text) }
+  }
+
+  /// Adds styled text at the end, keeping the reader's place.
+  func append(attributed text: NSAttributedString) {
+    guard text.length > 0 else { return }
+    change { $0.append(text) }
+  }
+
+  /// Follows the end while the reader is there; otherwise keeps their
+  /// selection and scroll position.
+  private func change(_ edit: (NSTextStorage) -> Void) {
+    guard let storage = editor.textStorage else { return }
     let atEnd = editor.string.isEmpty || contentView.bounds.maxY >= editor.bounds.maxY - 24
     let selection = editor.selectedRange()
-    editor.string = text
+    edit(storage)
     if atEnd {
       editor.scrollRangeToVisible(NSRange(location: editor.string.utf16.count, length: 0))
     } else {

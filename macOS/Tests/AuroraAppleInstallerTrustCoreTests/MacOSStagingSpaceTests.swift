@@ -481,7 +481,7 @@
             recoveryVersion: "25.7.83.0.0,0")
         ),
       ] {
-        for name in ["full", "delta"] {
+        for name in ["full", "delta", "no-image", "delta-incomplete"] {
           let archive = try vectors.archive(name)
           let estimator = NativeStubStagingEstimator(
             facts: { .init(deviceIdentifier: device, hardware: hardware) }, boardID: { board },
@@ -492,7 +492,7 @@
           do {
             let bytes = try await estimator.requiredFreeBytes(
               deviceIdentifier: device, metadata: metadata)
-            XCTAssertEqual(name, "full", "\(device): a delta Recovery image was admitted")
+            XCTAssertEqual(name, "full", "\(device): \(name) was admitted")
             let expected = try await NativeStubStagingRequirement.estimate(
               source: NativeStubFileTests.Source(bytes: archive),
               firmware: NativeUpdateArchiveTests.selection(source), deviceIdentifier: device,
@@ -502,7 +502,7 @@
               device)
             XCTAssertEqual(expected.largestDecodeBytes, 0, device)
           } catch {
-            XCTAssertEqual(name, "delta", "\(device): \(error)")
+            XCTAssertNotEqual(name, "full", "\(device): \(error)")
             XCTAssertEqual(
               error as? InstallerPlanPreparationError,
               .firmwareArchiveUnsupported(version: "14.8.3"), device)

@@ -86,11 +86,34 @@
       }
       self.layout = layout
       let members = Dictionary(uniqueKeysWithValues: archive.members.map { ($0.name, $0) })
-      guard
-        (members["BuildManifest.plist"] != nil)
-          == (layout == .restoreImage)
-          && (members["AssetData/boot/BuildManifest.plist"] != nil) == (layout == .updateArchive)
-      else { throw NativeStubFileError.invalidPlan }
+      let otherManifest =
+        layout == .restoreImage ? "AssetData/boot/BuildManifest.plist" : "BuildManifest.plist"
+      guard members[otherManifest] == nil else { throw NativeStubFileError.invalidPlan }
+      // An update archive must carry a whole Recovery image. Check that first,
+      // so an archive that patches an earlier one is named as such, whatever
+      // else it lacks.
+      let update: (member: IPSWArchiveMember, header: UpdateArchiveFullImage.Header)?
+      if layout == .updateArchive {
+        guard let member = members[NativeRestoreSourceLayout.updateRecoveryMember],
+          !member.isDirectory, member.sizeBytes > 0
+        else { throw NativeFirmwareSelectionError.updateArchiveOnly(version: source.version) }
+        do {
+          let header = try await archive.readPrefix(
+            member, maximumBytes: UpdateArchiveFullImage.headerBytes)
+          update = (
+            member, try UpdateArchiveFullImage.Header(header, memberBytes: member.sizeBytes)
+          )
+        } catch is UpdateArchiveImagePatchUnsupported {
+          throw NativeFirmwareSelectionError.updateArchiveOnly(version: source.version)
+        } catch is RestoreFailure {
+          throw NativeStubFileError.invalidImage
+        }
+      } else {
+        update = nil
+      }
+      guard members[layout.member("BuildManifest.plist")] != nil else {
+        throw NativeStubFileError.invalidPlan
+      }
       func read(_ name: String) async throws -> Data {
         guard let member = members[layout.member(name)] else {
           throw NativeStubFileError.invalidPlan
@@ -133,28 +156,13 @@
         version["ProductVersion"] as? String == source.version,
         let recovery = components["BaseSystem"]?["Info"] as? [String: Any],
         let recoveryName = recovery["Path"] as? String,
-        let recoveryMember = members[
-          layout == .restoreImage ? recoveryName : NativeRestoreSourceLayout.updateRecoveryMember],
+        let recoveryMember = update?.member ?? members[recoveryName],
         !recoveryMember.isDirectory, recoveryMember.sizeBytes > 0,
         recoveryMember.sizeBytes <= 8 << 30
       else { throw NativeStubFileError.invalidPlan }
       self.restorePath = restore
       self.recoveryMember = recoveryMember
-      if layout == .updateArchive {
-        do {
-          let header = try await archive.readPrefix(
-            recoveryMember, maximumBytes: UpdateArchiveFullImage.headerBytes)
-          recoveryImage = try UpdateArchiveFullImage.Header(
-            header, memberBytes: recoveryMember.sizeBytes)
-        } catch is UpdateArchiveImagePatchUnsupported {
-          // A patch of an earlier Recovery image: the stub has none to patch.
-          throw NativeFirmwareSelectionError.updateArchiveOnly(version: source.version)
-        } catch is RestoreFailure {
-          throw NativeStubFileError.invalidImage
-        }
-      } else {
-        recoveryImage = nil
-      }
+      recoveryImage = update?.header
       document["BuildIdentities"] = [identity]
       manifest = try PropertyListSerialization.data(
         fromPropertyList: document, format: .xml, options: 0)

@@ -17,6 +17,11 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
   private let inspectHost: @Sendable () throws -> AppleSiliconHostInspection
   private let helperProbe: @Sendable () async -> HelperDisplay
   private let recoveryAccountInspector: (@Sendable () async throws -> RecoveryAccountReply)?
+  private let stagingEstimate: @Sendable (String, StagedInstallerArtifact) async throws -> UInt64
+  private let macOSFreeBytes: @Sendable () throws -> UInt64
+  /// The stub stage's requirement depends only on this Mac and the release
+  /// metadata, so a size change reuses it instead of reading the image again.
+  private var stagingRequirements = [String: UInt64]()
 
   init(
     selection: AuroraInstallationSelection = AuroraInstallationSelection(),
@@ -28,8 +33,17 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     helperProbe: @escaping @Sendable () async -> HelperDisplay = {
       await InstallerHelperSetup.probeDisplay()
     },
-    recoveryAccountInspector: (@Sendable () async throws -> RecoveryAccountReply)? = nil
+    recoveryAccountInspector: (@Sendable () async throws -> RecoveryAccountReply)? = nil,
+    stagingEstimate:
+      @escaping @Sendable (String, StagedInstallerArtifact) async throws -> UInt64 = {
+        try await NativeStubStagingEstimator().requiredFreeBytes(deviceIdentifier: $0, metadata: $1)
+      },
+    macOSFreeBytes: @escaping @Sendable () throws -> UInt64 = {
+      try MacOSStagingVolume.freeBytes()
+    }
   ) {
+    self.stagingEstimate = stagingEstimate
+    self.macOSFreeBytes = macOSFreeBytes
     self.selection = selection
     self.inspector = inspector
     self.inspectHost = inspectHost
@@ -459,7 +473,7 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     let existing = Self.existingInstalls(
       in: signedInspection.validated,
       knownInstallations: signedInspection.knownInstallations)
-    let recommendation: InstallerAllocationRecommendation
+    var recommendation: InstallerAllocationRecommendation
     if preservingStage1 {
       let sources = Set(existing.map(\.sourceIdentifier))
       // Reset acts on the one installation the person chose, never another.
@@ -515,6 +529,23 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
         }
       )
     }
+    if !preservingStage1 {
+      // A fresh installation caches and decodes restore files on macOS and
+      // finishes its download there. Refuse now, with the numbers, a plan
+      // macOS can't hold, instead of after the person approves it.
+      let staging = try await stagingRequirement(
+        deviceIdentifier: host.identity.deviceIdentifier, metadata: release.assets.metadata)
+      try requirePreparation(generation)
+      // Sampled just before the free space, so download progress between the
+      // two can only overstate what is still to come.
+      let payloadBytes = release.assets.payload.artifact.expectedSizeBytes
+      let downloaded = prefetch.bytesOnDisk(for: release.assets.payload)
+      recommendation = try MacOSStagingAdmission.admit(
+        recommendation, macOSStoreIdentifier: freshHost.storage.physicalStoreIdentifier,
+        macOSFreeBytes: macOSFreeBytes(),
+        outstandingDownloadBytes: payloadBytes - min(payloadBytes, downloaded),
+        stagingBytes: staging)
+    }
     let candidate = recommendation.candidate
     let requestedLengthBytes = recommendation.requestedLengthBytes
 
@@ -552,6 +583,16 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
         release:
           "\(channel.rawValue.capitalized) · \(release.assets.payload.fileURL.lastPathComponent)"
       ))
+  }
+
+  private func stagingRequirement(
+    deviceIdentifier: String, metadata: StagedInstallerArtifact
+  ) async throws -> UInt64 {
+    let key = deviceIdentifier + "|" + metadata.artifact.expectedDigest
+    if let known = lock.withLock({ stagingRequirements[key] }) { return known }
+    let bytes = try await stagingEstimate(deviceIdentifier, metadata)
+    lock.withLock { stagingRequirements[key] = bytes }
+    return bytes
   }
 
   // MARK: Approval

@@ -20,9 +20,12 @@
     let copies: [Copy]
     let linkTargets: [String: String]
 
+    /// `admitRecords` false selects the same files without reading each
+    /// member's local record. Only a space estimate may skip that admission;
+    /// the stub stage itself always admits every record before disk work.
     init(
       archive: IPSWArchive, source: NativeFirmwareSelection, deviceClass: String,
-      boardID: UInt64, chipID: UInt64
+      boardID: UInt64, chipID: UInt64, admitRecords: Bool = true
     ) async throws {
       self.archive = archive
       self.source = source
@@ -151,7 +154,7 @@
       // confined to the selected framework tree and are never extraction paths.
       var links = [String: String]()
       let selected = Set(copies.map(\.member) + [recoveryMember.name])
-      for name in selected.sorted() {
+      for name in selected.sorted() where admitRecords {
         let member = members[name]!
         if member.isSymbolicLink {
           guard name.hasPrefix("BootabilityBundle/Restore/Bootability/"),
@@ -188,6 +191,35 @@
       }
       self.copies = copies
       self.linkTargets = links
+    }
+
+    /// A file copied straight into the restore directory. Its member, like
+    /// the Recovery image, is decoded on macOS first when it is an Apple
+    /// Encrypted Archive.
+    func isTopLevelRestore(_ copy: Copy) -> Bool {
+      copy.role == "Preboot" && copy.path.hasPrefix(restorePath + "/")
+        && !String(copy.path.dropFirst(restorePath.count + 1)).contains("/")
+    }
+
+    /// Every member the stub stage restores through `restore`, which decodes
+    /// an Apple Encrypted Archive on macOS before copying it.
+    var restoredMembers: [IPSWArchiveMember] {
+      let members = Dictionary(uniqueKeysWithValues: archive.members.map { ($0.name, $0) })
+      var seen = Set<String>()
+      return
+        (copies.filter { linkTargets[$0.member] == nil && isTopLevelRestore($0) }.compactMap {
+          members[$0.member]
+        } + [recoveryMember]).filter { seen.insert($0.name).inserted }
+    }
+
+    /// Every member whose body the stub stage reads from the archive. Links
+    /// were read while admitting the plan.
+    var readMembers: [IPSWArchiveMember] {
+      let members = Dictionary(uniqueKeysWithValues: archive.members.map { ($0.name, $0) })
+      var seen = Set<String>()
+      return
+        (copies.filter { linkTargets[$0.member] == nil }.compactMap { members[$0.member] }
+        + [recoveryMember]).filter { seen.insert($0.name).inserted }
     }
   }
 #endif

@@ -543,6 +543,9 @@
         unchanged
         ? "No disk changes were made."
         : "The installer couldn’t confirm whether disk changes started."
+      // The helper's summary names the check that stopped and why. It is
+      // already one printable line; a blank one leaves only the disk state.
+      let cause = notice.summary.isEmpty ? diskState : "\(notice.summary) \(diskState)"
       switch notice.reason {
       case .approvedSpaceChanged:
         return FailureDisplay(
@@ -569,7 +572,8 @@
       case .deviceUnsupported:
         return FailureDisplay(
           headline: blockedHeadline,
-          plainDetail: "The installer engine doesn’t support this Mac model. \(diskState)",
+          plainDetail: notice.summary.isEmpty
+            ? "The installer engine doesn’t support this Mac model. \(diskState)" : cause,
           technicalDetail: technicalDetail,
           remedy: blockedExplainer,
           isBlockedModel: true
@@ -577,8 +581,8 @@
       case .planIntegrity:
         return FailureDisplay(
           headline: "The installation plan failed a safety check",
-          plainDetail:
-            "The installer engine refused the plan because it didn’t match the verified release. \(diskState)",
+          plainDetail: notice.summary.isEmpty
+            ? "The installer engine refused the plan at a safety check. \(diskState)" : cause,
           technicalDetail: technicalDetail,
           remedy: unchanged
             ? "Choose Check again to inspect this Mac and prepare a new plan. \(engineDiagnosticsLocation)"
@@ -587,7 +591,7 @@
       case .firmwarePreparation:
         return FailureDisplay(
           headline: "Firmware preparation didn’t finish",
-          plainDetail: diskState,
+          plainDetail: cause,
           technicalDetail: technicalDetail,
           remedy: unchanged
             ? "Check your internet connection and free space, then choose Check again. Verified downloads will be reused."
@@ -621,7 +625,7 @@
       case .recoveryPreparation:
         return FailureDisplay(
           headline: "Recovery preparation didn’t finish",
-          plainDetail: diskState,
+          plainDetail: cause,
           technicalDetail: technicalDetail,
           remedy: unchanged
             ? "Update the installer and choose Check again."
@@ -637,10 +641,21 @@
             ? "Choose Check again to start over."
             : "Remove the incomplete Linux installation, then choose Check again to start over. \(engineDiagnosticsLocation)"
         )
+      case .macOSSpaceRequired:
+        return FailureDisplay(
+          headline: "macOS needs more free space",
+          plainDetail: MacOSFreeSpaceShortfall.isSummary(notice.summary)
+            ? cause
+            : "macOS doesn’t have the free space the installation needs on it. \(diskState)",
+          technicalDetail: technicalDetail,
+          remedy: unchanged
+            ? "\(freeMacOSSpace) Then choose Check again. \(purgeableSpaceNote)"
+            : "\(freeMacOSSpace) Then choose \(retry) to continue from the last completed step. \(purgeableSpaceNote)"
+        )
       case .unclassified:
         return FailureDisplay(
           headline: "The installer engine stopped with an error",
-          plainDetail: diskState,
+          plainDetail: cause,
           technicalDetail: technicalDetail,
           remedy: unchanged
             ? "Choose Check again to start over. \(engineDiagnosticsLocation)"
@@ -652,6 +667,27 @@
     // MARK: Errors
 
     public static let retry = "Try again"
+
+    static let freeMacOSSpace =
+      "Empty the Trash and delete or move large files you no longer need in macOS."
+    /// The helper counts only space macOS has already freed. Finder can also
+    /// count purgeable space, such as iCloud files it can download again.
+    static let purgeableSpaceNote =
+      "Finder may count purgeable space that macOS hasn’t freed yet, so free a little more than the figure shown."
+
+    /// Planning found that macOS can't hold what the installation stages on
+    /// it, before anything was approved.
+    public static func macOSSpaceShortfall(
+      _ shortfall: MacOSFreeSpaceShortfall, technicalDetail: String
+    ) -> FailureDisplay {
+      FailureDisplay(
+        headline: "macOS needs more free space",
+        plainDetail: "\(shortfall.summary) The disk has not been changed.",
+        technicalDetail: technicalDetail,
+        remedy:
+          "\(freeMacOSSpace) Then choose Check again. \(purgeableSpaceNote) The installer checks the space again before it changes anything."
+      )
+    }
 
     /// Shown only by builds that cannot install the helper themselves, when
     /// the installer package has not put it in place.
@@ -691,9 +727,10 @@
       }
 
       if retryRecoveryAvailable {
-        // An interrupted download says so; Try again continues it.
+        // An interrupted download or a full macOS volume says so; Try again
+        // continues from the last completed step once that is fixed.
         if case .engineFailed(let notice) = error as? EngineXPCSubmissionError,
-          notice.reason == .networkUnavailable
+          notice.reason == .networkUnavailable || notice.reason == .macOSSpaceRequired
         {
           let network = engineFailure(notice, technicalDetail: technical)
           return FailureDisplay(
@@ -884,6 +921,9 @@
           )
         }
       }
+      if let shortfall = error as? MacOSFreeSpaceShortfall {
+        return macOSSpaceShortfall(shortfall, technicalDetail: technical)
+      }
       if error is URLError {
         return FailureDisplay(
           headline: "The network request didn’t finish",
@@ -910,6 +950,34 @@
               "The disk no longer matches what this Mac’s check found. Nothing was changed.",
             technicalDetail: technical,
             remedy: "Check this Mac again, then choose where to install."
+          )
+        case .macOSUpdateRequired(let version):
+          return FailureDisplay(
+            headline: "Update macOS to install Aurora",
+            plainDetail:
+              "This Mac’s firmware is older than macOS \(version), which this release needs. The disk has not been changed.",
+            technicalDetail: technical,
+            remedy:
+              "Install macOS \(version) or later in System Settings → General → Software Update, then open \(windowTitle) again.",
+            actionURL: softwareUpdateSettingsURL,
+            actionTitle: openSoftwareUpdate
+          )
+        case .firmwareUnavailable:
+          return FailureDisplay(
+            headline: "Boot firmware for this Mac couldn’t be selected",
+            plainDetail:
+              "The release lists no boot firmware this Mac can use with its current macOS and firmware versions. The disk has not been changed.",
+            technicalDetail: technical,
+            remedy:
+              "Update macOS, then choose Check again. If this keeps happening, save the error details."
+          )
+        case .firmwareArchiveUnsupported(let version):
+          return FailureDisplay(
+            headline: "This Mac can’t be installed with this installer yet",
+            plainDetail:
+              "This Mac needs boot firmware from macOS \(version), which Apple ships only as an update archive. This installer can’t prepare that archive yet. The disk has not been changed.",
+            technicalDetail: technical,
+            remedy: "Check for a newer \(windowTitle). Nothing on this Mac needs to change."
           )
         default:
           return FailureDisplay(

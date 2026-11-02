@@ -253,6 +253,21 @@
           else { return XCTFail("Expected a native preflight failure for \(missing)") }
           XCTAssertEqual(report.notice.reason, .planIntegrity)
           XCTAssertTrue(report.notice.diskUnchanged)
+          // Each refusal names its own stage instead of one shared sentence.
+          let expected = [
+            "apfs": "This installer has no disk preparation step for this plan.",
+            "stub": "This installer has no macOS boot files step for this plan.",
+            "partitions":
+              "The Linux partition check refused the approved plan "
+              + "(NativeHandoffValidationError.invalidTarget).",
+            "images":
+              "The Linux image check refused the approved plan "
+              + "(NativeHandoffValidationError.invalidTarget).",
+            "esp": "This installer has no EFI partition step for this plan.",
+            "finish": "This installer has no firmware and Recovery step for this plan.",
+          ][missing]
+          XCTAssertEqual(report.notice.summary, expected, missing)
+          XCTAssertFalse(report.notice.summary.contains("verified release"), missing)
         }
         for marker in [apfs, files, partitions, images, esp, finished] {
           XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
@@ -409,6 +424,184 @@
       }
     }
 
+    /// Every stage preflights, then the stub stage finds macOS short of the
+    /// space it stages there, as on the M2 Pro with 8.33 GiB free.
+    private struct ShortOfSpaceFilesFixture: NativeStubFilesPreparing, NativeStubFilesExecuting {
+      var preflightError: (any Error & Sendable)? = nil
+      var prepareError: (any Error & Sendable)? = nil
+      var stagingError: (any Error & Sendable)? = nil
+      func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
+        any NativeStubFilesExecuting
+      )? {
+        if let preflightError { throw preflightError }
+        return self
+      }
+      func requireStagingSpace(journal: URL) throws {
+        if let stagingError { throw stagingError }
+      }
+      func prepare(
+        journal: URL, authorization: MachineOwnerAuthorization,
+        sourceBootstrap: NativeSourceBootstrap
+      ) async throws {
+        if let prepareError { throw prepareError }
+      }
+    }
+
+    static let m2ProShortfall = MacOSFreeSpaceShortfall(
+      requiredBytes: 11_474_183_473, availableBytes: 8_944_269_393)
+
+    private func closureExecutor(
+      _ fixture: PinnedExecutorFixture, files: ShortOfSpaceFilesFixture,
+      recordMutation: Bool = false
+    ) -> PinnedAsahiEngineExecutor {
+      let apfs = fixture.root.appendingPathComponent("apfs")
+      let partitions = fixture.root.appendingPathComponent("partitions")
+      let images = fixture.root.appendingPathComponent("images")
+      let esp = fixture.root.appendingPathComponent("esp")
+      return fixtureExecutor(
+        effectiveUserID: { 0 },
+        apfsPreparer: NativeAPFSFixture(marker: apfs, recordMutation: recordMutation),
+        stubFilesPreparer: files,
+        osPartitionsPreparer: NativePartitionsFixture(marker: partitions, files: apfs),
+        payloadImagesPreparer: NativeImagesFixture(marker: images, partitions: partitions),
+        espFilesPreparer: NativeESPFixture(marker: esp, images: images),
+        installationFinisher: NativeFinishingFixture(
+          esp: esp, marker: fixture.root.appendingPathComponent("finished")))
+    }
+
+    func testTheM2ProStagingShortfallIsReportedAsMacOSSpaceBeforeAnyDiskChange() async throws {
+      for files in [
+        // The check that runs once every stage has preflighted,
+        ShortOfSpaceFilesFixture(stagingError: Self.m2ProShortfall),
+        // and the cache's own floor while the stub plan is read.
+        ShortOfSpaceFilesFixture(preflightError: Self.m2ProShortfall),
+      ] {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        await assertThrowsErrorAsync(
+          try await closureExecutor(fixture, files: files).execute(
+            fixture.package, authorization: try machineOwnerAuthorization())
+        ) {
+          guard case .engineFailed(let report) = $0 as? PinnedAsahiEngineExecutionError else {
+            return XCTFail("Expected a typed space failure")
+          }
+          XCTAssertEqual(report.notice.reason, .macOSSpaceRequired)
+          XCTAssertTrue(report.notice.diskUnchanged)
+          XCTAssertEqual(
+            report.notice.summary,
+            "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
+              + "Free up 2.6 GB, then try again.")
+          XCTAssertTrue(report.redactedStandardErrorTail.contains("11474183473"))
+        }
+        XCTAssertFalse(
+          FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("apfs").path))
+      }
+    }
+
+    func testUpdateArchiveFirmwareIsNamedInsteadOfAPlanMismatch() async throws {
+      let fixture = try makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let files = ShortOfSpaceFilesFixture(
+        preflightError: NativeFirmwareSelectionError.updateArchiveOnly(version: "14.8.3"))
+      await assertThrowsErrorAsync(
+        try await closureExecutor(fixture, files: files).execute(
+          fixture.package, authorization: try machineOwnerAuthorization())
+      ) {
+        guard case .engineFailed(let report) = $0 as? PinnedAsahiEngineExecutionError else {
+          return XCTFail("Expected a typed firmware refusal")
+        }
+        XCTAssertEqual(report.notice.reason, .deviceUnsupported)
+        XCTAssertTrue(report.notice.diskUnchanged)
+        XCTAssertEqual(
+          report.notice.summary,
+          "This Mac needs boot firmware from macOS 14.8.3, which Apple ships only as an update "
+            + "archive. This installer can't prepare that archive yet.")
+      }
+    }
+
+    func testStubStageFailuresAfterDiskChangesNameTheirCause() async throws {
+      for (error, reason, summary): (any Error & Sendable, EngineFailureReason, String) in [
+        (
+          Self.m2ProShortfall, .macOSSpaceRequired,
+          "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
+            + "Free up 2.6 GB, then try again."
+        ),
+        (
+          NativeStubFileError.writeFailed, .unclassified,
+          "Aurora stub files could not be copied (NativeStubFileError.writeFailed)."
+        ),
+        (
+          NativeOSPartitionError.commandFailed, .unclassified,
+          "Disk preparation stopped (NativeOSPartitionError.commandFailed)."
+        ),
+        (
+          NativeAPFSError.changedLayout, .diskLayoutChanged,
+          "The current disk could not be admitted for a fresh installation."
+        ),
+      ] {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let executor = closureExecutor(
+          fixture, files: ShortOfSpaceFilesFixture(prepareError: error), recordMutation: true)
+        await assertThrowsErrorAsync(
+          try await executor.execute(
+            fixture.package, authorization: try machineOwnerAuthorization())
+        ) {
+          guard case .engineFailed(let report) = $0 as? PinnedAsahiEngineExecutionError else {
+            return XCTFail("Expected a typed stub stage failure")
+          }
+          XCTAssertEqual(report.notice.reason, reason, summary)
+          XCTAssertFalse(report.notice.diskUnchanged, summary)
+          XCTAssertEqual(report.notice.summary, summary)
+        }
+      }
+    }
+
+    func testPreflightSummaryNamesStageAndCaseWithoutAssociatedValues() {
+      enum Probe: Error {
+        case plain
+        case carrying(String)
+      }
+      typealias Stage = PinnedAsahiEngineExecutor.NativePreflightStage
+      func summary(_ stage: Stage, _ error: any Error) -> String {
+        PinnedAsahiEngineExecutor.preflightFailure(stage: stage, error: error).1
+      }
+      XCTAssertEqual(
+        summary(.stubFiles, Probe.plain), "The macOS boot files check stopped (Probe.plain).")
+      XCTAssertEqual(
+        summary(.apfs, Probe.carrying("/Users/secret")),
+        "The disk preparation check stopped (Probe.carrying).")
+      XCTAssertEqual(
+        summary(.espFiles, NSError(domain: "x", code: 1)),
+        "The EFI partition check stopped (NSError x 1).")
+      XCTAssertEqual(
+        summary(.osPartitions, NativeOSPartitionError.changedLayout),
+        "The disk changed after you approved the plan (NativeOSPartitionError.changedLayout).")
+      XCTAssertEqual(
+        summary(.stubFiles, NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))),
+        "A volume ran out of space during the macOS boot files check (NSError NSPOSIXErrorDomain 28)."
+      )
+      XCTAssertEqual(
+        PinnedAsahiEngineExecutor.preflightFailure(
+          stage: .stubFiles, error: NativeStubFileError.invalidPlan
+        ).0, .planIntegrity)
+      XCTAssertEqual(
+        PinnedAsahiEngineExecutor.preflightFailure(
+          stage: .stubFiles,
+          error: NativeFirmwareSelectionError.macOSUpdateRequired(version: "13.5")
+        ).0, .macOSUpdateRequired)
+      // No preflight cause is ever told as a release mismatch.
+      for error: any Error in [
+        Self.m2ProShortfall, NativeStubFileError.cacheFull,
+        NativeStubFileError.freeSpaceUnavailable,
+        NativeStubFileError.invalidPlan, NativePreflightRefusalProbe.any,
+      ] {
+        XCTAssertFalse(summary(.stubFiles, error).contains("verified release"))
+      }
+    }
+
+    private enum NativePreflightRefusalProbe: Error { case any }
+
     func testMalformedRetainedJournalCannotBypassAdmissionOrClaimNoMutation() async throws {
       let fixture = try makeFixture()
       defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -468,8 +661,12 @@
       ) {
         guard case .engineFailed(let report) = $0 as? PinnedAsahiEngineExecutionError
         else { return XCTFail("Expected a native-only refusal") }
-        XCTAssertEqual(report.notice.reason, .planIntegrity)
+        XCTAssertEqual(report.notice.reason, .unclassified)
         XCTAssertTrue(report.notice.diskUnchanged)
+        XCTAssertEqual(
+          report.notice.summary,
+          "This installer installs only into free space or a resized container, not over an "
+            + "existing installation.")
       }
     }
 
@@ -686,7 +883,10 @@
         }
         XCTAssertEqual(report.notice.reason, .planIntegrity)
         XCTAssertTrue(report.notice.diskUnchanged)
-        XCTAssertEqual(report.notice.summary, "The installation images could not be verified.")
+        XCTAssertEqual(
+          report.notice.summary,
+          "The installation images could not be verified "
+            + "(NativePayloadPreflightError.invalidFilesystem).")
       }
     }
 

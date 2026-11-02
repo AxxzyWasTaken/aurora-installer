@@ -169,6 +169,28 @@ public struct InstallerAllocationRecommendation:
     )
   }
 
+  private init(
+    candidate: ValidatedEngineCandidate, minimumBytes: UInt64, maximumBytes: UInt64,
+    requestedLengthBytes: UInt64
+  ) {
+    self.candidate = candidate
+    self.minimumBytes = minimumBytes
+    self.maximumBytes = maximumBytes
+    self.requestedLengthBytes = requestedLengthBytes
+  }
+
+  /// This recommendation with its largest size lowered to `limit`, rounded
+  /// down to the allocation unit. Nil when that is below the smallest size.
+  public func limited(toMaximumBytes limit: UInt64) -> Self? {
+    let unit = PinnedAsahiPlanRequest.allocationUnitBytes
+    let aligned = limit - limit % unit
+    guard aligned >= minimumBytes else { return nil }
+    guard aligned < maximumBytes else { return self }
+    return Self(
+      candidate: candidate, minimumBytes: minimumBytes, maximumBytes: aligned,
+      requestedLengthBytes: min(requestedLengthBytes, aligned))
+  }
+
   /// The free or resize candidate that comes closest to the install minimum,
   /// measured the way the ranking above admits candidates. Nil when the
   /// inventory offers no such candidate at all.

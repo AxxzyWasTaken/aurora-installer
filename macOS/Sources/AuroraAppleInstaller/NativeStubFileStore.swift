@@ -6,7 +6,12 @@
   import Foundation
 
   enum NativeStubFileError: Error, Equatable {
-    case invalidPlan, changedFile, unsafeFile, writeFailed, invalidImage, insufficientSpace
+    case invalidPlan, changedFile, unsafeFile, writeFailed, invalidImage
+    /// The restore-image cache already holds its cap. Free space on macOS is
+    /// a separate check: `MacOSFreeSpaceShortfall` names its numbers.
+    case cacheFull
+    /// macOS could not report the free space of the installer's directory.
+    case freeSpaceUnavailable
   }
 
   struct NativeStubFileIdentity: Codable, Equatable, Sendable {

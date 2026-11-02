@@ -920,6 +920,48 @@
       }
     }
 
+    func testStubStageRefusesBeforeDiskWorkWhenMacOSLacksItsStagingSpace() async throws {
+      let fixture = try ExecutionFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let plan = try await plan(XCTUnwrap(vectors().vectors.first { $0.success }))
+      let staging = NativeStubStagingRequirement(
+        plan: plan, decoded: [plan.recoveryMember], includingPlanningReads: false)
+      XCTAssertEqual(staging.largestDecodeBytes, UInt64(plan.recoveryMember.sizeBytes))
+      var execution = NativeStubFilesExecution(
+        package: fixture.package, approved: fixture.approved, plan: plan, owner: geteuid(),
+        platform: fixture.platform, cache: nil, staging: staging)
+      let free: UInt64 = 8_944_269_393
+      execution.freeBytes = { _ in free }
+      // A resumed journal (APFS prepared) and a first attempt's empty one.
+      let resumed = try Data(contentsOf: fixture.journal)
+      for journal in [resumed, Data()] {
+        try journal.write(to: fixture.journal)
+        XCTAssertThrowsError(try execution.requireStagingSpace(journal: fixture.journal)) {
+          XCTAssertEqual(
+            $0 as? MacOSFreeSpaceShortfall,
+            MacOSFreeSpaceShortfall(requiredBytes: staging.requiredFreeBytes, availableBytes: free))
+        }
+      }
+      execution.freeBytes = { _ in staging.requiredFreeBytes }
+      XCTAssertNoThrow(try execution.requireStagingSpace(journal: fixture.journal))
+      execution.freeBytes = { _ in nil }
+      XCTAssertThrowsError(try execution.requireStagingSpace(journal: fixture.journal)) {
+        XCTAssertEqual($0 as? NativeStubFileError, .freeSpaceUnavailable)
+      }
+    }
+
+    func testStagingSpaceCountsAPendingMacOSShrinkAndNothingOnceTheStageIsDone() {
+      func required(_ checkpoints: [String], shrink: UInt64 = 40 << 30) -> UInt64? {
+        NativeStubFilesExecution.stagingFreeBytes(
+          12 << 30, checkpoints: checkpoints, macOSShrinkBytes: { shrink })
+      }
+      XCTAssertEqual(required([]), 52 << 30)
+      XCTAssertEqual(required([], shrink: 0), 12 << 30)
+      XCTAssertEqual(required(["apfs-target-prepared"]), 12 << 30)
+      XCTAssertNil(required(["apfs-target-prepared", "stub-and-esp-installed"]))
+      XCTAssertEqual(required([], shrink: .max), .max)
+    }
+
     func testAtomicPublicationPreservesConflictsAndRejectsLinksAndResumesOwnedTemps() async throws {
       let directory = try root()
       defer { try? FileManager.default.removeItem(at: directory) }

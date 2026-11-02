@@ -58,7 +58,7 @@
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marker.path)
       }
       let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
-      guard files.count <= 8193 else { throw NativeStubFileError.insufficientSpace }
+      guard files.count <= 8193 else { throw NativeStubFileError.cacheFull }
       retained = 0
       for name in files where name.hasSuffix(".bin") {
         let descriptor = try tree.fileDescriptor(name)
@@ -70,7 +70,7 @@
         retained += Int(status.st_size)
       }
       guard retained <= Self.maximumRetainedBytes else {
-        throw NativeStubFileError.insufficientSpace
+        throw NativeStubFileError.cacheFull
       }
     }
 
@@ -249,9 +249,16 @@
         }
         retained -= min(retained, bytes?.count ?? 0)
       }
-      guard retained + reserved <= Self.maximumRetainedBytes - count,
-        let free = Self.freeBytes(root), free >= Self.reserveBytes + UInt64(count * 2)
-      else { throw NativeStubFileError.insufficientSpace }
+      guard retained + reserved <= Self.maximumRetainedBytes - count else {
+        throw NativeStubFileError.cacheFull
+      }
+      guard let free = Self.freeBytes(root) else { throw NativeStubFileError.freeSpaceUnavailable }
+      // The floor keeps macOS usable; the range and its private copy in
+      // flight must fit above it.
+      guard free >= Self.reserveBytes + UInt64(count * 2) else {
+        throw MacOSFreeSpaceShortfall(
+          requiredBytes: Self.reserveBytes + UInt64(count * 2), availableBytes: free)
+      }
       reserved += count
       defer { reserved -= count }
       let bytes = try await source.read(offset: offset, count: count)

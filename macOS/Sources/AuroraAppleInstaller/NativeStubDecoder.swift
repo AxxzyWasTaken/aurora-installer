@@ -24,10 +24,8 @@
       let deadline = DispatchTime.now() + .seconds(1800)
       while exited.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
         let cancelled = Task.isCancelled
-        var space = statfs()
-        let lowSpace =
-          statfs(output.deletingLastPathComponent().path, &space) != 0
-          || UInt64(space.f_bavail) * UInt64(space.f_bsize) < (10 << 30)
+        let free = NativeStubRestoreCache.freeBytes(output.deletingLastPathComponent())
+        let lowSpace = free.map { $0 < NativeStubStagingRequirement.floorBytes } ?? true
         if cancelled || lowSpace || DispatchTime.now() >= deadline {
           if process.isRunning { process.terminate() }
           if exited.wait(timeout: .now() + .seconds(5)) == .timedOut, process.isRunning {
@@ -35,7 +33,11 @@
             _ = exited.wait(timeout: .now() + .seconds(2))
           }
           if cancelled { throw CancellationError() }
-          if lowSpace { throw NativeStubFileError.insufficientSpace }
+          if lowSpace {
+            guard let free else { throw NativeStubFileError.freeSpaceUnavailable }
+            throw MacOSFreeSpaceShortfall(
+              requiredBytes: NativeStubStagingRequirement.floorBytes, availableBytes: free)
+          }
           throw NativeStubFileError.invalidImage
         }
       }

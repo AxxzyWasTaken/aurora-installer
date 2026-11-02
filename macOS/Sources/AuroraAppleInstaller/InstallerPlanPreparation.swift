@@ -12,6 +12,14 @@
     /// The space chosen on the Partitions screen is gone, changed, or would
     /// reach an installation that stays.
     case targetUnavailable
+    /// This Mac's boot firmware is older than every OS firmware the release
+    /// allows; it must update to this macOS version first.
+    case macOSUpdateRequired(version: String)
+    /// No compatible boot firmware could be selected for this Mac.
+    case firmwareUnavailable
+    /// The firmware this Mac needs comes only as an OTA update archive,
+    /// which this installer cannot prepare yet.
+    case firmwareArchiveUnsupported(version: String)
   }
 
   public protocol InstallerPlanExecuting: Sendable {

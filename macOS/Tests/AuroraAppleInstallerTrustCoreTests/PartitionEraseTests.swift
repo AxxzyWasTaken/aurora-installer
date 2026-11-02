@@ -394,7 +394,9 @@
       for part in snapshot.partitions where part.uuid != snapshot.macOSStoreUUID {
         XCTAssertEqual(
           NativePartitionErase.refusal(members: [part], disk: disk),
-          "Apple’s system partitions are never erased.", part.identifier)
+          part.uuid == Fixture.uuid(950)
+            ? "disk0s9 sits before the macOS you’re running, where Apple keeps its system partitions, so it isn’t erased here."
+            : "Apple’s system partitions are never erased.", part.identifier)
       }
     }
 
@@ -403,7 +405,7 @@
       let unlisted = fixture.add(
         "Apple_APFS", uuid: Fixture.uuid(901), size: 20 << 30, after: 1 << 30)
       var volumes = Fixture.systemVolumes("Looks Stubbed", number: 92)
-      volumes.append(RemovalVolume(uuid: Fixture.uuid(929), name: "VM", roles: ["VM"]))
+      volumes.append(RemovalVolume(uuid: Fixture.uuid(928), name: "Update", roles: ["Update"]))
       let swap = fixture.addContainer(
         uuid: Fixture.uuid(902), size: 30 << 30, after: 1 << 30, volumes: volumes,
         systems: [
@@ -427,7 +429,7 @@
     func testTheStartupDiskChangesOnlyWhenTheRowHoldsWhatTheMacStartsFrom() throws {
       let fixture = try Fixture.twoInstallations()
       fixture.disk.startupState = .other("Fedora Linux")
-      fixture.disk.startupStoreUUID = Fixture.fedoraStub
+      fixture.disk.startupStoreUUIDs = [Fixture.fedoraStub]
       let aurora = try AuroraRemovalPlan(
         erasing: Fixture.auroraStub, disks: fixture.disk, collect: fixture.collect)
       XCTAssertNil(aurora.startup)
@@ -502,6 +504,162 @@
         erasing: esp)
       XCTAssertTrue(result.completed, result.message)
       XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: journals.path), [])
+    }
+
+    func testAStartupContainerWithAVMVolumeIsStillErasableButAFullMacOSIsNot() throws {
+      var fixture = try Fixture.base()
+      var volumes = Fixture.systemVolumes("Aurora", number: 93)
+      volumes.append(RemovalVolume(uuid: Fixture.uuid(938), name: "VM", roles: ["VM"]))
+      let stub = fixture.addContainer(
+        uuid: Fixture.uuid(903), size: 2_499_805_184, after: 1 << 30, volumes: volumes,
+        systems: [
+          NativeSystemVolumeFacts(
+            group: Fixture.uuid(939), label: "Aurora", stub: true, version: "26.6",
+            bootPartitions: [])
+        ])
+      var full = Fixture.systemVolumes("Second macOS", number: 94)
+      full.append(RemovalVolume(uuid: Fixture.uuid(948), name: "VM", roles: ["VM"]))
+      let macOS = fixture.addContainer(
+        uuid: Fixture.uuid(904), size: 60 << 30, after: 1 << 30, volumes: full,
+        systems: [
+          NativeSystemVolumeFacts(
+            group: Fixture.uuid(949), label: "Second macOS", stub: false, version: nil)
+        ])
+      let disk = try fixture.collect()
+      func refusal(_ uuid: String) -> String? {
+        NativePartitionErase.refusal(
+          members: disk.snapshot.partitions.filter { $0.uuid == uuid }, disk: disk)
+      }
+      XCTAssertNil(refusal(stub))
+      XCTAssertEqual(
+        refusal(macOS),
+        "“Second macOS” is a macOS installation or another full system, and Erase never deletes one."
+      )
+    }
+
+    func testAnUnparseableEFINameMakesTheBootloaderUnknown() {
+      struct Naming: RemovalFileReading {
+        func read(_ components: [String], limit: Int) throws -> Data? {
+          Data(
+            "STACKBOTchosen.asahi,efi-system-partition=not-a-uuid\nchosen.asahi,efi-system-partition=\(Fixture.uuid(811))\0"
+              .utf8)
+        }
+      }
+      XCTAssertNil(NativeDiskCollector.bootPartitions(Naming()))
+    }
+
+    func testAKeptContainerThatIsntListedKeepsEveryEFIPartition() throws {
+      var fixture = try Fixture.base()
+      fixture.add("Apple_APFS", uuid: Fixture.uuid(905), size: 20 << 30, after: 1 << 30)
+      let esp = fixture.add("EFI", uuid: Fixture.uuid(811), size: 500 << 20, after: 2 << 30)
+      fixture.add("Linux Filesystem", uuid: Fixture.uuid(812), size: 4 << 30)
+      let disk = try fixture.collect()
+      XCTAssertEqual(
+        NativePartitionErase.refusal(
+          members: disk.snapshot.partitions.filter { [esp, Fixture.uuid(812)].contains($0.uuid) },
+          disk: disk),
+        "The bootloader of disk0s4 couldn’t be read, so any EFI partition might be the one it starts from. Erase disk0s4 first."
+      )
+    }
+
+    func testAPartitionBeforeARunningSecondMacOSIsKeptWithItsOwnReason() throws {
+      let base = try Fixture.base()
+      var snapshot = base.disk.state
+      // The running macOS sits after a Linux partition.
+      let isc = snapshot.partitions.first { $0.type == "Apple_APFS_ISC" }!
+      let linux = RemovalPartition(
+        identifier: "disk0s9", uuid: Fixture.uuid(951), type: "Linux Filesystem",
+        offset: isc.end + 4096, size: 1 << 20, name: "")
+      snapshot.partitions.append(linux)
+      let disk = NativeCollectedDisk(snapshot: snapshot, containers: base.facts.value)
+      XCTAssertEqual(
+        NativePartitionErase.refusal(members: [linux], disk: disk),
+        "disk0s9 sits before the macOS you’re running, where Apple keeps its system partitions, so it isn’t erased here."
+      )
+    }
+
+    func testABusyVolumeLeavesEverythingMountedAgainOrSaysWhatIsnt() throws {
+      for failing in [Set<String>(), [Fixture.auroraMembers[0]]] {
+        let fixture = try Fixture.twoInstallations()
+        fixture.disk.busy = [Fixture.auroraMembers[2]]
+        fixture.disk.remountFailures = failing
+        let plan = try AuroraRemovalPlan(
+          erasing: Fixture.auroraStub, disks: fixture.disk, collect: fixture.collect)
+        XCTAssertThrowsError(
+          try AuroraRemovalExecutor(disks: fixture.disk, collect: fixture.collect).execute(plan) {
+            _ in XCTFail("nothing may be recorded")
+          }
+        ) {
+          let message = ($0 as? RemovalFailure)?.message ?? ""
+          XCTAssertTrue(message.hasPrefix("“disk0s6” is in use"), message)
+          if failing.isEmpty {
+            XCTAssertTrue(message.hasSuffix("Nothing was changed."), message)
+          } else {
+            XCTAssertFalse(message.contains("Nothing was changed."), message)
+            XCTAssertTrue(message.contains("still unmounted"), message)
+          }
+        }
+        // The volumes unmounted before the busy one are mounted again.
+        XCTAssertEqual(fixture.disk.remounted, Array(Fixture.auroraMembers.prefix(2)))
+        XCTAssertTrue(fixture.disk.operations.isEmpty)
+      }
+    }
+
+    func testARefusedStartupCheckMountsTheUnmountedVolumesAgain() throws {
+      let fixture = try Fixture.twoInstallations()
+      let plan = try AuroraRemovalPlan(
+        erasing: Fixture.auroraStub, disks: fixture.disk, collect: fixture.collect)
+      fixture.disk.startupState = .other("Aurora Fedora Remix")
+      XCTAssertThrowsError(
+        try AuroraRemovalExecutor(disks: fixture.disk, collect: fixture.collect).execute(
+          plan, authorization: try authorization()
+        ) { _ in }
+      )
+      XCTAssertEqual(fixture.disk.remounted, Fixture.auroraMembers)
+    }
+
+    func testAOneTimeStartupChoiceDoesntHideThePersistentOne() throws {
+      let fixture = try Fixture.twoInstallations()
+      // Persistent startup from Aurora, a one-time choice of Fedora.
+      fixture.disk.startupState = .nextStartupOverride
+      fixture.disk.startupStoreUUIDs = [Fixture.auroraStub, Fixture.fedoraStub]
+      for stub in [Fixture.auroraStub, Fixture.fedoraStub] {
+        let plan = try AuroraRemovalPlan(
+          erasing: stub, disks: fixture.disk, collect: fixture.collect)
+        XCTAssertEqual(plan.startup, .nextStartupOverride, stub)
+      }
+    }
+
+    func testReturningFreeSpaceToMacOSRetiresTheJournalOfTheSpaceItTakes() async throws {
+      let disk = FakeRemovalDisk(RemovalFixtures.freeSpaceOnly(), install: nil)
+      let macOS = try XCTUnwrap(
+        disk.state.partitions.first { $0.uuid == disk.state.macOSStoreUUID })
+      let root = try temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let journals = root.appendingPathComponent("execution-journals")
+      try FileManager.default.createDirectory(at: journals, withIntermediateDirectories: false)
+      let line = try JSONSerialization.data(withJSONObject: [
+        "type": "plan", "payload": ["offset_bytes": macOS.end, "length_bytes": 64 << 30],
+      ])
+      try (line + Data([10])).write(to: journals.appendingPathComponent("earlier.jsonl"))
+      let service = ClosedEngineHelperServer(
+        workingDirectory: root, executor: NoHandoff(),
+        credentialValidator: AcceptingCredentials(), removalDisks: disk,
+        removalAdminValidator: { _ in })
+      let review = try await service.removal(ticketID: nil, confirmation: "", authorization: nil)
+      let ticket = try XCTUnwrap(review.ticket, review.message)
+      XCTAssertEqual(ticket.kind, .freeSpace)
+      let result = try await service.removal(
+        ticketID: ticket.id, confirmation: ticket.confirmation, authorization: authorization())
+      XCTAssertTrue(result.completed, result.message)
+      XCTAssertFalse(
+        FileManager.default.fileExists(
+          atPath: journals.appendingPathComponent("earlier.jsonl").path))
+      XCTAssertTrue(
+        FileManager.default.fileExists(
+          atPath: root.appendingPathComponent(
+            "retired-execution-journals/\(ticket.id.uuidString)/earlier.jsonl"
+          ).path))
     }
 
     // MARK: The helper service

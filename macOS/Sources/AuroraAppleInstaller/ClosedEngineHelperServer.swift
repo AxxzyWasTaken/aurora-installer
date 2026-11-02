@@ -388,7 +388,7 @@
               try retireExecutionJournals(
                 in: workingDirectory, removal: approved.ticket.id,
                 overlapping: erased.extent(of: approved.plan.members))
-            } else if approved.plan.erasesStartupContainer {
+            } else {
               try retireExecutionJournals(in: workingDirectory, removal: approved.ticket.id)
             }
           } catch {
@@ -402,9 +402,9 @@
           var message: String
           if let erased = plan.erased {
             message =
-              stopped.removed == 0
+              stopped.removed.isEmpty
               ? "Erase stopped: \(stopped.detail) Nothing was erased, and the disk is as it was."
-              : "Erase stopped after \(stopped.removed) of its \(stopped.total) partitions of “\(erased.name)” were erased: \(stopped.detail) The rest is as it was; check the disk again to erase it."
+              : "Erase stopped after \(stopped.removed.count) of its \(stopped.total) partitions of “\(erased.name)” were erased: \(stopped.detail) The rest is as it was; check the disk again to erase it."
           } else {
             message = "\(stopped.detail) No disk changes were made."
           }
@@ -1112,13 +1112,8 @@
     }
   }
 
-  /// Install journals are named by the plan's binding digest, and removal
-  /// returns the disk to the layout that plan was made from. Left in place,
-  /// a reinstall at the same size finds its earlier journal complete and
-  /// reports success without writing anything. They are kept for diagnosis
-  /// under `retired-execution-journals/<removal ticket>`.
-  /// Moves aside only the journals whose planned extent overlaps `erased`,
-  /// with their evidence. Journals of other installations stay.
+  /// Moves aside the journals whose planned extent overlaps `erased`, with
+  /// their evidence. Other installations keep theirs.
   func retireExecutionJournals(
     in workingDirectory: URL, removal: UUID, overlapping erased: Range<UInt64>
   ) throws {
@@ -1160,6 +1155,11 @@
     return nil
   }
 
+  /// Install journals are named by the plan's binding digest, and removal
+  /// returns the disk to the layout that plan was made from. Left in place,
+  /// a reinstall at the same size finds its earlier journal complete and
+  /// reports success without writing anything. They are kept for diagnosis
+  /// under `retired-execution-journals/<removal ticket>`.
   func retireExecutionJournals(in workingDirectory: URL, removal: UUID) throws {
     let journals = workingDirectory.appendingPathComponent(
       "execution-journals", isDirectory: true)

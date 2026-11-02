@@ -11,8 +11,9 @@
   /// container with a full system in it, or an EFI partition the bootloader
   /// of a startup container that stays still names.
   enum NativePartitionErase {
-    /// Volume roles only a full macOS has.
-    static let macOSRoles: Set<String> = ["VM", "Update"]
+    /// A volume role only a full macOS has. A startup container may keep a
+    /// VM volume, so that role says nothing.
+    static let macOSRoles: Set<String> = ["Update"]
 
     static func refusal(members: [RemovalPartition], disk: NativeCollectedDisk) -> String? {
       let snapshot = disk.snapshot
@@ -24,9 +25,12 @@
       for part in members {
         if ["Apple_APFS_ISC", "Apple_APFS_Recovery"].contains(part.type)
           || part.uuid == parts.first?.uuid || part.uuid == parts.last?.uuid
-          || macOS.map({ part.offset < $0.offset }) ?? true
         {
           return "Apple’s system partitions are never erased."
+        }
+        if macOS.map({ part.offset < $0.offset }) ?? true {
+          return
+            "\(part.identifier) sits before the macOS you’re running, where Apple keeps its system partitions, so it isn’t erased here."
         }
         guard part.type == "Apple_APFS" else { continue }
         guard part.uuid != snapshot.macOSStoreUUID else {
@@ -54,15 +58,24 @@
             "“\(system.label)” is a macOS installation or another full system, and Erase never deletes one."
         }
       }
-      // An EFI partition stays while a kept startup container may start from it.
+      // An EFI partition stays while a kept container may start from it.
       let erased = Set(members.map(\.uuid))
       guard members.contains(where: { $0.type == "EFI" }) else { return nil }
-      for facts in disk.containers where !erased.contains(facts.storeUUID) {
+      func unknown(_ name: String) -> String {
+        "The bootloader of \(name) couldn’t be read, so any EFI partition might be the one it starts from. Erase \(name) first."
+      }
+      for part in parts
+      where part.type == "Apple_APFS" && !erased.contains(part.uuid)
+        && part.uuid != snapshot.macOSStoreUUID
+      {
+        guard let container = snapshot.containers.first(where: { $0.storeUUID == part.uuid })
+        else { return unknown(part.identifier) }
+        guard container.volumes.contains(where: { $0.roles == ["System"] }) else { continue }
+        guard let facts = disk.containers.first(where: { $0.storeUUID == part.uuid }),
+          !facts.systems.isEmpty
+        else { return unknown(part.identifier) }
         for system in facts.systems where system.stub {
-          guard let boot = system.bootPartitions else {
-            return
-              "The bootloader of “\(system.label)” couldn’t be read, so any EFI partition might be the one it starts from. Erase “\(system.label)” first."
-          }
+          guard let boot = system.bootPartitions else { return unknown("“\(system.label)”") }
           if let part = members.first(where: { $0.type == "EFI" && boot.contains($0.uuid) }) {
             return
               "“\(system.label)” starts Linux from the EFI partition \(part.identifier). Erase “\(system.label)” together with it."

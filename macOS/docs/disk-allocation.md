@@ -15,7 +15,7 @@ Every row except macOS offers Erase: Aurora installations, other installers' Lin
 `NativePartitionErase` is the one rule for what may go, applied by the screen and again by the helper to its own scan:
 
 - Never Apple's system container or Recovery partition, nor the running macOS. Apple's partitions are recognized by position too: the first partition, the last, and anything before the running macOS.
-- Never a container with a full system: a system volume with a `Library` folder, or a VM or Update volume, as every macOS has. A container `diskutil apfs list` doesn't list is refused too. Another macOS is never offered.
+- Never a container with a full system: a system volume with a `Library` folder, or an Update volume, as every macOS has. A VM volume says nothing, since a startup container may keep one. A container `diskutil apfs list` doesn't list is refused too. Another macOS is never offered.
 - Never an EFI partition that the bootloader of a startup container that stays still names. Inspection records each startup container's chainloaded EFI partitions from its `boot.bin`; a boot object that can't be read is unknown, not an inspection failure, and while any kept startup container's is unknown no EFI partition is erased. The row says which container to erase first or with it.
 
 The helper's erase review (`AuroraRemovalPlan(erasing:)`) lists every partition it deletes, with type and volumes, and the merged free extent it leaves. The app shows the ticket only when it names exactly the row's partitions. Execution keeps the removal journal model:
@@ -26,9 +26,9 @@ The helper's erase review (`AuroraRemovalPlan(erasing:)`) lists every partition 
 - containers are deleted first, with no force unmount;
 - an interrupted erase blocks all later disk changes until reviewed.
 
-Before the first record, the row's mounted volumes are unmounted without force; a volume in use refuses with nothing changed. If a deletion fails and a fresh scan shows the disk as reviewed minus what was already removed, the record ends `stopped`, which doesn't block later work: a fresh review plans what is left. Any other outcome keeps the record for review.
+Before the first record, the row's mounted volumes are unmounted without force. A volume in use refuses, naming it; whenever execution stops before a record, what was unmounted is mounted again, and a volume that didn't mount again is named. If a deletion fails and a fresh scan shows the disk as reviewed minus what was already removed, the record ends `stopped`, which doesn't block later work: a fresh review plans what is left. Any other outcome keeps the record for review.
 
-macOS is set as the startup disk first only when the row holds what the Mac starts up from, or that can't be told and the row has a container. An erase ticket runs only as the erase it was reviewed for. Only the installer journals whose planned extent overlaps the erased space are moved aside; other installations keep theirs.
+macOS is set as the startup disk first only when the row holds the startup disk or a one-time startup choice, or either can't be told and the row has a container. An erase ticket runs only as the erase it was reviewed for. Only the installer journals whose planned extent overlaps the erased space are moved aside; other installations keep theirs. Returning space to macOS still moves them all aside, as before.
 
 The existing authenticated candidate bounds and live admission checks remain authoritative. Rendered storage totals are descriptive; moving the divider cannot authorize a disk operation.
 

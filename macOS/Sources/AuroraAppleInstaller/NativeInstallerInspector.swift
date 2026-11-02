@@ -112,7 +112,10 @@
           ["Finish Installation.app", "Contents", "Resources", "boot.bin"], limit: 64 << 20),
         let names = RemovalEvidence.efiPartitions(bootObject: boot)
       else { return nil }
-      return names.compactMap { UUID(uuidString: $0)?.uuidString }
+      let parsed = names.map { UUID(uuidString: $0)?.uuidString }
+      // One unreadable name makes the whole list unknown.
+      guard parsed.allSatisfy({ $0 != nil }) else { return nil }
+      return parsed.compactMap { $0 }
     }
 
     func collect(host: AppleSiliconHostInspection) throws -> NativeCollectedDisk {

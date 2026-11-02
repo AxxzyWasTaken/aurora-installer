@@ -305,8 +305,12 @@
     var evidenceReads = 0
     var limitOverride: UInt64?
     /// What the Mac starts up from, as a store UUID; nil when unknown.
-    var startupStoreUUID: String?
+    /// Every store the Mac may start up from next; nil when unknown.
+    var startupStoreUUIDs: [String]?
+    /// Each partition is taken to have one mounted volume, named by its UUID.
     var unmounted = [String]()
+    var remounted = [String]()
+    var remountFailures = Set<String>()
     /// Removes this partition, then reports a failure anyway.
     var removesThenFails: String?
     var busy = Set<String>()
@@ -335,12 +339,19 @@
       return RemovalEvidence(files: files)
     }
     func startup(_ snapshot: RemovalSnapshot) throws -> RemovalStartup { startupState }
-    func startupStore(_ snapshot: RemovalSnapshot) throws -> String? { startupStoreUUID }
-    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws {
+    func startupStores(_ snapshot: RemovalSnapshot) throws -> [String]? { startupStoreUUIDs }
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws
+      -> [String]
+    {
       guard !busy.contains(partition.uuid) else {
-        throw RemovalFailure(message: RemovalText.busy(partition, snapshot), complete: true)
+        throw RemovalVolumeBusy(volume: partition.identifier, stillUnmounted: [])
       }
       unmounted.append(partition.uuid)
+      return [partition.uuid]
+    }
+    func remountVolumes(_ identifiers: [String]) -> [String] {
+      remounted += identifiers
+      return identifiers.filter(remountFailures.contains)
     }
     func setMacOSStartup(
       _ snapshot: RemovalSnapshot, nextOnly: Bool, authorization: MachineOwnerAuthorization

@@ -884,7 +884,7 @@
         // recorded so it doesn't block a fresh review.
         let stopped = error as? RemovalStopped
         XCTAssertEqual(stopped?.detail, "injected command failure")
-        XCTAssertEqual(stopped?.removed, 0)
+        XCTAssertEqual(stopped?.removed, [])
       }
     }
 

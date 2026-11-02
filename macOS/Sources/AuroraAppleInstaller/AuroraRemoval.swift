@@ -358,8 +358,10 @@
       guard members.contains(where: { $0.type == "Apple_APFS" }) else { return nil }
       let startup = try disks.startup(snapshot)
       guard startup != .macOS else { return nil }
-      if let store = try disks.startupStore(snapshot),
-        !members.contains(where: { $0.uuid.caseInsensitiveCompare(store) == .orderedSame })
+      if let stores = try disks.startupStores(snapshot),
+        !stores.contains(where: { store in
+          members.contains { $0.uuid.caseInsensitiveCompare(store) == .orderedSame }
+        })
       {
         return nil
       }
@@ -388,19 +390,6 @@
     /// Removal checks the startup disk before deleting, and sets macOS as it
     /// when it isn't.
     var setsMacOSStartupFirst: Bool { installation != nil || partial != nil }
-
-    /// The erase deletes a startup container, whose installer journals are
-    /// then stale.
-    var erasesStartupContainer: Bool {
-      kind == .eraseToFreeSpace
-        ? members.contains { part in
-          part.type == "Apple_APFS"
-            && snapshot.containers.first { $0.storeUUID == part.uuid }?.volumes.contains {
-              $0.roles == ["System"]
-            } == true
-        }
-        : installation != nil || partial != nil
-    }
 
     var reclaimBytes: UInt64 { targetMacOSBytes - macOS.size }
 
@@ -567,22 +556,37 @@
     func deleteContainer(_ stub: RemovalPartition, disk: String) throws
     func erasePartition(_ partition: RemovalPartition, disk: String) throws
     func growContainer(_ macOS: RemovalPartition, disk: String) throws
-    /// The physical store the Mac starts up from next; nil when unknown.
-    func startupStore(_ snapshot: RemovalSnapshot) throws -> String?
-    /// Unmounts the partition's mounted volumes, without force. Throws when
-    /// one is in use.
+    /// Every store the Mac may start up from next: the startup disk and any
+    /// one-time choice. Nil when one can't be read.
+    func startupStores(_ snapshot: RemovalSnapshot) throws -> [String]?
+    /// Unmounts the partition's mounted volumes, without force, and returns
+    /// them. Throws `RemovalVolumeBusy` when one is in use, after mounting
+    /// the others again.
     func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws
+      -> [String]
+    /// Mounts volumes again; returns the ones that didn't mount.
+    func remountVolumes(_ identifiers: [String]) -> [String]
   }
 
   extension RemovalDiskOperating {
-    func startupStore(_ snapshot: RemovalSnapshot) throws -> String? { nil }
-    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws {}
+    func startupStores(_ snapshot: RemovalSnapshot) throws -> [String]? { nil }
+    func unmountVolumes(of partition: RemovalPartition, in snapshot: RemovalSnapshot) throws
+      -> [String]
+    { [] }
+    func remountVolumes(_ identifiers: [String]) -> [String] { [] }
+  }
+
+  /// A volume in use refused to unmount.
+  struct RemovalVolumeBusy: Error, Sendable {
+    let volume: String
+    /// Volumes unmounted before it that didn't mount again.
+    let stillUnmounted: [String]
   }
 
   /// A deletion failed, and a fresh scan shows the disk as reviewed minus
   /// what was already removed.
   struct RemovalStopped: Error, Sendable {
-    let removed: Int
+    let removed: Set<String>
     let total: Int
     let detail: String
   }
@@ -633,10 +637,45 @@
         }
         guard region.memberUUIDs == erased.memberUUIDs else { throw changed }
       }
-      // Read-only, before any record: a volume in use refuses here.
-      for member in plan.members {
-        try disks.unmountVolumes(of: plan.live(member, in: first), in: first)
+      // Before any record: a volume in use refuses here, and what was
+      // unmounted is mounted again whenever execution stops before a record.
+      var unmounted = [(member: String, volumes: [String])]()
+      do {
+        for member in plan.members {
+          unmounted.append(
+            (member.uuid, try disks.unmountVolumes(of: plan.live(member, in: first), in: first)))
+        }
+      } catch let busy as RemovalVolumeBusy {
+        let left = busy.stillUnmounted + disks.remountVolumes(unmounted.flatMap(\.volumes))
+        throw RemovalFailure(
+          message: RemovalText.busy(
+            busy.volume, stillUnmounted: RemovalText.volumeNames(left, first)),
+          complete: true)
       }
+      var recorded = false
+      do {
+        try execute(plan, first: first, authorization: authorization) { phase in
+          try record(phase)
+          recorded = true
+        }
+      } catch let stopped as RemovalStopped {
+        _ = disks.remountVolumes(
+          unmounted.filter { !stopped.removed.contains($0.member) }.flatMap(\.volumes))
+        throw stopped
+      } catch let error where !recorded {
+        let left = disks.remountVolumes(unmounted.flatMap(\.volumes))
+        guard !left.isEmpty, let failure = error as? RemovalFailure else { throw error }
+        throw RemovalFailure(
+          message: failure.message + " "
+            + RemovalText.stillUnmounted(RemovalText.volumeNames(left, first)),
+          complete: failure.complete)
+      }
+    }
+
+    private func execute(
+      _ plan: AuroraRemovalPlan, first: RemovalSnapshot,
+      authorization: MachineOwnerAuthorization?, record: (String) throws -> Void
+    ) throws {
       let checksStartup =
         plan.kind == .eraseToFreeSpace
         ? try AuroraRemovalPlan.erasedStartup(members: plan.members, disks: disks, snapshot: first)
@@ -698,7 +737,7 @@
           else { throw error }
           try record("stopped")
           throw RemovalStopped(
-            removed: removed.count, total: plan.members.count,
+            removed: removed, total: plan.members.count,
             detail: (error as? RemovalFailure)?.message ?? error.localizedDescription)
         }
         removed.insert(member.uuid)

@@ -750,6 +750,53 @@
       }
     }
 
+    func testSourceOwnerRefusalNamesTheFailedCheckInTheNoticeAndDiagnostics() async throws {
+      let cases: [(any Error, String)] = [
+        (
+          NativeSourceOwnerRefusal.notVolumeOwner,
+          "The current macOS volume owner could not be verified: APFS does not list this account "
+            + "as a volume owner. Use the account that set up this Mac."
+        ),
+        (
+          NativeSourceOwnerRefusal.adminListMissing,
+          "The current macOS volume owner could not be verified: the Preboot volume has no list "
+            + "of Recovery administrators."
+        ),
+        (
+          NativeSourceOwnerRefusal.diskQuery(
+            step: "APFS volume users", detail: "diskutil exited with status 1"),
+          "The current macOS volume owner could not be verified: macOS did not answer the APFS "
+            + "volume users query."
+        ),
+        (
+          CancellationError(),
+          "The current macOS volume owner could not be verified: the check was canceled."
+        ),
+      ]
+      for (error, summary) in cases {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let executor = fixtureExecutor(
+          effectiveUserID: { 0 }, firmwarePreparer: FailedFirmware(), rejectPayload: true,
+          sourceOwnerError: error)
+        await assertThrowsErrorAsync(
+          try await executor.execute(
+            fixture.package, authorization: try machineOwnerAuthorization())
+        ) {
+          guard case .engineFailed(let report) = $0 as? PinnedAsahiEngineExecutionError else {
+            XCTFail("Expected typed source-owner preflight failure")
+            return
+          }
+          XCTAssertEqual(report.notice.reason, .recoveryPreparation)
+          XCTAssertTrue(report.notice.diskUnchanged)
+          XCTAssertEqual(report.notice.summary, summary)
+          XCTAssertTrue(
+            report.redactedStandardErrorTail.contains(String(describing: error)),
+            report.redactedStandardErrorTail)
+        }
+      }
+    }
+
     func testRecoveryPreparationFailureNeverClaimsAnInstalledRetryWasUnchanged() async throws {
       for operation in [EngineHandoffOperation.install, .retryRecoveryAuthorization] {
         let fixture = try makeFixture()
@@ -789,7 +836,8 @@
       rejectDecoder: Bool = false,
       rejectPayload: Bool = false,
       rejectFirmwareSelection: NativeFirmwareSelectionError? = nil,
-      rejectSourceOwner: Bool = false
+      rejectSourceOwner: Bool = false,
+      sourceOwnerError: (any Error & Sendable)? = nil
     ) -> PinnedAsahiEngineExecutor {
       PinnedAsahiEngineExecutor(
         effectiveUserID: effectiveUserID, expectedFileOwnerID: expectedFileOwnerID,
@@ -810,6 +858,7 @@
         },
         validateSourceOwner: { _, _ in
           if rejectSourceOwner { throw NativeHandoffValidationError.invalidOwner }
+          if let sourceOwnerError { throw sourceOwnerError }
           return try NativeSourceBootstrap(
             systemUUID: "00000000-0000-0000-0000-000000000101",
             groupUUID: "00000000-0000-0000-0000-000000000102",

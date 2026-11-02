@@ -20,6 +20,17 @@
     /// Whether a volume mounted at this directory is one Finder, Spotlight
     /// and the Trash can reach. Fixtures mount nothing, so they say no.
     var mountIsBrowsable: @Sendable (URL) -> Bool = { _ in false }
+    /// The account's own short name for the name the person typed.
+    /// OpenDirectory matches names without regard to case and accepts an
+    /// account's aliases, so "Mina" signs in as "mina"; macOS keys its
+    /// Preboot list of Recovery administrators by the short name.
+    var ownerName: @Sendable (String) throws -> String = { $0 }
+    /// Runs a read-only diskutil query whose standard output is a property
+    /// list. Unlike `command`, which captures standard error with the output,
+    /// this keeps them apart as the disk snapshot and the inspection runner
+    /// do, so a line diskutil writes to standard error can't make a valid
+    /// reply unreadable. Without it, queries go through `command`.
+    var query: (@Sendable ([String]) throws -> Data)?
 
     static var live: Self {
       Self(
@@ -27,11 +38,7 @@
         device: { try AppleSiliconHostInspector().inspectIdentity().deviceIdentifier },
         command: { try AccountNativeCommand.checked($0, $1) },
         ownerUUID: { name in
-          let node = try ODNode(
-            session: ODSession.default(), type: ODNodeType(kODNodeTypeLocalNodes))
-          let user = try node.record(
-            withRecordType: kODRecordTypeUsers, name: name,
-            attributes: [kODAttributeTypeGUID])
+          let user = try localUser(name, attributes: [kODAttributeTypeGUID])
           let values = try user.values(forAttribute: kODAttributeTypeGUID) as? [String]
           guard values?.count == 1, let value = values?.first, let id = UUID(uuidString: value)
           else {
@@ -43,13 +50,30 @@
         mountRoot: URL(fileURLWithPath: "/Volumes"),
         sourcePrebootMount: URL(fileURLWithPath: "/System/Volumes/Preboot"),
         verifyMount: NativeHandoffFileTree.verifyVolumeRoot,
-        mountIsBrowsable: NativeHandoffMounts.isBrowsable)
+        mountIsBrowsable: NativeHandoffMounts.isBrowsable,
+        ownerName: { name in
+          guard let recordName = try localUser(name, attributes: []).recordName,
+            !recordName.isEmpty
+          else { throw NativeHandoffValidationError.invalidOwner }
+          return recordName
+        },
+        query: {
+          try MacRemovalDiskOperator.systemRun("/usr/sbin/diskutil", $0, timeout: 120)
+        })
+    }
+
+    private static func localUser(_ name: String, attributes: [String]) throws -> ODRecord {
+      let node = try ODNode(
+        session: ODSession.default(), type: ODNodeType(kODNodeTypeLocalNodes))
+      return try node.record(
+        withRecordType: kODRecordTypeUsers, name: name, attributes: attributes)
     }
 
     func plist(_ arguments: [String]) throws -> [String: Any] {
+      let output = try query?(arguments) ?? command("/usr/sbin/diskutil", arguments)
       guard
-        let value = try PropertyListSerialization.propertyList(
-          from: command("/usr/sbin/diskutil", arguments), format: nil) as? [String: Any]
+        let value = try PropertyListSerialization.propertyList(from: output, format: nil)
+          as? [String: Any]
       else {
         throw NativeHandoffValidationError.invalidTarget
       }

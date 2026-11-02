@@ -23,7 +23,7 @@ The requirement is checked twice, both before the first disk change:
 
 Planning applies the check to free, resize and replacement plans. When the cap would fall below a recommended size, the largest size falls back to the candidate's own minimum before the plan is refused.
 
-A floor reached during the stage is reported as what fetching the rest of the stage needs, not as that one read's need.
+A floor reached during the stage is reported as what the rest of the stage needs, a pending decode included, not as that one read's need.
 
 A shortfall at either point, or at any of the stage's own floors later, is a `MacOSFreeSpaceShortfall`. The notice reason is `macOSSpaceRequired`, with a summary such as "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. Free up 2.6 GB, then try again." Free space is `statfs` `f_bavail` of the helper's directory, which leaves out purgeable space Finder may count.
 

@@ -1040,6 +1040,35 @@
       }
     }
 
+    func testRunningOutOfSpaceMidStageCountsAPendingDecode() async throws {
+      let fixture = try ExecutionFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let vector = try XCTUnwrap(vectors().vectors.first { $0.success })
+      let gate = SpaceGate()
+      let archive = try await IPSWArchive.open(SpaceSource(bytes: vector.archive, gate: gate))
+      let plan = try await NativeStubFilePlan(
+        archive: archive,
+        source: NativeFirmwareSelection(
+          version: "26.6.2", sourceURL: URL(string: "https://updates.cdn-apple.com/test.ipsw")!,
+          stubBytes: 6_000_000_000),
+        deviceClass: "j700ap", boardID: 1, chipID: 2)
+      let staging = NativeStubStagingRequirement(
+        plan: plan, decoded: [plan.recoveryMember], includingPlanningReads: false)
+      XCTAssertGreaterThan(staging.requiredFreeBytes, staging.fetchingFreeBytes)
+      let execution = NativeStubFilesExecution(
+        package: fixture.package, approved: fixture.approved, plan: plan, owner: geteuid(),
+        platform: fixture.platform, cache: nil, staging: staging)
+      gate.arm()
+      do {
+        try await execution.prepare(
+          journal: fixture.journal, authorization: fixture.authorization,
+          sourceBootstrap: fixture.bootstrap)
+        XCTFail("the stage ran without its space")
+      } catch let shortfall as MacOSFreeSpaceShortfall {
+        XCTAssertEqual(shortfall.requiredBytes, staging.requiredFreeBytes)
+      }
+    }
+
     final class SpaceGate: @unchecked Sendable {
       private let lock = NSLock()
       private var armed = false

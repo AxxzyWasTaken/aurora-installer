@@ -299,7 +299,8 @@
     func testUnsupportedModelWithoutACatalogStillNamesTheMac() {
       let display = PlainLanguage.failure(
         for: InstallerAssetPreparationError.notInCatalog(
-          deviceIdentifier: "apple,j614s", modelIdentifier: "Mac16,8", supportedDeviceIdentifiers: []))
+          deviceIdentifier: "apple,j614s", modelIdentifier: "Mac16,8",
+          supportedDeviceIdentifiers: []))
       XCTAssertTrue(display.isBlockedModel)
       XCTAssertTrue(display.plainDetail.contains("apple,j614s"), display.plainDetail)
       XCTAssertEqual(display.remedy, PlainLanguage.blockedExplainer)

@@ -43,6 +43,10 @@ jobs:
           set -euo pipefail
           bash Recovery/build-preview.sh "$RUNNER_TEMP/recovery-preview" 2>&1 | tee "$RUNNER_TEMP/evidence/preview-build.log"
           bash Recovery/build-recovery.sh "$RUNNER_TEMP/recovery-template" 2>&1 | tee "$RUNNER_TEMP/evidence/recovery-build.log"
+      - name: Run window-level Recovery state tests
+        run: |
+          set -euo pipefail
+          AURORA_RECOVERY_BUILD=preview xcrun swift test --package-path Recovery 2>&1 | tee "$RUNNER_TEMP/evidence/ui-state-tests.log"
       - name: Verify forced native dark Recovery appearance
         run: |
           set -euo pipefail

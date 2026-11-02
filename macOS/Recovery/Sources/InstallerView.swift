@@ -2,7 +2,7 @@ import AppKit
 
 /// The complete Recovery interface uses only AppKit. The model owns installation
 /// work; this controller renders its state and keeps credentials in native fields.
-final class InstallerView: NSViewController, NSTextFieldDelegate {
+final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemValidation {
   private let model: InstallerModel
   private let log = InstallerLog.shared
   private let titleLabel = NSTextField(labelWithString: "")
@@ -10,8 +10,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
   private let content = NSView()
   private let footer = NSView()
   private var renderedStage: Stage?
-  private var primaryButton: NSButton?
-  private var restartButton: NSButton?
+  /// Continue or Restore, Create Account, or Restart, with its spinner slot.
+  private var primaryAction: RecoveryBusyAction?
   private var shiftHeld = false
   private var modifierMonitor: Any?
   private var debugButton: NSButton?
@@ -21,14 +21,18 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
   private var accountUsernameField: NSTextField?
   private var accountPasswordField: NSSecureTextField?
   private var accountConfirmationField: NSSecureTextField?
-  private var accountButton: NSButton?
   private var skipButton: NSButton?
-  private var detailsButton: NSButton?
   private var issueShowing = false
   private var issueRepair = false
   private var authorizationRepair = false
   private let sheets = SheetPresenter()
   private var authorizationField: NSSecureTextField?
+  private var authorizationProceed: NSButton?
+  private var authorizationSpinner: RecoveryBusyIndicator?
+  /// Install was pressed while this Mac was still being checked again; the
+  /// password waits in its field and installation starts once the check passes.
+  private var authorizationSubmitPending = false
+  private var detailsSheet: NSWindow?
   private var detailsViewer: LogTextView?
   private var copyButton: NSButton?
   private var copyingLog = false
@@ -40,6 +44,10 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     log.onChange = { [weak self] in self?.refresh() }
     sheets.onDismiss = { [weak self] in
       self?.authorizationField = nil
+      self?.authorizationProceed = nil
+      self?.authorizationSpinner = nil
+      self?.authorizationSubmitPending = false
+      self?.detailsSheet = nil
       self?.detailsViewer = nil
       self?.copyButton = nil
       self?.refresh()
@@ -121,17 +129,14 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     titleLabel.stringValue = stageTitle
     titleLabel.alignment = model.stage == .account ? .left : .center
     titleWidthConstraint?.constant = model.stage == .account ? 380 : 600
-    restartButton?.title = offersAccount ? "Create Recovery Account" : "Restart"
+    if let action = RecoveryPrimaryAction.resolve(primaryInputs) { primaryAction?.apply(action) }
     progressIndicator?.doubleValue = model.progress * 100
     operationLabel?.stringValue = model.currentOperation + "…"
-    primaryButton?.isEnabled = !model.checkingEnvironment && !model.restartingCompletedSetup
-    detailsButton?.isHidden = model.stage == .welcome && log.text.isEmpty
     debugButton?.title = model.debugEnabled ? "Disable Debug" : "Enable Debug"
     proxyButton?.title = model.proxyEnabled ? "Disable Proxy" : "Enable Proxy"
-    accountButton?.title =
-      model.creatingAccount
-      ? "Preparing…" : model.accountAlreadyStarted ? "Continue" : "Create Account"
-    accountButton?.isEnabled = model.canCreateAccount
+    // The toggles start from the firmware's current flags, read after launch.
+    debugButton?.isEnabled = !model.readingBootFlags
+    proxyButton?.isEnabled = !model.readingBootFlags
     skipButton?.title = model.restartingWithoutAccount ? "Restarting…" : "Skip, Restart Now"
     skipButton?.isEnabled = !model.creatingAccount && !model.restartingWithoutAccount
     if let field = accountUsernameField {
@@ -150,6 +155,10 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     ] where value.isEmpty && field?.stringValue.isEmpty == false {
       field?.stringValue = ""
     }
+    let holdingPassword = authorizationSubmitPending && model.checkingEnvironment
+    authorizationSpinner?.show(holdingPassword ? .verifying : nil)
+    authorizationProceed?.isEnabled = !holdingPassword
+    authorizationField?.isEnabled = !holdingPassword
     copyButton?.title = copyingLog ? "Copying…" : "Copy Log"
     copyButton?.isEnabled = !copyingLog
     detailsViewer?.update(
@@ -182,11 +191,20 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     }
   }
 
+  private var primaryInputs: RecoveryPrimaryAction.Inputs {
+    RecoveryPrimaryAction.Inputs(
+      stage: model.stage, recoveryInterface: model.recoveryInterface,
+      checkingEnvironment: model.checkingEnvironment, creatingAccount: model.creatingAccount,
+      restartingWithoutAccount: model.restartingWithoutAccount,
+      restartingCompletedSetup: model.restartingCompletedSetup,
+      accountAlreadyStarted: model.accountAlreadyStarted,
+      accountFormValid: model.canCreateAccount, offersAccount: offersAccount)
+  }
+
   private func buildStage() {
     for child in content.subviews { child.removeFromSuperview() }
     for child in footer.subviews { child.removeFromSuperview() }
-    primaryButton = nil
-    restartButton = nil
+    primaryAction = nil
     debugButton = nil
     proxyButton = nil
     progressIndicator = nil
@@ -194,9 +212,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     accountUsernameField = nil
     accountPasswordField = nil
     accountConfirmationField = nil
-    accountButton = nil
     skipButton = nil
-    detailsButton = nil
 
     switch model.stage {
     case .welcome: buildWelcome()
@@ -286,6 +302,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     confirmation.identifier = NSUserInterfaceItemIdentifier("accountConfirmation")
     stack.addArrangedSubview(fieldRow("Retype password", field: confirmation))
     accountConfirmationField = confirmation
+
     place(stack, top: 0)
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
@@ -338,13 +355,16 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     center.alignment = model.stage == .account ? .centerX : .centerY
     center.translatesAutoresizingMaskIntoConstraints = false
 
+    // Each step's primary button keeps a spinner slot to its left. A lone
+    // button mirrors the slot on its right, so it stays centred in the window.
     switch model.stage {
     case .welcome:
       let start = RecoveryPrimaryButton(
         title: model.recoveryInterface ? "Restore" : "Continue",
         target: self, action: #selector(startPressed))
-      center.addArrangedSubview(start)
-      primaryButton = start
+      let action = RecoveryBusyAction(button: start, balanced: !model.recoveryInterface)
+      center.addArrangedSubview(action)
+      primaryAction = action
       if model.recoveryInterface {
         let debug = RecoverySecondaryButton(
           title: "Enable Debug", target: self, action: #selector(debugPressed))
@@ -354,13 +374,16 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
         center.addArrangedSubview(proxy)
         debugButton = debug
         proxyButton = proxy
+        // Balance the spinner slot after the whole row, so it stays centred.
+        center.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: RecoveryBusyAction.slot)
       }
     case .installing: break
     case .account:
       let account = RecoveryPrimaryButton(
         title: "Create Account", target: self, action: #selector(accountPressed))
-      center.addArrangedSubview(account)
-      accountButton = account
+      let action = RecoveryBusyAction(button: account)
+      center.addArrangedSubview(action)
+      primaryAction = action
       let skip = RecoveryTextButton(
         title: "Skip, Restart Now", target: self, action: #selector(skipPressed))
       center.addArrangedSubview(skip)
@@ -368,24 +391,15 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     case .complete:
       let restart = RecoveryPrimaryButton(
         title: "Restart", target: self, action: #selector(restartPressed))
-      center.addArrangedSubview(restart)
-      primaryButton = restart
-      restartButton = restart
+      let action = RecoveryBusyAction(button: restart)
+      center.addArrangedSubview(action)
+      primaryAction = action
     }
     footer.addSubview(center)
     NSLayoutConstraint.activate([
       center.centerXAnchor.constraint(equalTo: footer.centerXAnchor),
       center.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
     ])
-    // Always built; refresh() shows it once there is output, even on the welcome screen.
-    let details = RecoveryTextButton(
-      title: "Show details", target: self, action: #selector(detailsPressed))
-    footer.addSubview(details)
-    NSLayoutConstraint.activate([
-      details.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
-      details.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
-    ])
-    detailsButton = details
   }
 
   private func fieldRow(_ title: String, field: NSTextField) -> NSStackView {
@@ -474,12 +488,51 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     LaunchTrace.mark("ui.continue.pressed")
     if model.recoveryInterface {
       model.restore()
-    } else {
+      return
+    }
+    guard model.environmentVerified else {
       model.checkEnrollmentEnvironment { [weak self] in
         LaunchTrace.mark("ui.continue.ready")
         self?.showAuthorization(repair: false)
       }
+      return
     }
+    // The launch check already verified this Mac and found its owner, so ask
+    // for the password now and repeat the same check while it is typed.
+    // Install waits for that check, and installation checks again before any
+    // write.
+    let owner = model.authorizationOwner
+    let sourceOwner = model.authorizationUsesSourceOwner
+    showAuthorization(repair: false)
+    LaunchTrace.mark("ui.continue.ready")
+    model.checkEnrollmentEnvironment(
+      ready: { [weak self] in
+        self?.authorizationRecheckPassed(owner: owner, sourceOwner: sourceOwner)
+      },
+      failed: { [weak self] in self?.authorizationRecheckFailed() })
+  }
+
+  private var authorizationOpen: Bool { authorizationField != nil && !authorizationRepair }
+
+  private func authorizationRecheckPassed(owner: RecoveryOwner?, sourceOwner: Bool) {
+    guard authorizationOpen else { return }
+    guard model.authorizationOwner == owner, model.authorizationUsesSourceOwner == sourceOwner
+    else {
+      // The prompt named someone else: ask again for the owner just found.
+      LaunchTrace.mark("ui.authorization.ownerChanged")
+      authorizationField?.stringValue = ""
+      closePanel()
+      showAuthorization(repair: false)
+      return
+    }
+    if authorizationSubmitPending { submitAuthorization() }
+  }
+
+  private func authorizationRecheckFailed() {
+    guard authorizationOpen else { return }
+    // Closing the prompt lets the failure that stopped it be shown.
+    authorizationField?.stringValue = ""
+    closePanel()
   }
 
   @objc private func debugPressed() { model.toggleBootFlag("debug") }
@@ -551,10 +604,14 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
       title: repair ? "Shut Down" : "Install", target: self,
       action: #selector(authorizePanelPressed))
     proceed.keyEquivalent = "\r"
+    authorizationProceed = proceed
+    // Turns left of the buttons while Install waits for this Mac's check.
+    let spinner = RecoveryBusyIndicator()
+    authorizationSpinner = spinner
     let panel = RecoverySheet(
       title: repair ? "Authorize startup disk" : "Authorize installation",
       message: explanation, width: 430, height: 230, body: field, bodyHeight: 28,
-      buttons: [cancel, proceed])
+      buttons: [cancel, proceed], accessory: spinner)
     present(panel, focus: field)
   }
 
@@ -567,6 +624,22 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
       authorizationField?.window?.makeFirstResponder(authorizationField)
       return
     }
+    if !authorizationRepair && model.checkingEnvironment {
+      // This Mac is still being checked again: keep the password in its
+      // field and install as soon as the check passes. End editing first so
+      // disabling the field keeps what was typed.
+      authorizationField?.window?.makeFirstResponder(nil)
+      authorizationSubmitPending = true
+      refresh()
+      return
+    }
+    submitAuthorization()
+  }
+
+  private func submitAuthorization() {
+    let credential = authorizationField?.stringValue ?? ""
+    authorizationSubmitPending = false
+    guard !credential.isEmpty else { return }
     authorizationField?.stringValue = ""
     closePanel()
     if authorizationRepair {
@@ -581,11 +654,40 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
 
   @objc private func cancelPanelPressed() {
     authorizationField?.stringValue = ""
+    authorizationSubmitPending = false
     model.password.removeAll(keepingCapacity: false)
     closePanel()
   }
 
-  @objc private func detailsPressed() {
+  /// What View → Show Details / Hide Details does now.
+  var detailsMenuState: RecoveryDetailsMenu.State {
+    RecoveryDetailsMenu.state(
+      showing: detailsShowing, available: detailsAvailable,
+      otherSheetShowing: sheets.active != nil)
+  }
+
+  private var detailsShowing: Bool { detailsSheet != nil && sheets.active === detailsSheet }
+
+  /// Nothing has run before the first check starts on the welcome screen.
+  private var detailsAvailable: Bool {
+    model.stage != .welcome || !log.text.isEmpty || !model.operations.isEmpty
+  }
+
+  /// View → Show Details / Hide Details.
+  @objc func toggleDetails(_ sender: Any?) {
+    if detailsShowing {
+      closePanel()
+    } else if detailsMenuState.isEnabled {
+      showDetails()
+    }
+  }
+
+  func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    guard item.action == #selector(toggleDetails(_:)) else { return true }
+    return RecoveryDetailsMenu.validate(item, state: detailsMenuState)
+  }
+
+  private func showDetails() {
     let viewer = LogTextView(
       text: log.text.isEmpty ? model.operations.joined(separator: "\n") : log.text)
     viewer.translatesAutoresizingMaskIntoConstraints = false
@@ -604,7 +706,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
         + (log.truncated
           ? " Showing recent output. Copy Log includes this attempt’s full log." : ""),
       width: 550, height: 480, body: viewer, bodyHeight: 290, buttons: [copy, done])
-    present(panel)
+    if present(panel) { detailsSheet = panel }
   }
 
   @objc private func copyLogPressed() {
@@ -660,7 +762,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate {
     if repair {
       model.repairRecoveryBoot { [weak self] in self?.showAuthorization(repair: true) }
     } else {
-      detailsPressed()
+      showDetails()
     }
   }
 

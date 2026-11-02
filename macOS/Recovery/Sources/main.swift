@@ -3,10 +3,6 @@ import CoreServices
 
 // Explicit macOS previews simulate the flow; enrollment requires paired 1TR.
 // Credentials stay in memory and never enter command arguments or logs.
-enum Stage: Int, CaseIterable {
-  case welcome, installing, account, complete
-}
-
 final class InstallerModel {
   var onChange: (() -> Void)?
   private func changed() { onChange?() }
@@ -20,9 +16,24 @@ final class InstallerModel {
   var progress = 0.0 { didSet { changed() } }
   var currentOperation = "Preparing installation" { didSet { changed() } }
   var operations: [String] = [] { didSet { changed() } }
-  var failure: String? { didSet { changed() } }
-  var environmentIssue: EnrollmentGateIssue? { didSet { changed() } }
+  var failure: String? {
+    didSet {
+      if failure != nil { environmentVerified = false }
+      changed()
+    }
+  }
+  var environmentIssue: EnrollmentGateIssue? {
+    didSet {
+      if environmentIssue != nil { environmentVerified = false }
+      changed()
+    }
+  }
   var checkingEnvironment = false { didSet { changed() } }
+  /// The last environment check passed and found `authorizationOwner`, and
+  /// nothing has failed since. Continue then asks for the password at once
+  /// while the same check runs again in the background.
+  var environmentVerified = false { didSet { changed() } }
+  var readingBootFlags = false { didSet { changed() } }
   var debugEnabled = false { didSet { changed() } }
   var proxyEnabled = false { didSet { changed() } }
   var accountUsername = "" { didSet { changed() } }
@@ -175,22 +186,51 @@ final class InstallerModel {
     if name == "debug" { debugEnabled = enabled } else { proxyEnabled = enabled }
   }
 
-  func refreshBootFlags() {
+  /// Reads the firmware's Aura flags and installs the `aura` command off the
+  /// main thread, so the window keeps responding while nvram and the volume
+  /// remount run.
+  func prepareRecoveryTools() {
     guard RecoveryActions.inRecovery else { return }
-    do {
-      let arguments = try RecoveryActions.readBootArguments().split(whereSeparator: {
-        $0.isWhitespace
-      })
-      debugEnabled = arguments.contains("aura-debug")
-      proxyEnabled = arguments.contains("aura-proxy")
-    } catch { failure = error.localizedDescription }
+    readingBootFlags = true
+    DispatchQueue.global(qos: .userInitiated).async {
+      let flags = Result { try RecoveryActions.readBootArguments() }
+      let command = Result { try RecoveryActions.installCommand() }
+      DispatchQueue.main.async {
+        self.readingBootFlags = false
+        switch flags {
+        case .success(let value):
+          let arguments = value.split(whereSeparator: { $0.isWhitespace })
+          self.debugEnabled = arguments.contains("aura-debug")
+          self.proxyEnabled = arguments.contains("aura-proxy")
+        case .failure(let error): self.failure = error.localizedDescription
+        }
+        if case .failure(let error) = command { self.failure = error.localizedDescription }
+      }
+    }
   }
-  func checkEnrollmentEnvironment(ready: @escaping () -> Void = {}) {
+
+  /// Checks Recovery, root, the target volume and its paired boot policy,
+  /// then resolves the owner who authorizes enrollment. `ready` runs on
+  /// success and `failed` after a failure has been reported.
+  func checkEnrollmentEnvironment(
+    ready: @escaping () -> Void = {}, failed: @escaping () -> Void = {}
+  ) {
+    guard !checkingEnvironment else { return }
     if RecoveryActions.isPreview {
-      ready()
+      // Nothing to verify. A preview can simulate how long the check takes.
+      guard PreviewTiming.environmentCheck > 0 else {
+        environmentVerified = true
+        ready()
+        return
+      }
+      checkingEnvironment = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + PreviewTiming.environmentCheck) {
+        self.checkingEnvironment = false
+        self.environmentVerified = true
+        ready()
+      }
       return
     }
-    guard !checkingEnvironment else { return }
     checkingEnvironment = true
     InstallerLog.shared.beginAttempt()
     DispatchQueue.global(qos: .userInitiated).async {
@@ -206,6 +246,7 @@ final class InstallerModel {
           self.checkingEnvironment = false
           self.authorizationOwner = owner
           self.authorizationUsesSourceOwner = sourceOwner
+          self.environmentVerified = true
           ready()
         }
       } catch {
@@ -218,6 +259,7 @@ final class InstallerModel {
           } else {
             self.failure = error.localizedDescription
           }
+          failed()
         }
       }
     }
@@ -448,6 +490,22 @@ enum RecoveryBrand {
   }()
 }
 
+/// Preview builds only: `--preview-check-seconds=N` (0 to 30) makes the
+/// simulated environment check take N seconds, so its waiting state can be
+/// reviewed. Real Recovery builds ignore it.
+enum PreviewTiming {
+  static let environmentCheck: Double = {
+    guard RecoveryActions.isPreview,
+      let argument = CommandLine.arguments.first(where: {
+        $0.hasPrefix("--preview-check-seconds=")
+      }),
+      let seconds = Double(String(argument.dropFirst("--preview-check-seconds=".count))),
+      seconds.isFinite
+    else { return 0 }
+    return min(max(seconds, 0), 30)
+  }()
+}
+
 enum DestinationVolume {
   static let url = RecoveryActions.volume
   private static let previewDistribution: String? = {
@@ -496,6 +554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     LaunchTrace.mark("delegate.didFinishLaunching")
     NSApp.appearance = NSAppearance(named: .darkAqua)
+    // One fixed window: keep AppKit's tab items out of the View menu.
+    NSWindow.allowsAutomaticWindowTabbing = false
     let window = InstallerWindow()
     window.title = "Aurora Installer"
     window.isOpaque = true
@@ -519,18 +579,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if renderPreviewIfRequested(window) { return }
     if model.recoveryInterface && RecoveryActions.inRecovery {
       // Restoring an already enrolled stage 2 does not change boot policy.
-      model.refreshBootFlags()
+      model.prepareRecoveryTools()
       model.resumeAccountSetup()
-      do { try RecoveryActions.installCommand() } catch {
-        model.failure = error.localizedDescription
-      }
     } else {
-      model.checkEnrollmentEnvironment {
-        self.model.refreshBootFlags()
-        do { try RecoveryActions.installCommand() } catch {
-          self.model.failure = error.localizedDescription
-        }
-      }
+      // Start the check at once: Continue waits for it, with a spinner.
+      model.checkEnrollmentEnvironment { self.model.prepareRecoveryTools() }
     }
   }
 
@@ -573,6 +626,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     edit.addItem(
       withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+    // View → Show Details / Hide Details opens and closes the window's details sheet.
+    if let controller {
+      menu.addItem(
+        RecoveryDetailsMenu.makeMenuItem(
+          target: controller, action: #selector(InstallerView.toggleDetails(_:))))
+    }
 
     let utilities = submenu("Utilities")
     let terminal = utilities.addItem(

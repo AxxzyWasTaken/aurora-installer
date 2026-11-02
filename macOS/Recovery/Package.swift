@@ -22,5 +22,8 @@ let package = Package(
         .define(buildMode == "recovery" ? "AURORA_STEP2_RECOVERY" : "AURORA_STEP2_PREVIEW")
       ]
     ),
+    // Window-level state tests; they run the preview build's simulated flow.
+    .testTarget(
+      name: "AuroraRecoveryUITests", dependencies: ["AuroraRecovery"], path: "Tests/UI"),
   ]
 )

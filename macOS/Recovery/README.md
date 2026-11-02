@@ -14,7 +14,7 @@ cd Recovery
 open "build/Aurora Installer.app" --args --preview
 ```
 
-Use `--recovery-preview` to preview repair. This build always defines `AURORA_STEP2_PREVIEW` and cannot enroll or modify startup software even when launched in Recovery. Keep only one review app instance open. Previewing does not implement the main installer's proposed new Recovery-account creation flow.
+Use `--recovery-preview` to preview repair. This build always defines `AURORA_STEP2_PREVIEW` and cannot enroll or modify startup software even when launched in Recovery. Keep only one review app instance open. Previewing does not implement the main installer's proposed new Recovery-account creation flow. Add `--preview-check-seconds=N` (0 to 30) to make the simulated environment check take N seconds, so the waiting states can be reviewed; Recovery builds ignore it.
 
 ## Actual Recovery build
 
@@ -37,7 +37,7 @@ The bootstrap System UUID names the underlying System-role APFS volume, not the 
 
 ## Validation and limits
 
-The strict configuration fixture, original enrollment/owner/boot-selection fixtures, native prompt fixture, Python staging/checksum/target-identity fixtures and source formatting are tested. Both real and preview builds compile and pass signing and localized-name checks. The normal-macOS CLI rejection is tested. These are build and fixture results, not a completed fresh-install or Recovery boot qualification.
+The strict configuration fixture, original enrollment/owner/boot-selection fixtures, native prompt fixture, Python staging/checksum/target-identity fixtures and source formatting are tested. `swift test` runs window-level state tests against the preview build's simulated flow: waiting buttons, the password prompt and the View menu. Both real and preview builds compile and pass signing and localized-name checks. The normal-macOS CLI rejection is tested. These are build and fixture results, not a completed fresh-install or Recovery boot qualification.
 
 The main installer ends with shutdown instructions. Its authenticated helper verifies the completed installation and updates that target’s Recovery app before requesting shutdown. It does not create an account in macOS.
 
@@ -71,7 +71,13 @@ The macOS CI job builds the enrollment app, runs `Recovery/test-all.sh <output>`
 
 The GUI clears password state on completion/dismissal and blanks the native password fields on Skip, Cancel and failures, and owned native command buffers are wiped before release. AppKit field editing and Swift String/Data copies cannot be guaranteed to have no allocator or framework copies; this is a bounded best-effort lifetime policy, not a claim of complete process-memory erasure.
 
-An empty authorization password keeps its sheet open. Return and Tab move through the recovery account fields, and Return in the last one creates the account. Show details appears as soon as there is output. Sheets grow to fit long messages, and a failure raised while another sheet closes stays dismissible.
+An empty authorization password keeps its sheet open. Return and Tab move through the recovery account fields, and Return in the last one creates the account. View → Show Details (Command-L) opens the details sheet once there is output, and Hide Details closes it; the menu item follows the sheet however it was closed. Sheets grow to fit long messages, and a failure raised while another sheet closes stays dismissible.
+
+## Waiting
+
+Setup starts the environment check as soon as the window opens: Recovery, root, the configured target volume, its paired boot policy (`bputil -d -v`) and the owner who authorizes enrollment (a series of `diskutil` queries). Continue waits for that check. After it passes, Continue opens the password prompt at once and repeats the same check in the background while the password is typed. Install waits for that repeated check if it is still running; a different owner reopens the prompt for that owner, and a failure closes the prompt and shows the issue. Installation then repeats the check before its first write, as before. After any failure, Continue runs the check again before asking.
+
+Whenever a step's primary button (Continue, Restore, Create Account or Restart) waits, it is disabled with a small spinner to its left, keeps its title, and does not move: the spinner's slot is always reserved, and mirrored so the button stays centred. VoiceOver announces what is being waited for. The password prompt shows the same spinner left of its buttons. Reading the firmware's Aura flags and installing the `aura` command run off the main thread after launch; Enable Debug and Enable Proxy wait for the flags.
 
 On Create Recovery Account, **Skip, Restart Now** restarts directly only after checking the completed installation, its startup bundle, and the selected default volume both before saving and immediately before restarting. A different default stops the action with Startup Disk guidance. It does not open Startup Disk, create an account, or mark ownership complete. The receipt records the deferral while keeping `recoveryAccountRequired` intact, so opening the installer in paired Recovery still offers account setup. Preview builds show a simulated restart alert.
 

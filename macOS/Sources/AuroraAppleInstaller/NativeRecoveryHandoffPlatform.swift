@@ -230,7 +230,8 @@
         config["prebootUUID"] as? String == preboot[0].uuid,
         (config["espUUID"] as? String)?.lowercased()
           == evidence.installed.efiPartition.lowercased(),
-        config["bootMode"] as? String == "raw", config["stage2Path"] as? String == "m1n1/boot.bin",
+        let bootMode = config["bootMode"] as? String, ["raw", "macho"].contains(bootMode),
+        config["stage2Path"] as? String == "m1n1/boot.bin",
         let name = config["volumeName"] as? String
       else {
         throw NativeHandoffValidationError.invalidTarget

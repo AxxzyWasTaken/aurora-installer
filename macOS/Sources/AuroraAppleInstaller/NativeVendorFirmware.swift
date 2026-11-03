@@ -28,6 +28,10 @@
       try NativeFactoryCalibrationInput.snapshot(storeIdentifier: $0)
     }
     var admitESPFilesystem: @Sendable (Int32) throws -> Void = NativeESPFileStore.requireFAT
+    var wifiBoard: @Sendable () throws -> String? = { try NativeSystemWiFiFirmware.board() }
+    var systemWiFi: @Sendable (uid_t) throws -> NativeFirmwareInputFiles.Snapshot = {
+      try NativeSystemWiFiFirmware.live(owner: $0)
+    }
 
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization, bootstrap: NativeSourceBootstrap
@@ -176,10 +180,46 @@
           for (name, target) in radio.links {
             radioLinks["firmware/" + name] = String(target.split(separator: "/").last!)
           }
-          let wifi = try BroadcomFirmware.wifi(
+          var wifi = try BroadcomFirmware.wifi(
             subtree(radio.files, "wifi/"), links: sublinks(radio.links, "wifi/"))
           let bluetooth = try BroadcomFirmware.bluetooth(
             subtree(radio.files, "bluetooth/"), links: sublinks(radio.links, "bluetooth/"))
+          if package.deviceIdentifier != "apple,j700" {
+            let board = try wifiBoard()
+            // An unreadable system volume leaves Recovery as the only source.
+            var system: NativeFirmwareInputFiles.Snapshot?
+            do {
+              system = try InstallerPerformance.measure("vendor_system_wifi") {
+                try systemWiFi(owner)
+              }
+            } catch is CancellationError {
+              throw CancellationError()
+            } catch {
+              system = nil
+            }
+            let systemSet = try system.map { try BroadcomFirmware.wifi($0.files, links: $0.links) }
+            if BroadcomFirmware.wifiSource(board: board, system: systemSet) == .system,
+              let system, let systemSet
+            {
+              // The fallback archive keeps the tree the package came from, so
+              // a later conversion on Linux reproduces the same Wi-Fi set.
+              wifi = systemSet
+              fallback = fallback.filter { !$0.key.hasPrefix("firmware/wifi/") }
+              radioLinks = radioLinks.filter { !$0.key.hasPrefix("firmware/wifi/") }
+              for (name, data) in system.files { fallback["firmware/wifi/" + name] = data }
+              for (name, target) in system.links {
+                radioLinks["firmware/wifi/" + name] = String(target.split(separator: "/").last!)
+              }
+            }
+            // An M4 Pro or M4 Max package must bring up its own board's radios.
+            if let required = BroadcomFirmware.m4ProMaxWiFi[source.machine] {
+              guard let board,
+                BroadcomFirmware.missingWiFi(wifi, chip: required.chip, board: board).isEmpty,
+                BroadcomFirmware.missingBluetooth(bluetooth, chip: required.chip, board: board)
+                  .isEmpty
+              else { throw NativeFirmwareInputFailure.invalidSource }
+            }
+          }
           guard package.deviceIdentifier == "apple,j700" || (!wifi.isEmpty && !bluetooth.isEmpty)
           else { throw NativeFirmwareInputFailure.invalidSource }
           try merge(wifi, into: &outputs)

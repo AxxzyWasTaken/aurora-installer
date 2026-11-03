@@ -230,7 +230,8 @@
         config["prebootUUID"] as? String == preboot[0].uuid,
         (config["espUUID"] as? String)?.lowercased()
           == evidence.installed.efiPartition.lowercased(),
-        let bootMode = config["bootMode"] as? String, ["raw", "macho"].contains(bootMode),
+        let bootMode = config["bootMode"] as? String,
+        NativeRecoveryBootMode(rawValue: bootMode) != nil,
         config["stage2Path"] as? String == "m1n1/boot.bin",
         let name = config["volumeName"] as? String
       else {

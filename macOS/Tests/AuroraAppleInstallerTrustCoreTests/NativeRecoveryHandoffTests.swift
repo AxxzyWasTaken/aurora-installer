@@ -45,7 +45,9 @@
     }
 
     func testRawAndMachOConfigurationsCompleteFreshAndStartedRecoveryHandoffs() async throws {
-      for mode in ["raw", "macho"] {
+      // Every mode the installer can write must hand off.
+      XCTAssertEqual(NativeRecoveryBootMode.allCases.map(\.rawValue), ["raw", "macho"])
+      for mode in NativeRecoveryBootMode.allCases.map(\.rawValue) {
         for retry in [false, true] {
           let fixture = try NativeRecoveryHandoffFixture()
           defer { fixture.remove() }

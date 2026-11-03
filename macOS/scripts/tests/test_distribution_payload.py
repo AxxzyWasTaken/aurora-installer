@@ -64,6 +64,24 @@ class DistributionPayloadTests(unittest.TestCase):
         with zipfile.ZipFile(output / metadata['package']) as archive:
             payload.aurora_recovery.validate_payload(archive)
 
+    def test_mach_o_stage_one_must_carry_the_raw_stage_one(self):
+        raw = (self.bundle / 'esp/aurora/stage1.bin').read_bytes()
+        header = bytearray(0x10000)
+        header[:4] = b'\xcf\xfa\xed\xfe'
+        header[12:16] = (12).to_bytes(4, 'little')
+        macho = self.bundle / 'esp/aurora/stage1.macho'
+        macho.write_bytes(bytes(header) + raw + bytes(0x4000 - len(raw)))
+        output = self.root / 'output'
+        payload.assemble(self.bundle, self.app, output, release_id='fixture')
+        metadata = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0]
+        with zipfile.ZipFile(output / metadata['package']) as archive:
+            self.assertEqual(archive.read('esp/aurora/stage1.macho'), macho.read_bytes())
+        for bad in (bytes(header) + b'another stage 1', bytes(header[:0x100]) + b'__TEXT_BOOT_EXEC'
+                    + bytes(header[0x110:]) + raw, b'\0' * 0x10000 + raw):
+            macho.write_bytes(bad)
+            with self.assertRaises(ValueError):
+                payload.assemble(self.bundle, self.app, self.root / ('bad-' + str(len(bad))), release_id='fixture')
+
     def test_public_payload_admits_the_neo_with_its_own_stage_two(self):
         output = self.root / 'output'
         payload.assemble(self.bundle, self.app, output, release_id='fixture')

@@ -2,6 +2,7 @@
   import AuroraFirmware
   import Darwin
   import Foundation
+  import RecoveryAccountCore
 
   struct NativeESPPayloadPlan: Sendable {
     struct Entry: Sendable {
@@ -12,13 +13,15 @@
     let entries: [Entry]
     let icon: IPSWArchiveMember
     let stage1: Data
+    /// aura's Mach-O boot object for `stage1`, enrolled instead of it.
+    var stage1MachO: Data? = nil
     let windowMilliseconds: UInt32
     let firmware: String
     let usesLegacyStage1: Bool
 
     static func make(
       metadata: Data, archive: IPSWArchive, device: String, firmware: String,
-      legacyStage1: (@Sendable () throws -> Data)? = nil
+      machOStage1: Bool = false, legacyStage1: (@Sendable () throws -> Data)? = nil
     )
       async throws -> Self?
     {
@@ -32,14 +35,21 @@
       }
       let boot = try await NativeBootChain.admit(
         metadata: metadata, archive: archive,
-        deviceIdentifier: device, firmware: firmware)
+        deviceIdentifier: device, firmware: firmware, machOStage1: machOStage1)
       let bytes: Data
+      var machO: Data?
       let legacy: Bool
       if let source = boot.stage1Member {
         guard let stage = archive.members.first(where: { $0.name == source }) else {
           throw NativeBootChainError.missingStage1
         }
         bytes = try await archive.read(stage, maximumBytes: 64 << 20)
+        if let source = boot.stage1MachOMember {
+          guard let object = archive.members.first(where: { $0.name == source }) else {
+            throw NativeBootChainError.missingStage1
+          }
+          machO = try await archive.read(object, maximumBytes: 64 << 20)
+        }
         legacy = false
       } else {
         guard let legacyStage1 else { return nil }
@@ -79,7 +89,7 @@
         icon.sizeBytes <= 64 << 20
       else { throw NativePayloadPreflightError.invalidPartitions }
       return Self(
-        archive: archive, entries: entries, icon: icon, stage1: bytes,
+        archive: archive, entries: entries, icon: icon, stage1: bytes, stage1MachO: machO,
         windowMilliseconds: boot.windowMilliseconds, firmware: firmware, usesLegacyStage1: legacy)
     }
 
@@ -153,9 +163,10 @@
       guard SHA256Digest(hashing: metadata).rawValue == approved.metadataDigest else {
         throw NativeStubFileError.invalidPlan
       }
+      let facts = try facts()
       let firmware = try NativeFirmwareSelection.choose(
         deviceIdentifier: package.deviceIdentifier,
-        facts: facts(), metadata: NativeInstallationMetadata(data: metadata),
+        facts: facts, metadata: NativeInstallationMetadata(data: metadata),
         policy: NativeInspectionPolicy.sealed())
       let archive = try await IPSWArchive.open(
         NativePayloadRangeReader(package.payloadURL, owner: owner))
@@ -163,7 +174,8 @@
         let plan = try await NativeESPPayloadPlan.make(
           metadata: metadata, archive: archive,
           device: package.deviceIdentifier,
-          firmware: firmware.version.components(separatedBy: " ")[0])
+          firmware: firmware.version.components(separatedBy: " ")[0],
+          machOStage1: AuraStage1Format.usesMachO(chipID: facts.hardware.chipID))
       else { return nil }
       return NativeESPFilesExecution(
         package: package, approved: approved, plan: plan,
@@ -186,7 +198,11 @@
       let icon: NativeStubFileIdentity
       let stage1: NativeStubFileIdentity
       var legacyStage1: NativeLegacyStage1.Receipt? = nil
+      /// The filled Mach-O Stage 1 (stage1MachOPath), on chips that enroll one.
+      var stage1MachO: NativeStubFileIdentity? = nil
     }
+    static let stage1Path = "Finish Installation.app/Contents/Resources/boot.bin"
+    static let stage1MachOPath = "Finish Installation.app/Contents/Resources/boot.macho"
     let package: ImportedEngineHandoffPackage
     let approved: ValidatedEnginePlan
     let plan: NativeESPPayloadPlan
@@ -304,9 +320,12 @@
           path: "m1n1/boot.bin", windowMilliseconds: plan.windowMilliseconds)
         legacy = nil
       }
-      let stage1Identity = try await systemStore.data(
-        stage1,
-        at: "Finish Installation.app/Contents/Resources/boot.bin")
+      let stage1Identity = try await systemStore.data(stage1, at: Self.stage1Path)
+      var machOIdentity: NativeStubFileIdentity?
+      if let object = plan.stage1MachO {
+        let machO = try MachOBootObject.fill(object, raw: plan.stage1, filled: stage1)
+        machOIdentity = try await systemStore.data(machO, at: Self.stage1MachOPath)
+      }
       guard
         NativeESPLabelAdmission.matches(
           try disks.snapshot(), recorded: snapshot, espUUID: esp.uuid,
@@ -318,7 +337,7 @@
           Receipt(
             plan: approved.planDigest, firmware: plan.firmware,
             groupUUID: group, espUUID: esp.uuid, files: entries, icon: icon, stage1: stage1Identity,
-            legacyStage1: legacy)
+            legacyStage1: legacy, stage1MachO: machOIdentity)
         ),
         identifier: "native-esp-files")
     }

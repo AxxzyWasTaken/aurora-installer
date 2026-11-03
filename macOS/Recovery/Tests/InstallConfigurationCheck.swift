@@ -13,7 +13,7 @@ import Foundation
     let config = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: value))
     precondition(config.volumeName == "Aurora Test" && config.bootMode == "raw")
     for (key, bad) in [
-      ("schema", 1), ("schema", true), ("bootMode", "macho"),
+      ("schema", 1), ("schema", true), ("bootMode", "Mach-O"), ("bootMode", "pkg"),
       ("stage2Path", "../boot.bin"), ("systemUUID", "disk0s1"),
       ("espUUID", "00000000-0000-0000-0000-000000000000"),
       ("volumeName", "../macOS"), ("volumeName", "bad\nname"), ("volumeName", ""),
@@ -61,6 +61,11 @@ import Foundation
         preconditionFailure("accepted invalid bootstrap \(key)")
       } catch {}
     }
-    print("PASS strict per-install configuration, raw-only mode, IDs, paths and missing fields")
+    var macho = value
+    macho["bootMode"] = "macho"
+    let decoded = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
+    precondition(decoded.bootMode == "macho")
+    print(
+      "PASS strict per-install configuration, raw and Mach-O modes, IDs, paths and missing fields")
   }
 }

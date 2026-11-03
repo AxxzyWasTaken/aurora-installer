@@ -1,6 +1,7 @@
 #if os(macOS)
   import AuroraFirmware
   import Foundation
+  import RecoveryAccountCore
 
   /// A recorded description of one Mac, as the native inspection would see it:
   /// identity, boot firmware versions and the internal disk graph. Fixtures are
@@ -135,10 +136,13 @@
         do {
           let boot = try await NativeBootChain.admit(
             metadata: metadata, archive: archive, deviceIdentifier: device,
-            firmware: firmware.version)
+            firmware: firmware.version,
+            machOStage1: AuraStage1Format.usesMachO(chipID: machine.hardware.chipID))
           var chain: [String: Any] = [
             "esp_layout": boot.espLayout, "window_milliseconds": boot.windowMilliseconds,
+            "stage1_mode": boot.stage1MachOMember == nil ? "raw" : "macho",
           ]
+          if let member = boot.stage1MachOMember { chain["stage1_macho_member"] = member }
           if let member = boot.stage1Member,
             let stage = archive.members.first(where: { $0.name == member })
           {

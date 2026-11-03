@@ -38,6 +38,22 @@ def regular(path):
     return path
 
 
+def check_stage1_macho(esp):
+    """M4 and later Macs enroll aura's Mach-O boot object for the common Stage 1.
+
+    aura's tools/macho_boot_object.py carries the raw image unchanged at the
+    start of __TEXT_EXEC, file offset 0x10000, with no __TEXT_BOOT_EXEC.
+    """
+    path = esp / 'aurora/stage1.macho'
+    if not path.exists():
+        return
+    raw = regular(esp / 'aurora/stage1.bin').read_bytes()
+    obj = regular(path).read_bytes()
+    if (obj[:4] != b'\xcf\xfa\xed\xfe' or int.from_bytes(obj[12:16], 'little') != 12
+            or b'__TEXT_BOOT_EXEC' in obj[:0x8000] or obj[0x10000:0x10000 + len(raw)] != raw):
+        raise ValueError('esp/aurora/stage1.macho is not the Mach-O boot object for esp/aurora/stage1.bin')
+
+
 def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     release_id = release_id or datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,79}", release_id):
@@ -73,6 +89,7 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
         raise ValueError('the J616s requires a current board-specific Stage 2')
     if 'j614sap' not in stage2_members:
         raise ValueError('the J614s requires a current board-specific Stage 2')
+    check_stage1_macho(bundle / 'esp')
     distribution_icon = regular(DISTRIBUTION_ICONS[profile.split('-')[0]])
     expected_layout = {'fedora': 'fedora', 'arch': 'alarm', 'nixos': 'nixos'}[profile.split('-')[0]] + '-btrfs-v1'
     if image['layout_kind'] != expected_layout or image['root_subvolume'] != 'root':

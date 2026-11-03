@@ -45,9 +45,6 @@ class WiFiFWCollection(object):
                 dirnames.remove("perf")
             if "assert" in dirnames:
                 dirnames.remove("assert")
-            # remove broken firmware dir in 14.6.1 IPSW
-            if "C-4388__s-C2" in dirnames:
-                dirnames.remove("C-4388__s-C2")
             subpath = os.path.relpath(dirpath, source_path)
             for name in sorted(filenames):
                 if not any(name.endswith("." + i) for i in self.EXTMAP):
@@ -59,6 +56,14 @@ class WiFiFWCollection(object):
                     continue
                 path = os.path.join(dirpath, name)
                 relpath = os.path.join(subpath, name)
+                # Some Recovery images ship aliases whose target is absent
+                # (25G83's C-4388__s-C2/aruba.trx names a missing
+                # paradise.trx). Such a link carries no firmware: skip it,
+                # like a file the image lacks, and keep the rest of its
+                # directory.
+                if not os.path.exists(path):
+                    log.info(f"Skipping dangling firmware alias {relpath}")
+                    continue
                 if not name.endswith(".txt"):
                     name = "P-" + name
                 idpath, ext = os.path.join(subpath, name).rsplit(".", 1)

@@ -92,9 +92,11 @@ private actor MeasuredIPSWReader: FirmwareRangeReading {
             withJSONObject: report, options: [.sortedKeys]) + Data([10]))
         return
       }
-      if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "radio" {
-        // A mounted Recovery image's usr/share/firmware: regular files, and
-        // links resolved within their own directory as the installer does.
+      if [3, 4].contains(CommandLine.arguments.count) && CommandLine.arguments[1] == "radio" {
+        // A mounted Recovery image's or the installed system's
+        // usr/share/firmware: regular files, and links resolved within their
+        // own directory as the installer does. An optional MACHINE (such as
+        // j616s) reports its M4 Pro or M4 Max board's Wi-Fi and Bluetooth.
         let root = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
         var files = [String: Data]()
         var named = [String: String]()
@@ -142,11 +144,32 @@ private actor MeasuredIPSWReader: FirmwareRangeReading {
             uniqueKeysWithValues: links.map {
               ("firmware/" + $0.key, String($0.value.split(separator: "/").last!))
             }))
-        let report: [String: Any] = [
+        var report: [String: Any] = [
           "files": files.count, "links": links.count, "danglingLinks": named.count - links.count,
           "wifiOutputs": wifi.count, "bluetoothOutputs": bluetooth.count,
           "tarBytes": package.tar.count, "fallbackBytes": fallback.count,
         ]
+        if CommandLine.arguments.count == 4 {
+          let machine = CommandLine.arguments[3]
+          guard let required = BroadcomFirmware.m4ProMaxWiFi[machine] else {
+            throw RestoreFailure("\(machine) is not an M4 Pro or M4 Max laptop.")
+          }
+          let tag = required.chip + "-pcie.apple," + required.board
+          let bt = "brcmbt" + required.chip + "-apple," + required.board
+          report["machine"] = machine
+          report["board"] = required.board
+          report["missing"] =
+            BroadcomFirmware.missingWiFi(wifi, chip: required.chip, board: required.board)
+            + BroadcomFirmware.missingBluetooth(
+              bluetooth, chip: required.chip, board: required.board)
+          report["boardFiles"] = outputs.filter { $0.key.contains(tag) || $0.key.contains(bt) }
+            .mapValues {
+              [
+                "bytes": $0.count,
+                "sha256": SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined(),
+              ] as [String: Any]
+            }
+        }
         FileHandle.standardOutput.write(
           try JSONSerialization.data(
             withJSONObject: report, options: [.sortedKeys]) + Data([10]))
@@ -167,7 +190,7 @@ private actor MeasuredIPSWReader: FirmwareRangeReading {
         ["extract", "extract-ipsw", "verify", "zip"].contains(CommandLine.arguments[1])
       else {
         throw RestoreFailure(
-          "usage: AuroraFirmwareCheck extract|extract-ipsw|verify|zip OUTPUT [CHECKPOINT]; or policy INPUT; or policy-live; or multitouch INPUT MACHINE"
+          "usage: AuroraFirmwareCheck extract|extract-ipsw|verify|zip OUTPUT [CHECKPOINT]; or policy INPUT; or policy-live; or multitouch INPUT MACHINE; or radio FIRMWARE-ROOT [MACHINE]"
         )
       }
       let output = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)

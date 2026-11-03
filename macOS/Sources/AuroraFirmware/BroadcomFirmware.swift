@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 import Foundation
 
-/// Shared M1–M3 radio firmware conversions. Inputs are admitted, relative files
-/// from the selected Recovery image, never arbitrary host filesystem paths.
+/// Shared Broadcom radio firmware conversions. Inputs are admitted, relative
+/// files from the selected Recovery image or the installed macOS system volume,
+/// never arbitrary host filesystem paths.
 public enum BroadcomFirmware {
   private final class Node {
     var bytes: Data?
@@ -48,7 +49,7 @@ public enum BroadcomFirmware {
       try Task.checkCancellation()
       let pieces = path.split(separator: "/").map(String.init)
       guard let filename = pieces.last, !filename.contains("_gen"),
-        !pieces.dropLast().contains(where: { ["perf", "assert", "C-4388__s-C2"].contains($0) }),
+        !pieces.dropLast().contains(where: { ["perf", "assert"].contains($0) }),
         let dot = filename.lastIndex(of: ".")
       else { continue }
       let ext = String(filename[filename.index(after: dot)...])
@@ -128,6 +129,91 @@ public enum BroadcomFirmware {
         + "=" + line[line.index(after: split)...] + "\n"
     }
     return Data(result.utf8)
+  }
+
+  /// The antenna SKUs Apple ships a Wi-Fi board's aliases for. brcmfmac tries
+  /// `<board>-<sku>` before `<board>` and the chip's generic name.
+  public static let antennaSKUs = ["ID", "X0", "X2", "X3"]
+
+  /// M4 Pro and M4 Max laptops and the Wi-Fi board of their BCM4388 rev C2
+  /// (the ADT `wlan` node's `module-instance`, which aura copies into
+  /// `brcm,board-type`). J614s and J616s are read from their device trees; the
+  /// M4 Max boards share their M4 Pro sibling's board, as every M1 to M3
+  /// Pro/Max pair does.
+  public static let m4ProMaxWiFi: [String: (chip: String, board: String)] = [
+    "j614s": ("4388c2", "mriya"), "j614c": ("4388c2", "mriya"),
+    "j616s": ("4388c2", "hostomel"), "j616c": ("4388c2", "hostomel"),
+  ]
+
+  /// The package names a board's Wi-Fi still lacks: firmware (`.bin`),
+  /// regulatory data (`.clm_blob`) and NVRAM (`.txt`), for the board itself
+  /// and each antenna SKU, resolved the way brcmfmac resolves them. An empty
+  /// result means Linux can bring the radio up on every SKU of that board.
+  public static func missingWiFi(
+    _ outputs: [String: Data], chip: String, board: String
+  ) -> [String] {
+    let base = "brcm/brcmfmac" + chip + "-pcie.apple"
+    let named = Set(outputs.filter { !$0.value.isEmpty }.keys)
+    var missing = [String]()
+    for sku in [""] + antennaSKUs {
+      let stems = (sku.isEmpty ? [] : [base + "," + board + "-" + sku]) + [base + "," + board]
+      for ext in ["bin", "clm_blob"] {
+        let candidates = stems.map { $0 + "." + ext } + [base + "." + ext]
+        if !candidates.contains(where: named.contains) {
+          missing.append(candidates[0])
+        }
+      }
+      // NVRAM names carry the module and vendor after the board (and SKU).
+      // A board-wide name must not be another SKU's.
+      func nvram(_ stem: String, skuSpecific: Bool) -> Bool {
+        named.contains { name in
+          guard name.hasSuffix(".txt") else { return false }
+          if name == stem + ".txt" { return true }
+          guard name.hasPrefix(stem + "-") else { return false }
+          if skuSpecific { return true }
+          let next = name.dropFirst(stem.count + 1).prefix { $0 != "-" && $0 != "." }
+          return !antennaSKUs.contains(String(next))
+        }
+      }
+      let nvramPresent =
+        (!sku.isEmpty && nvram(stems[0], skuSpecific: true))
+        || nvram(base + "," + board, skuSpecific: false) || named.contains(base + ".txt")
+      if !nvramPresent { missing.append(stems[0] + ".txt") }
+    }
+    return missing
+  }
+
+  /// Whether a converted Wi-Fi set carries firmware for this board.
+  public static func carriesWiFi(_ outputs: [String: Data], board: String) -> Bool {
+    outputs.contains { name, data in
+      !data.isEmpty && name.hasPrefix("brcm/brcmfmac") && name.hasSuffix(".bin")
+        && (name.contains("-pcie.apple," + board + ".")
+          || name.contains("-pcie.apple," + board + "-"))
+    }
+  }
+
+  public enum WiFiSource: String, Sendable { case system, recovery }
+
+  /// The installed macOS ships every board's Wi-Fi firmware on its sealed
+  /// system volume, while a Recovery image may carry only part of a chip's
+  /// set: 26.6.2 (25G83) Recovery holds no usable BCM4388 rev C2 firmware.
+  /// Prefer the installed system, and use Recovery only when it alone has
+  /// this board's firmware or the board is unknown.
+  public static func wifiSource(board: String?, system: [String: Data]?) -> WiFiSource {
+    guard let board, let system, carriesWiFi(system, board: board) else { return .recovery }
+    return .system
+  }
+
+  /// The Bluetooth names a board still lacks: firmware and its patch table
+  /// (`.bin` and `.ptb`) for at least one radio module vendor.
+  public static func missingBluetooth(
+    _ outputs: [String: Data], chip: String, board: String
+  ) -> [String] {
+    let stem = "brcm/brcmbt" + chip + "-apple," + board
+    let complete = ["-a", "-m", "-u", ""].contains { vendor in
+      ["bin", "ptb"].allSatisfy { outputs[stem + vendor + "." + $0]?.isEmpty == false }
+    }
+    return complete ? [] : [stem + "-u.bin", stem + "-u.ptb"]
   }
 
   public static func bluetooth(

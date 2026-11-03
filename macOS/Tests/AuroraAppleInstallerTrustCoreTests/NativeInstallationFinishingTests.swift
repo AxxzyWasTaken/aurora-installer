@@ -16,6 +16,10 @@
       var imageOpens = 0
       var rejectDetach = false
       var attachment: URL?
+      /// The ADT Wi-Fi board, and the installed system's firmware tree with
+      /// its `wifi` directory. Without a tree the system volume is unreadable.
+      var wifiBoard: String?
+      var systemFirmware: URL?
       var base: NativeStubFileTests.ExecutionFixture { esp.images.base }
       init(machine: String = "j700", machO: Bool = false) async throws {
         self.machine = machine
@@ -163,7 +167,16 @@
               "HmCA-synthetic": Data("synthetic factory ALS".utf8),
             ]
           },
-          admitESPFilesystem: { _ in })
+          admitESPFilesystem: { _ in },
+          wifiBoard: { self.wifiBoard },
+          systemWiFi: { owner in
+            guard let root = self.systemFirmware else {
+              throw NativeFirmwareInputFailure.invalidSource
+            }
+            return try NativeFirmwareInputFiles.snapshot(
+              root: root, prefix: "wifi",
+              tree: NativeHandoffFileTree(root, protected: true, owner: owner), owner: owner)
+          })
       }
       var recovery: NativeRecoveryInstallation {
         NativeRecoveryInstallation(
@@ -218,6 +231,106 @@
         let snapshot = try NativeRecoveryJournalSnapshot.decode(
           file.readJournal(), package: fixture.base.package, evidence: file.readEvidence)
         XCTAssertEqual(snapshot.state, .ready)
+      }
+    }
+
+    /// An installed system's firmware tree shaped like 26.6.2 (25G83): the
+    /// Recovery fixture's J314s Wi-Fi plus a C2 directory whose boards alias
+    /// one shared firmware file.
+    static func systemFirmware(in parent: URL, boards: [String], j314s: Bool) throws -> URL {
+      let root = parent.appendingPathComponent("system-firmware-" + UUID().uuidString)
+      let c2 = root.appendingPathComponent("wifi/C-4388__s-C2")
+      try FileManager.default.createDirectory(
+        at: c2, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+      if j314s {
+        let url = try XCTUnwrap(
+          Bundle.module.url(
+            forResource: "native-finishing", withExtension: "json", subdirectory: "Fixtures"))
+        let document = try JSONDecoder().decode([String: Data].self, from: Data(contentsOf: url))
+        for (name, data) in document where name.hasPrefix("radio/wifi/") {
+          let path = root.appendingPathComponent(String(name.dropFirst(6)))
+          try FileManager.default.createDirectory(
+            at: path.deletingLastPathComponent(), withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o755])
+          try data.write(to: path)
+        }
+      }
+      func file(_ name: String, _ text: String) throws {
+        try Data(text.utf8).write(to: c2.appendingPathComponent(name))
+      }
+      func link(_ name: String, _ target: String) throws {
+        try FileManager.default.createSymbolicLink(
+          atPath: c2.appendingPathComponent(name).path, withDestinationPath: target)
+      }
+      try file("guam.trx", "synthetic C2 firmware")
+      for board in boards {
+        try link(board + ".trx", "guam.trx")
+        try file(board + ".clmb", board + " clm")
+        for vendor in ["a", "u"] {
+          try file("P-" + board + "_M-WLMT_V-" + vendor + "__m-4.9.txt", "vendor=" + vendor + "\n")
+        }
+        for sku in BroadcomFirmware.antennaSKUs {
+          try link(board + "-" + sku + ".trx", board + ".trx")
+          try link(board + "-" + sku + ".clmb", board + ".clmb")
+        }
+      }
+      return root
+    }
+
+    func vendorOutputs(_ fixture: Fixture) throws -> (manifest: String, fallback: [String]) {
+      let manifest = try String(
+        contentsOf: fixture.esp.esp.appendingPathComponent("vendorfw/manifest.txt"),
+        encoding: .utf8)
+      let tar = Process()
+      tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+      tar.arguments = [
+        "-tzf", fixture.esp.esp.appendingPathComponent("asahi/all_firmware.tar.gz").path,
+      ]
+      let pipe = Pipe()
+      tar.standardOutput = pipe
+      try tar.run()
+      let listing = pipe.fileHandleForReading.readDataToEndOfFile()
+      tar.waitUntilExit()
+      XCTAssertEqual(tar.terminationStatus, 0)
+      return (
+        manifest, String(decoding: listing, as: UTF8.self).split(separator: "\n").map(String.init)
+      )
+    }
+
+    func testInstalledSystemWiFiIsPreferredAndKeptInTheFallbackArchive() async throws {
+      let fixture = try await Fixture(machine: "j314s")
+      fixture.wifiBoard = "j314s"
+      fixture.systemFirmware = try Self.systemFirmware(
+        in: fixture.base.directory, boards: ["hostomel", "mriya"], j314s: true)
+      _ = try await fixture.prepareVendor()
+      let (manifest, fallback) = try vendorOutputs(fixture)
+      XCTAssertTrue(manifest.contains("brcm/brcmfmac4355c1-pcie.apple,j314s.bin"))
+      for board in ["hostomel", "mriya"] {
+        for ext in ["bin", "clm_blob"] {
+          XCTAssertTrue(manifest.contains("brcm/brcmfmac4388c2-pcie.apple," + board + "." + ext))
+        }
+        XCTAssertTrue(manifest.contains("brcm/brcmfmac4388c2-pcie.apple," + board + "-WLMT-u.txt"))
+      }
+      XCTAssertTrue(manifest.contains("brcm/brcmbt4388b0-apple,tokara-a.bin"))
+      // A later conversion on Linux reads the same system tree.
+      XCTAssertTrue(fallback.contains { $0.hasSuffix("firmware/wifi/C-4388__s-C2/guam.trx") })
+      XCTAssertTrue(fallback.contains { $0.hasSuffix("firmware/wifi/C-4388__s-C2/hostomel.trx") })
+      XCTAssertTrue(fallback.contains { $0.contains("firmware/bluetooth/") })
+    }
+
+    func testRecoveryWiFiStaysWhenTheSystemLacksTheBoardOrIsUnreadable() async throws {
+      for system in [true, false] {
+        let fixture = try await Fixture(machine: "j314s")
+        fixture.wifiBoard = "j314s"
+        if system {
+          fixture.systemFirmware = try Self.systemFirmware(
+            in: fixture.base.directory, boards: ["hostomel"], j314s: false)
+        }
+        _ = try await fixture.prepareVendor()
+        let (manifest, fallback) = try vendorOutputs(fixture)
+        XCTAssertTrue(manifest.contains("brcm/brcmfmac4355c1-pcie.apple,j314s.bin"))
+        XCTAssertFalse(manifest.contains("brcmfmac4388c2"))
+        XCTAssertFalse(fallback.contains { $0.contains("C-4388__s-C2") })
       }
     }
 

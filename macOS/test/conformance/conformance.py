@@ -780,8 +780,11 @@ def main():
             metadata = fetch(model['metadataArtifact']['sourceURL'], args.cache)
             if 'sha256:' + hashlib.sha256(metadata).hexdigest() != model['metadataDigest']:
                 raise SystemExit('metadata digest mismatch: ' + profile)
-            wanted = {'esp/aurora/stage1.bin', 'aurora-volume.icns'} | {'esp/m1n1/boot-%s.bin' % b for b in boards}
-            archive = Path(args.cache) / (profile + '-' + model['payloadDigest'][7:19] + '-esp.zip')
+            # M4 and later Macs enroll the Mach-O Stage 1, which the dry run fills from
+            # stage1.bin, so it needs that object's real bytes too.
+            wanted = {'esp/aurora/stage1.bin', 'esp/aurora/stage1.macho', 'aurora-volume.icns'} | {
+                'esp/m1n1/boot-%s.bin' % b for b in boards}
+            archive = Path(args.cache) / (profile + '-' + model['payloadDigest'][7:19] + '-esp-v2.zip')
             if not archive.exists():
                 esp_archive(remote, members, wanted, archive)
             with zipfile.ZipFile(archive) as z:

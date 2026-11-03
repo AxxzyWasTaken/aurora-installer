@@ -36,7 +36,7 @@ jobs:
           sparse-checkout: 'arch/arm64/boot/dts/apple/'
 
       # Aurora U-Boot 2026.07-gd30213eadcaa (aurora-wip, u-boot PR 28 merged), the U-Boot that
-      # ships with aura 1.0.0b2 (v1.0.0b2, 241540a6).
+      # ships with aura 1.0.0b4 (v1.0.0b4, 8b150963).
       - name: Checkout u-boot
         uses: actions/checkout@v5
         with:

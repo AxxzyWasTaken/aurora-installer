@@ -44,6 +44,58 @@
       }
     }
 
+    func testRawAndMachOConfigurationsCompleteFreshAndStartedRecoveryHandoffs() async throws {
+      // Every mode the installer can write must hand off.
+      XCTAssertEqual(NativeRecoveryBootMode.allCases.map(\.rawValue), ["raw", "macho"])
+      for mode in NativeRecoveryBootMode.allCases.map(\.rawValue) {
+        for retry in [false, true] {
+          let fixture = try NativeRecoveryHandoffFixture()
+          defer { fixture.remove() }
+          let url = fixture.system.appendingPathComponent(
+            "Aurora/Recovery/InstallData/install-config.json")
+          var config = fixture.vector["config"] as! [String: Any]
+          config["bootMode"] = mode
+          try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]).write(to: url)
+          if retry {
+            let journal = try NativeRecoveryJournal(
+              url: fixture.journalURL, package: fixture.package, owner: geteuid())
+            try journal.beginHandoff()
+          }
+          let result = try await fixture.executor().execute(
+            package: fixture.package, journal: fixture.journalURL,
+            authorization: fixture.authorization(), requirement: "fixture", fullReadback: false)
+          XCTAssertEqual(
+            try AppleInstallerTrustCore().validateEngineTranscript(result).completion,
+            .awaitingRecovery)
+          XCTAssertEqual(fixture.rawReads, retry ? ["disk0s6", "disk0s7"] : ["disk0s6"])
+          XCTAssertEqual(fixture.blessCalls, 1)
+          XCTAssertEqual(try fixture.journalSnapshot().state, .complete)
+        }
+      }
+    }
+
+    func testUnknownMissingOrNonStringBootModeNeverSelectsRecovery() async throws {
+      for mode: Any in ["unknown", "MachO", "", 1, NSNull()] {
+        let fixture = try NativeRecoveryHandoffFixture()
+        defer { fixture.remove() }
+        let url = fixture.system.appendingPathComponent(
+          "Aurora/Recovery/InstallData/install-config.json")
+        var config = fixture.vector["config"] as! [String: Any]
+        config["bootMode"] = mode is NSNull ? nil : mode
+        try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]).write(to: url)
+        do {
+          _ = try await fixture.executor().execute(
+            package: fixture.package, journal: fixture.journalURL,
+            authorization: fixture.authorization(), requirement: "fixture", fullReadback: false)
+          XCTFail("Invalid boot mode was accepted")
+        } catch {
+          XCTAssertEqual(error as? NativeHandoffValidationError, .invalidTarget)
+        }
+        XCTAssertEqual(fixture.blessCalls, 0)
+        XCTAssertEqual(try fixture.journalSnapshot().state, .started)
+      }
+    }
+
     func testOldNeoCommonPayloadCannotCompleteRecoveryWithTheWrongBootMember() async throws {
       for index in [0, 4] {
         let fixture = try NativeRecoveryHandoffFixture(index)

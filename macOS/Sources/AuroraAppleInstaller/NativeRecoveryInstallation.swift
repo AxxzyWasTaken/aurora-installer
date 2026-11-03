@@ -3,6 +3,14 @@
   import Foundation
   import RecoveryAccountCore
 
+  /// The Stage 1 boot modes the installer writes into install-config.json.
+  /// The Recovery handoff accepts exactly these, so a new mode cannot be
+  /// written without the validator taking it too.
+  enum NativeRecoveryBootMode: String, CaseIterable, Sendable {
+    case raw
+    case macho
+  }
+
   struct NativeRecoveryInstallation: Sendable {
     let package: ImportedEngineHandoffPackage
     let approved: ValidatedEnginePlan
@@ -52,7 +60,9 @@
             NativeESPFilesExecution.stage1MachOPath, maximum: 64 << 20) == machO
         else { throw NativeHandoffValidationError.invalidEvidence }
       }
-      let bootMode = espReceipt.stage1MachO == nil ? "raw" : "macho"
+      let bootMode =
+        (espReceipt.stage1MachO == nil
+        ? NativeRecoveryBootMode.raw : NativeRecoveryBootMode.macho).rawValue
       if let legacy = espReceipt.legacyStage1 {
         try NativeLegacyStage1.verify(
           system.read("Finish Installation.app/Contents/Resources/boot.bin", maximum: 4 << 20),

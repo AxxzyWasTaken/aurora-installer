@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import IOKit
 import RecoveryAuthorization
 
 struct RecoveryFailure: Error, LocalizedError {
@@ -33,12 +34,43 @@ enum RecoveryActions {
   static var allowsCustomBootArguments: Bool {
     (try? configuration.get().allowCustomBootArguments) == true
   }
-  static var supportsMachO: Bool {
-    #if AURORA_STEP2_PREVIEW
-      return true
-    #else
-      return false
-    #endif
+  /// The boot mode the installer recorded for this Mac (AuraStage1Format).
+  static var configuredBootMode: AuraBootMode {
+    (try? configuration.get()).flatMap { AuraBootMode(rawValue: $0.bootMode) } ?? .raw
+  }
+  /// This Mac's chip, as the boot firmware reports it.
+  static func chipID() -> UInt64? {
+    let entry = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/chosen")
+    guard entry != 0 else { return nil }
+    defer { IOObjectRelease(entry) }
+    guard
+      let bytes = IORegistryEntryCreateCFProperty(
+        entry, "chip-id" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Data,
+      [4, 8].contains(bytes.count)
+    else { return nil }
+    return bytes.enumerated().reduce(UInt64(0)) { $0 | UInt64($1.element) << (8 * $1.offset) }
+  }
+  /// Checks a Mach-O Stage 1 before anything changes: its layout, this Mac's
+  /// chip, and the kcbz that this Recovery's kmutil derives from it.
+  static func verifyMachOStage1(_ stage1: Data, at path: URL) throws {
+    try MachOBootObject.check(stage1)
+    guard let chip = chipID(), AuraStage1Format.usesMachO(chipID: chip) else {
+      throw RecoveryFailure(message: "This Mac starts from the raw startup software, not Mach-O.")
+    }
+    guard
+      let output = try? run(
+        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
+    else {
+      InstallerLog.shared.append("kmutil inspect is unavailable; the Mach-O layout check stands.")
+      return
+    }
+    guard
+      let size = MachOBootObject.bootExecSize(
+        fromInspection: String(decoding: output, as: UTF8.self))
+    else {
+      throw RecoveryFailure(message: "kmutil did not report the startup software's layout.")
+    }
+    try check(size == 0, "kmutil would start SPTM for this startup software (kcbz \(size)).")
   }
   static var inRecovery: Bool {
     #if AURORA_STEP2_RECOVERY
@@ -255,12 +287,6 @@ enum RecoveryActions {
       "The mounted startup partition does not match this installation.")
     return URL(fileURLWithPath: path)
   }
-  static func relative(_ path: String) -> Bool {
-    !path.isEmpty && !path.contains("\0")
-      && path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
-        !$0.isEmpty && $0 != "." && $0 != ".."
-      }
-  }
   static func manifest() throws -> [String: Any] {
     let path = try payloadRoot().appendingPathComponent("manifest.json")
     guard
@@ -349,14 +375,22 @@ enum RecoveryActions {
       }
     }
     let config = try configuration.get()
+    // The installer chose the mode for this Mac's chip; NV2 is never set here.
     try check(
-      selection.mode == .raw && !selection.nestedVirtualization,
-      "This installation includes raw boot mode only.")
+      selection.mode.rawValue == config.bootMode && !selection.nestedVirtualization,
+      "This installation uses \(config.bootMode) boot mode only.")
     try RecoveryOwnerResolver.verify(owner, current: resolveOwner())
     progress(0.05, "Verifying the installation files")
     let m = try manifest()
+    try check(
+      m["defaultMode"] as? String == config.bootMode,
+      "The recovery payload does not match this installation's boot mode.")
     let stage1 = try asset(selection.mode.stage1Path, manifest: m)
     let stage2 = try asset(selection.mode.stage2Path, manifest: m)
+    if selection.mode == .macho {
+      try verifyMachOStage1(
+        stage1, at: try payloadRoot().appendingPathComponent(selection.mode.stage1Path))
+    }
     // A successful setup must retain a usable per-device repair baseline.
     _ = try RecoveryBaseline.firmware(
       manifest: m, root: payloadRoot())
@@ -779,23 +813,16 @@ extension RecoveryActions {
     case ["nv", "on"], ["nv", "off"]:
       let record = try installed()
       try check(
-        record["mode"] as? String == "macho", "Nested virtualization requires Mach-O boot mode.")
-      let m = try manifest()
-      guard let modes = m["modes"] as? [String: [String: Any]],
-        let path = modes["macho"]?["nvConfigPath"] as? String, relative(path)
-      else {
-        throw RecoveryFailure(
-          message: "This native bundle does not provide an NV configuration path.")
-      }
-      let target = try esp().appendingPathComponent(path)
+        record["mode"] as? String == "macho",
+        "Nested virtualization needs the Mach-O startup software (M4 and later).")
+      let target = try esp().appendingPathComponent(try configuration.get().stage2Path)
       let enabled = arguments[1] == "on"
       let previous = try Data(contentsOf: target)
-      try check(
-        previous == Data("x1n1.nv2=0\n".utf8) || previous == Data("x1n1.nv2=1\n".utf8),
-        "Unexpected NV configuration; it was left unchanged.")
       try atomic(previous, to: state.appendingPathComponent("nv-" + UUID().uuidString + ".before"))
-      try atomic(Data("x1n1.nv2=\(enabled ? 1 : 0)\n".utf8), to: target)
-      print("Nested virtualization \(enabled ? "enabled" : "disabled") for the next boot.")
+      try atomic(NestedVirtualizationSetting.stage2(previous, enabled: enabled), to: target)
+      print(
+        "Nested virtualization \(enabled ? "on" : "off") from the next boot. Linux sets it with "
+          + "chosen.aura,nv2 in /etc/m1n1.conf, which its next Stage 2 update applies instead.")
     case ["debug", "on"], ["debug", "off"], ["proxy", "on"], ["proxy", "off"]:
       let before = try readBootArguments()
       let after = bootArguments(before, flag: "aura-" + arguments[0], enabled: arguments[1] == "on")

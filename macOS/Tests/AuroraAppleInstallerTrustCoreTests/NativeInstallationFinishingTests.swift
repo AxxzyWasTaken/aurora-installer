@@ -17,9 +17,10 @@
       var rejectDetach = false
       var attachment: URL?
       var base: NativeStubFileTests.ExecutionFixture { esp.images.base }
-      init(machine: String = "j700") async throws {
+      init(machine: String = "j700", machO: Bool = false) async throws {
         self.machine = machine
-        let esp = try await NativeESPFileTests.Fixture(deviceIdentifier: "apple," + machine)
+        let esp = try await NativeESPFileTests.Fixture(
+          deviceIdentifier: "apple," + machine, machO: machO)
         self.esp = esp
         try await esp.prepare()
         let inputs = try NativeNeoPeripheralInputTests.InputFixture()

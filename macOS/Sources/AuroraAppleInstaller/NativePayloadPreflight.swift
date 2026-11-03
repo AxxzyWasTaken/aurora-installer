@@ -2,6 +2,7 @@
   import AuroraFirmware
   import Darwin
   import Foundation
+  import RecoveryAccountCore
 
   enum NativePayloadPreflightError: Error, Equatable {
     case invalidMetadata
@@ -30,13 +31,15 @@
         NativePayloadRangeReader(package.payloadURL, owner: owner))
       try await validate(
         metadata: metadata, payloadName: package.payloadURL.lastPathComponent, archive: archive)
+      let facts = try firmwareFacts()
       let firmware = try NativeFirmwareSelection.choose(
-        deviceIdentifier: package.deviceIdentifier, facts: firmwareFacts(),
+        deviceIdentifier: package.deviceIdentifier, facts: facts,
         metadata: NativeInstallationMetadata(data: metadata),
         policy: NativeInspectionPolicy.sealed())
       _ = try await NativeBootChain.admit(
         metadata: metadata, archive: archive, deviceIdentifier: package.deviceIdentifier,
-        firmware: firmware.version.components(separatedBy: " ")[0])
+        firmware: firmware.version.components(separatedBy: " ")[0],
+        machOStage1: AuraStage1Format.usesMachO(chipID: facts.hardware.chipID))
     }
 
     /// The caller has already authenticated the archive and supplied the

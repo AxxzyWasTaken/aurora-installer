@@ -1,6 +1,7 @@
 #if os(macOS)
   import AuroraFirmware
   import Foundation
+  import RecoveryAccountCore
   import zlib
 
   enum NativeBootChainError: Error, Equatable {
@@ -13,13 +14,21 @@
 
   struct NativeBootChainAdmission: Equatable, Sendable {
     let stage1Member: String?
+    /// The Mach-O boot object wrapping the common Stage 1, for chips that use it.
+    var stage1MachOMember: String? = nil
     let windowMilliseconds: UInt32
     let espLayout: [String: String]
   }
 
   enum NativeBootChain {
+    static let commonStage1 = "esp/aurora/stage1.bin"
+    static let commonStage1MachO = "esp/aurora/stage1.macho"
+
+    /// `machOStage1` asks for the Mach-O Stage 1 (AuraStage1Format.usesMachO).
+    /// A payload without one for the common Stage 1 keeps the raw image.
     static func admit(
-      metadata: Data, archive: IPSWArchive, deviceIdentifier: String, firmware: String
+      metadata: Data, archive: IPSWArchive, deviceIdentifier: String, firmware: String,
+      machOStage1: Bool = false
     ) async throws -> NativeBootChainAdmission {
       let template = try NativePayloadPreflight.target(metadata)
       let board = String(deviceIdentifier.dropFirst(6)) + "ap"
@@ -42,11 +51,12 @@
           ($0.name, $0)
         })
       let qualified = try qualifiedFirmware(template: template, board: board)
-      let common = members["esp/aurora/stage1.bin"] != nil && qualified.contains(firmware)
+      let common = members[commonStage1] != nil && qualified.contains(firmware)
       var stage1: String?
+      var stage1MachO: String?
       var window: UInt32 = 0
       if common {
-        stage1 = "esp/aurora/stage1.bin"
+        stage1 = commonStage1
       } else if board == "j700ap" {
         stage1 = "esp/aurora/stage1-j700.bin"
         window = 5000
@@ -56,9 +66,18 @@
       if let stage1 {
         guard let member = members[stage1] else { throw NativeBootChainError.missingStage1 }
         let bytes = try await archive.read(member, maximumBytes: 64 << 20)
-        _ = try fillStage1(
+        let filled = try fillStage1(
           bytes, uuid: "00000000-0000-0000-0000-000000000000",
           path: template["next_object"] as? String ?? "m1n1/boot.bin", windowMilliseconds: window)
+        if machOStage1, common, let object = members[commonStage1MachO] {
+          do {
+            _ = try MachOBootObject.fill(
+              try await archive.read(object, maximumBytes: 64 << 20), raw: bytes, filled: filled)
+          } catch is MachOBootObject.Invalid {
+            throw NativeBootChainError.invalidStage1
+          }
+          stage1MachO = commonStage1MachO
+        }
       }
       let stage2 = try stage2Selection(template: template, board: board)
       let esp = Set(members.keys.filter { $0.hasPrefix("esp/") })
@@ -70,7 +89,8 @@
         let member = members[selected], member.sizeBytes > 0
       else { throw NativeBootChainError.missingStage2 }
       return NativeBootChainAdmission(
-        stage1Member: stage1, windowMilliseconds: window, espLayout: layout)
+        stage1Member: stage1, stage1MachOMember: stage1MachO, windowMilliseconds: window,
+        espLayout: layout)
     }
 
     static func qualifiedFirmware(template: [String: Any], board: String) throws -> [String] {
@@ -206,7 +226,8 @@
         }
         if member == selected {
           layout[member] = "m1n1/boot.bin"
-        } else if (member == "esp/aurora/stage1.bin" && !common)
+        } else if (!common
+          && [NativeBootChain.commonStage1, NativeBootChain.commonStage1MachO].contains(member))
           || stage2Variants.contains(member)
           || (selected != standard && member == standard)
           || (member.hasPrefix("esp/m1n1/boot-") && member.hasSuffix(".bin"))

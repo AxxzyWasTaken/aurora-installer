@@ -261,11 +261,21 @@
       let esp: URL
       let receipt: URL
       var labelOnMount = false
-      init(deviceIdentifier: String = "apple,j700") async throws {
+      /// `machO` stages a Mach-O Stage 1 for the plan's raw one, as on M4 and
+      /// later; `machOSource` wraps another raw image instead.
+      init(
+        deviceIdentifier: String = "apple,j700", machO: Bool = false,
+        machOSource: ((Data) -> Data)? = nil
+      ) async throws {
         let images = try await NativePayloadImageTests.Fixture(deviceIdentifier: deviceIdentifier)
         self.images = images
         try await images.prepare()
-        plan = try await NativeESPFileTests.plan(deviceIdentifier: deviceIdentifier)
+        var plan = try await NativeESPFileTests.plan(deviceIdentifier: deviceIdentifier)
+        if machO || machOSource != nil {
+          plan.stage1MachO = NativeMachOStage1Tests.object(
+            wrapping: machOSource?(plan.stage1) ?? plan.stage1)
+        }
+        self.plan = plan
         esp = images.base.mounts.appendingPathComponent("disk0s5")
         try FileManager.default.createDirectory(
           at: esp, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])

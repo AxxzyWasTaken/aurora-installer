@@ -96,6 +96,60 @@
       } catch {}
     }
 
+    /// The fixture payload with `esp/aurora/stage1.macho` added by zip(1).
+    static func payload(machO: @escaping (Data) -> Data) async throws -> (Data, Data, Data) {
+      let (metadata, payload, _) = try NativeESPFileTests.inputs()
+      let archive = try await IPSWArchive.open(NativeRawImageWriterTests.Source(bytes: payload))
+      let member = try XCTUnwrap(archive.members.first { $0.name == "esp/aurora/stage1.bin" })
+      let raw = try await archive.read(member, maximumBytes: 64 << 20)
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "aurora-macho-payload-" + UUID().uuidString)
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let object = machO(raw)
+      let path = directory.appendingPathComponent("esp/aurora/stage1.macho")
+      try FileManager.default.createDirectory(
+        at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try object.write(to: path)
+      let zip = directory.appendingPathComponent("payload.zip")
+      try payload.write(to: zip)
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+      process.arguments = ["-q", "-X", "-0", zip.path, "esp/aurora/stage1.macho"]
+      process.currentDirectoryURL = directory
+      try process.run()
+      process.waitUntilExit()
+      XCTAssertEqual(process.terminationStatus, 0)
+      return (metadata, try Data(contentsOf: zip), object)
+    }
+
+    func testAdmissionPairsTheObjectWithTheCommonStage1OnlyWhenAsked() async throws {
+      let (metadata, payload, object) = try await Self.payload { Self.object(wrapping: $0) }
+      for machO in [false, true] {
+        let archive = try await IPSWArchive.open(NativeRawImageWriterTests.Source(bytes: payload))
+        let plan = try await NativeESPPayloadPlan.make(
+          metadata: metadata, archive: archive, device: "apple,j700", firmware: "26.6.2",
+          machOStage1: machO)
+        XCTAssertEqual(try XCTUnwrap(plan).stage1MachO, machO ? object : nil)
+        XCTAssertEqual(
+          try XCTUnwrap(plan).entries.first { $0.member.name == "esp/aurora/stage1.macho" }?.path,
+          "aurora/stage1.macho")
+      }
+      let (_, mismatched, _) = try await Self.payload {
+        var other = $0
+        other[0x100] ^= 0xFF
+        return Self.object(wrapping: other)
+      }
+      let archive = try await IPSWArchive.open(NativeRawImageWriterTests.Source(bytes: mismatched))
+      do {
+        _ = try await NativeESPPayloadPlan.make(
+          metadata: metadata, archive: archive, device: "apple,j700", firmware: "26.6.2",
+          machOStage1: true)
+        XCTFail("A Mach-O object for another Stage 1 was admitted")
+      } catch let error as NativeBootChainError {
+        XCTAssertEqual(error, .invalidStage1)
+      }
+    }
+
     func testRecoveryPayloadRecordsTheChipsBootMode() async throws {
       for machO in [false, true] {
         let fixture = try await NativeInstallationFinishingTests.Fixture(machO: machO)

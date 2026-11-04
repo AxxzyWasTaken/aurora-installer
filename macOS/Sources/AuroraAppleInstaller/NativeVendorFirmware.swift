@@ -32,6 +32,10 @@
     var systemWiFi: @Sendable (uid_t) throws -> NativeFirmwareInputFiles.Snapshot = {
       try NativeSystemWiFiFirmware.live(owner: $0)
     }
+    /// This Mac's own speaker tuning (`AID<n>` and `speaker-thiele-small`).
+    var audioTuning: @Sendable (uid_t) throws -> NativeAudioTuningInputs.Snapshot? = {
+      try NativeAudioTuningInputs.live(owner: $0)
+    }
 
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization, bootstrap: NativeSourceBootstrap
@@ -253,6 +257,13 @@
           try merge(calibration, into: &outputs)
           try merge(calibration, into: &fallback)
         }
+        // The speaker protection's parameters: this Mac's own Apple tuning,
+        // stored like the other per-machine firmware and never shipped.
+        let tuning = try InstallerPerformance.measure("vendor_audio_tuning") {
+          try NativeAudioTuningInputs.collect(audioTuning, owner: owner)
+        }
+        try merge(tuning.package, into: &outputs)
+        try merge(tuning.fallback, into: &fallback)
         let archives = try InstallerPerformance.measure("vendor_package") {
           try FirmwarePackageBuilder.build(
             outputs.keys.sorted().map { FirmwarePackageInput(name: $0, bytes: outputs[$0]!) })

@@ -169,6 +169,17 @@
           },
           admitESPFilesystem: { _ in },
           wifiBoard: { self.wifiBoard },
+          audioTuning: { _ in
+            // Synthetic tuning: a laptop with speaker calibration, and a
+            // desktop without it that still gets its tuning folder.
+            NativeAudioTuningInputs.Snapshot(
+              acousticID: self.machine == "j314s" ? 8 : 1,
+              thieleSmall: self.machine == "j314s" ? Data("synthetic SpTS".utf8) : nil,
+              files: [
+                "DSP/Graphs/builtin_speaker_out.dspg": Data("graphName \"synthetic\"\n".utf8),
+                "DSP/Strips/builtin_speaker_out_general.austrip": Data("synthetic strip".utf8),
+              ], build: "00A000")
+          },
           systemWiFi: { owner in
             guard let root = self.systemFirmware else {
               throw NativeFirmwareInputFailure.invalidSource
@@ -222,6 +233,17 @@
         XCTAssertEqual(manifest.contains("apple/aop-als-cal.bin"), machine == "j314s")
         XCTAssertEqual(manifest.contains("apple/HmCA-synthetic"), machine == "j314s")
         XCTAssertFalse(manifest.contains("apple/tpmtfw-j274.bin"))
+        let aid = machine == "j314s" ? "AID8" : "AID1"
+        XCTAssertTrue(
+          manifest.contains("apple/audio-tuning/" + aid + "/DSP/Graphs/builtin_speaker_out.dspg"))
+        XCTAssertTrue(manifest.contains("apple/audio-tuning/manifest.json"))
+        XCTAssertEqual(
+          manifest.contains("apple/audio-tuning/speaker-thiele-small.bin"), machine == "j314s")
+        let outputs = try vendorOutputs(fixture)
+        XCTAssertTrue(outputs.fallback.contains("audio-tuning/manifest.json"))
+        XCTAssertTrue(
+          outputs.fallback.contains(
+            "audio-tuning/" + aid + "/DSP/Strips/builtin_speaker_out_general.austrip"))
         try await fixture.prepareRecovery()
         try await fixture.completion.prepare(
           journal: fixture.base.journal, authorization: fixture.base.authorization,

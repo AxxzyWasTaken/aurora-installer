@@ -6,6 +6,7 @@ stored by these tests.
 """
 import hashlib
 import json
+import os
 import pathlib
 import plistlib
 import subprocess
@@ -75,6 +76,11 @@ class AudioTuningTest(unittest.TestCase):
             self.assertEqual(meta["based_on"], "aurora-audio-dsp by saku (MIT)")
             self.assertEqual(meta["device_dsp_database"], "DeviceDSPDatabase.plist")
             self.assertEqual(meta["config"], "Config/AID35.plist")
+            self.assertEqual(meta["schema"], 2)
+            self.assertIs(meta["complete"], True)
+            self.assertEqual(meta["source_file_count"], 2)
+            self.assertEqual(meta["source_file_count"],
+                             sum(r["path"].startswith("AID35/") for r in meta["files"]))
             entry = plistlib.loads(files["apple/audio-tuning/DeviceDSPDatabase.plist"].data)
             self.assertEqual(list(entry), ["AID35"])
             self.assertEqual(meta["speaker_thiele_small"]["sha256"], hashlib.sha256(spts).hexdigest())
@@ -119,6 +125,178 @@ class AudioTuningTest(unittest.TestCase):
             col = AudioTuningFWCollection(
                 tunings_root=str(root), run=fake_run([{"acoustic-id": b"\x23\0\0\0"}]))
             self.assertEqual(col.files(), [])
+
+
+AID35 = [{"acoustic-id": b"\x23\0\0\0"}]
+
+
+def collect(root):
+    return AudioTuningFWCollection(tunings_root=str(root), run=fake_run(AID35))
+
+
+def fallback(tmp):
+    """A collected bundle written out as the fallback archive's directory."""
+    root = pathlib.Path(tmp)
+    tunings(root)
+    col = collect(root)
+    out = root / "fallback"
+    assert col.write_fallback(str(out))
+    return out, out / "audio-tuning"
+
+
+def rewrite(bundle, edit):
+    path = bundle / "manifest.json"
+    meta = json.loads(path.read_bytes())
+    edit(meta)
+    path.write_text(json.dumps(meta))
+
+
+class CompletenessTest(unittest.TestCase):
+    """A short read never becomes a bundle, and a bundle that cannot prove
+    it is complete is refused."""
+
+    def assertNothing(self, col):
+        self.assertEqual(col.files(), [])
+        self.assertEqual(col.bundle, {})
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads unreadable directories")
+    def test_unlistable_directory_fails_the_collection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            strips = tunings(root) / "DSP" / "Strips"
+            strips.chmod(0)
+            try:
+                with self.assertLogs("asahi_firmware.audio_tuning", "WARNING"):
+                    self.assertNothing(collect(root))
+            finally:
+                strips.chmod(0o755)
+
+    def test_directory_link_fails_the_collection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = tunings(root)
+            (folder / "Linked").symlink_to(folder / "DSP", target_is_directory=True)
+            self.assertNothing(collect(root))
+
+    def test_dangling_or_special_link_fails_the_collection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = tunings(root)
+            (folder / "ADM" / "gone.plist").symlink_to(folder / "ADM" / "missing.plist")
+            self.assertNothing(collect(root))
+
+    def test_link_within_the_folder_is_a_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = tunings(root)
+            (folder / "ADM" / "alias.plist").symlink_to("config.plist")
+            files = dict(collect(root).files())
+            self.assertEqual(files["apple/audio-tuning/AID35/ADM/alias.plist"].data,
+                             b"synthetic config")
+            meta = json.loads(files["apple/audio-tuning/manifest.json"].data)
+            self.assertEqual(meta["source_file_count"], 3)
+
+    def test_missing_config_or_database_entry_is_no_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            (root / "Config" / "AID35.plist").unlink()
+            self.assertNothing(collect(root))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            (root / "DeviceDSPDatabase.plist").write_bytes(
+                plistlib.dumps({"AID999": {}}, fmt=plistlib.FMT_BINARY))
+            self.assertNothing(collect(root))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            (root / "DeviceDSPDatabase.plist").unlink()
+            self.assertNothing(collect(root))
+
+    def test_oversized_config_is_no_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            (root / "Config" / "AID35.plist").write_bytes(b"x" * ((1 << 20) + 1))
+            self.assertNothing(collect(root))
+
+    def test_short_count_is_refused_by_the_writer(self):
+        with self.assertRaises(ValueError):
+            audio_tuning.tree(35, {"a": b"1"}, None, "00A000",
+                              {"DeviceDSPDatabase.plist": b"d", "Config/AID35.plist": b"c"},
+                              source_count=2)
+
+    def test_update_accepts_the_intact_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, _ = fallback(tmp)
+            self.assertEqual(len(AudioTuningFWCollection(str(out)).files()), 5)
+
+    def test_update_refuses_inconsistent_manifests(self):
+        def drop_folder_record(meta):
+            meta["files"] = [r for r in meta["files"] if r["path"] != "AID35/ADM/config.plist"]
+
+        def drop_config(meta):
+            meta["files"] = [r for r in meta["files"] if r["path"] != "Config/AID35.plist"]
+
+        def stray(meta):
+            meta["files"].append({"path": "elsewhere/x", "bytes": 0,
+                                  "sha256": hashlib.sha256(b"").hexdigest()})
+
+        edits = {
+            "incomplete": lambda m: m.update(complete=False),
+            "no completeness flag": lambda m: m.pop("complete"),
+            "no count": lambda m: m.pop("source_file_count"),
+            "count too high": lambda m: m.update(source_file_count=3),
+            "folder record dropped": drop_folder_record,
+            "config dropped": drop_config,
+            "config null": lambda m: m.update(config=None),
+            "database null": lambda m: m.update(device_dsp_database=None),
+            "aid mismatch": lambda m: m.update(aid="AID99"),
+            "old schema": lambda m: m.update(schema=1),
+            "path outside the layout": stray,
+            "huge record": lambda m: m["files"][0].update(bytes=(64 << 20) + 1),
+        }
+        for name, edit in edits.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                out, bundle = fallback(tmp)
+                rewrite(bundle, edit)
+                self.assertNothing(AudioTuningFWCollection(str(out)))
+
+    def test_update_refuses_linked_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, bundle = fallback(tmp)
+            entry = bundle / "AID35" / "ADM" / "config.plist"
+            copy = pathlib.Path(tmp) / "copy"
+            copy.write_bytes(entry.read_bytes())
+            entry.unlink()
+            entry.symlink_to(copy)
+            self.assertNothing(AudioTuningFWCollection(str(out)))
+
+    def test_collection_failure_never_raises_and_leaves_nothing(self):
+        """The invariant the installer relies on: any failure is logged,
+        no partial bundle is kept, and the installation carries on."""
+        def broken(args, capture_output=True):
+            raise OSError("ioreg failed")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertLogs("asahi_firmware.audio_tuning", "WARNING"):
+                col = AudioTuningFWCollection(tunings_root=tmp, run=broken)
+            self.assertNothing(col)
+            self.assertFalse(col.write_fallback(tmp))
+            self.assertFalse((pathlib.Path(tmp) / "audio-tuning").exists())
+
+    def test_fallback_write_failure_leaves_no_partial_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            col = collect(root)
+            out = root / "fallback"
+            # A file where AID35/ must be a directory stops the write midway.
+            (out / "audio-tuning").mkdir(parents=True)
+            (out / "audio-tuning" / "AID35").write_bytes(b"in the way")
+            with self.assertLogs("asahi_firmware.audio_tuning", "WARNING"):
+                self.assertFalse(col.write_fallback(str(out)))
+            self.assertFalse((out / "audio-tuning").exists())
 
 
 if __name__ == "__main__":

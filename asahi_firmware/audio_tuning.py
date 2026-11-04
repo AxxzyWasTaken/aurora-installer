@@ -38,7 +38,7 @@ comes from the user's own system volume and stays on the user's own ESP.
 Collection never stops an installation; Linux falls back to its family
 profiles without it.
 """
-import hashlib, json, logging, os, plistlib, subprocess
+import hashlib, json, logging, os, plistlib, shutil, stat, subprocess
 
 from .core import FWFile
 
@@ -65,9 +65,35 @@ def database_entry(data, acoustic):
     if key not in root:
         return None
     return plistlib.dumps({key: root[key]}, fmt=plistlib.FMT_XML)
+
+
+SCHEMA = 2
 MAX_FILES = 1024
+# The folder and the selection data together, as in the native installer.
 MAX_BYTES = 64 << 20
+# Per-file bounds of the native installer: the DSP database is read with the
+# folder's bound, the volume configuration and the manifest with 1 MiB.
+MAX_DATABASE_BYTES = 64 << 20
+MAX_CONFIG_BYTES = 1 << 20
+MAX_MANIFEST_BYTES = 1 << 20
+MAX_SPTS_BYTES = 4096
 BASED_ON = "aurora-audio-dsp by saku (MIT)"
+
+
+def read_bounded(path, maximum):
+    """A regular file's bytes, at most `maximum` of them; links are refused."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError(f"not a regular file: {path}")
+        data = f.read(maximum + 1)
+    if len(data) > maximum:
+        raise ValueError(f"over budget: {path}")
+    return data
+
+
+def _raise(error):
+    raise error
 
 
 def acoustic_id(data):
@@ -106,33 +132,50 @@ def probe(run=subprocess.run):
 
 
 def read_folder(path):
-    """Regular files of a tuning folder by relative path; links within the
-    folder are kept as copies of their targets."""
+    """Regular files of a tuning folder by relative path, and the number of
+    admitted entries found; links within the folder are kept as copies of
+    their targets.
+
+    Anything that would leave the set short fails the whole read: a
+    directory that cannot be listed, a link to a directory, a link that does
+    not resolve to a regular file inside the folder, or the budget."""
     files = {}
     total = 0
+    count = 0
     root = os.path.realpath(path)
-    for parent, dirs, names in os.walk(root, followlinks=False):
+    for parent, dirs, names in os.walk(root, onerror=_raise, followlinks=False):
+        for name in sorted(dirs):
+            rel = os.path.relpath(os.path.join(parent, name), root)
+            if admitted(rel) and os.path.islink(os.path.join(parent, name)):
+                raise ValueError(f"tuning folder holds a directory link: {rel}")
         for name in sorted(names):
             full = os.path.join(parent, name)
             rel = os.path.relpath(full, root)
             if not admitted(rel):
                 continue
+            count += 1
             real = os.path.realpath(full)
             if os.path.commonpath([real, root]) != root or not os.path.isfile(real):
-                raise ValueError(f"tuning entry leaves its folder: {rel}")
-            data = open(real, "rb").read()
-            total += len(data)
-            if len(files) >= MAX_FILES or total > MAX_BYTES:
+                raise ValueError(f"tuning entry is not a regular file in its folder: {rel}")
+            if len(files) >= MAX_FILES:
                 raise ValueError("tuning folder over budget")
+            data = read_bounded(real, MAX_BYTES - total)
+            total += len(data)
             files[rel] = data
-    return files
+    return files, count
 
 
 def manifest(aid, acoustic, files, spts, build, selection=None):
     selection = selection or {}
     return {
-        "schema": 1,
+        "schema": SCHEMA,
         "kind": "aurora-audio-tuning",
+        # Entries of the source AID<n> folder (regular files and links to
+        # them, sidecars excluded); equals the AID<n>/ records in `files`.
+        "source_file_count": len(files),
+        # Only a full set is ever written: every folder entry and both
+        # selection files. Readers refuse anything else.
+        "complete": True,
         "acoustic_id": acoustic,
         "aid": aid,
         "macos_build": build,
@@ -150,16 +193,23 @@ def manifest(aid, acoustic, files, spts, build, selection=None):
     }
 
 
-def tree(acoustic, files, spts, build, selection=None):
+def tree(acoustic, files, spts, build, selection=None, source_count=None):
     """Relative path -> bytes for one bundle: AID<n>/..., the selection
-    data, the record, the manifest."""
+    data, the record, the manifest. Only a complete set makes a bundle."""
     selection = selection or {}
     for name in selection:
         if name not in (DATABASE, config_name(acoustic)):
             raise ValueError(f"unexpected selection file {name!r}")
+    for name in (DATABASE, config_name(acoustic)):
+        if not selection.get(name):
+            raise ValueError(f"incomplete speaker tuning: no {name}")
     if not files or len(files) > MAX_FILES:
         raise ValueError("empty or oversized tuning folder")
-    if spts is not None and not 0 < len(spts) <= 4096:
+    if source_count is not None and source_count != len(files):
+        raise ValueError("tuning folder read short")
+    if sum(map(len, files.values())) + sum(map(len, selection.values())) > MAX_BYTES:
+        raise ValueError("tuning folder over budget")
+    if spts is not None and not 0 < len(spts) <= MAX_SPTS_BYTES:
         raise ValueError("implausible speaker-thiele-small")
     aid = f"AID{acoustic}"
     out = {}
@@ -218,46 +268,102 @@ class AudioTuningFWCollection(object):
         if not os.path.isdir(folder):
             log.info(f"No tuning folder {folder}")
             return
-        files = read_folder(folder)
+        files, count = read_folder(folder)
         selection = {}
         db_path = os.path.join(tunings_root, DATABASE)
-        if os.path.isfile(db_path):
-            entry = database_entry(open(db_path, "rb").read(), acoustic)
+        if os.path.lexists(db_path):
+            entry = database_entry(read_bounded(db_path, MAX_DATABASE_BYTES), acoustic)
             if entry is not None:
                 selection[DATABASE] = entry
         cfg_path = os.path.join(tunings_root, config_name(acoustic))
-        if os.path.isfile(cfg_path):
-            selection[config_name(acoustic)] = open(cfg_path, "rb").read()
-        self._publish(tree(acoustic, files, props[1], os_build(run), selection))
+        if os.path.lexists(cfg_path):
+            selection[config_name(acoustic)] = read_bounded(cfg_path, MAX_CONFIG_BYTES)
+        self._publish(tree(acoustic, files, props[1], os_build(run), selection, count))
         log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files)")
 
     def update(self, path):
+        """Re-verify an extracted fallback bundle against its manifest.
+        Anything but a complete, self-consistent set is refused."""
         meta_path = os.path.join(path, MANIFEST)
-        if not os.path.exists(meta_path):
+        if not os.path.lexists(meta_path):
             return
-        meta = json.load(open(meta_path))
-        if meta.get("schema") != 1 or meta.get("kind") != "aurora-audio-tuning":
+        raw = read_bounded(meta_path, MAX_MANIFEST_BYTES)
+        meta = json.loads(raw)
+        if not isinstance(meta, dict) or meta.get("schema") != SCHEMA \
+                or meta.get("kind") != "aurora-audio-tuning":
             raise ValueError("unknown speaker tuning manifest")
+        acoustic = meta.get("acoustic_id")
+        if type(acoustic) is not int or not 0 < acoustic < 100000:
+            raise ValueError("malformed acoustic_id")
+        aid = f"AID{acoustic}"
+        selection = (DATABASE, config_name(acoustic))
+        if meta.get("aid") != aid:
+            raise ValueError("manifest aid does not match acoustic_id")
+        if meta.get("complete") is not True:
+            raise ValueError("incomplete speaker tuning bundle")
+        if meta.get("device_dsp_database") != DATABASE \
+                or meta.get("config") != config_name(acoustic):
+            raise ValueError("speaker tuning bundle lacks its selection data")
+        records = meta.get("files")
+        if not isinstance(records, list) or len(records) > MAX_FILES + len(selection):
+            raise ValueError("malformed speaker tuning file list")
+        folder = 0
+        paths = set()
+        for rec in records:
+            rel = rec.get("path") if isinstance(rec, dict) else None
+            if not isinstance(rel, str) or not admitted(rel) or rel in paths:
+                raise ValueError(f"inadmissible tuning path {rel!r}")
+            if rel.startswith(aid + "/"):
+                folder += 1
+            elif rel not in selection:
+                raise ValueError(f"tuning path outside the bundle layout {rel!r}")
+            paths.add(rel)
+        count = meta.get("source_file_count")
+        if type(count) is not int or count <= 0 or count != folder:
+            raise ValueError("speaker tuning file count does not match its entries")
+        if not all(name in paths for name in selection):
+            raise ValueError("speaker tuning bundle lacks its selection data")
+        spts = meta.get("speaker_thiele_small")
+        if spts is not None:
+            if not isinstance(spts, dict) or spts.get("path") != SPTS:
+                raise ValueError("malformed speaker-thiele-small record")
+            records = records + [spts]
+        root = os.path.realpath(path)
         bundle = {}
-        records = list(meta["files"])
-        if meta.get("speaker_thiele_small"):
-            records.append(meta["speaker_thiele_small"])
+        total = 0
         for rec in records:
             rel = rec["path"]
-            if not admitted(rel):
-                raise ValueError(f"inadmissible tuning path {rel!r}")
-            data = open(os.path.join(path, rel), "rb").read()
-            if len(data) != rec["bytes"] or hashlib.sha256(data).hexdigest() != rec["sha256"]:
+            size = rec.get("bytes")
+            limit = MAX_SPTS_BYTES if rel == SPTS else MAX_BYTES - total
+            if type(size) is not int or not 0 <= size <= limit:
+                raise ValueError(f"tuning file over budget: {rel}")
+            full = os.path.join(root, rel)
+            if os.path.realpath(full) != full:
+                raise ValueError(f"tuning file is reached through a link: {rel}")
+            data = read_bounded(full, size)
+            if len(data) != size or hashlib.sha256(data).hexdigest() != rec.get("sha256"):
                 raise ValueError(f"tuning file changed: {rel}")
+            if rel != SPTS:
+                total += size
             bundle[rel] = data
-        bundle[MANIFEST] = open(meta_path, "rb").read()
+        bundle[MANIFEST] = raw
         self._publish(bundle)
 
     def write_fallback(self, directory):
-        """Write audio-tuning/ for the raw fallback archive under directory."""
-        for rel, data in self.bundle.items():
-            dest = os.path.join(directory, FALLBACK_DIR, rel)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "wb") as fd:
-                fd.write(data)
-        return bool(self.bundle)
+        """Write audio-tuning/ for the raw fallback archive under directory.
+        A failure leaves no partial audio-tuning/ behind and never stops the
+        installation; the result says whether the bundle was written."""
+        if not self.bundle:
+            return False
+        target = os.path.join(directory, FALLBACK_DIR)
+        try:
+            for rel, data in self.bundle.items():
+                dest = os.path.join(target, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fd:
+                    fd.write(data)
+        except Exception as e:
+            log.warning(f"Speaker tuning left out of the fallback archive: {e}")
+            shutil.rmtree(target, ignore_errors=True)
+            return False
+        return True

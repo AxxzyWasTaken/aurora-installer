@@ -52,7 +52,11 @@
       let manifest = try JSONDecoder().decode(
         NativeAudioTuningInputs.Manifest.self,
         from: XCTUnwrap(files["apple/audio-tuning/manifest.json"]))
-      XCTAssertEqual(manifest.schema, 1)
+      XCTAssertEqual(manifest.schema, 2)
+      XCTAssertTrue(manifest.complete)
+      XCTAssertEqual(manifest.sourceFileCount, 2)
+      XCTAssertEqual(
+        manifest.sourceFileCount, manifest.files.filter { $0.path.hasPrefix("AID35/") }.count)
       XCTAssertEqual(manifest.acousticID, 35)
       XCTAssertEqual(manifest.aid, "AID35")
       XCTAssertEqual(manifest.macOSBuild, "00A000")
@@ -103,6 +107,88 @@
       var other = snapshot()
       other.selection["Config/AID9.plist"] = Data([1])
       XCTAssertThrowsError(try NativeAudioTuningInputs.files(other, prefix: "x/"))
+    }
+
+    func testManifestKeysMatchThePythonWriter() throws {
+      let files = try NativeAudioTuningInputs.files(snapshot(), prefix: "")
+      let object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: XCTUnwrap(files["manifest.json"])) as? [String: Any])
+      XCTAssertEqual(
+        Set(object.keys),
+        [
+          "schema", "kind", "source_file_count", "complete", "acoustic_id", "aid",
+          "macos_build", "speaker_thiele_small", "device_dsp_database", "config", "files",
+          "based_on",
+        ])
+      XCTAssertEqual(object["complete"] as? Bool, true)
+      XCTAssertEqual(object["source_file_count"] as? Int, 2)
+    }
+
+    func testAMissingSelectionFileIsNoBundle() throws {
+      for name in ["DeviceDSPDatabase.plist", "Config/AID35.plist"] {
+        var partial = snapshot()
+        partial.selection[name] = nil
+        XCTAssertThrowsError(try NativeAudioTuningInputs.files(partial, prefix: "x/"), name)
+        let source = partial
+        let collected = try NativeAudioTuningInputs.collect({ _ in source }, owner: 0)
+        XCTAssertTrue(collected.package.isEmpty && collected.fallback.isEmpty, name)
+      }
+    }
+
+    func testAShortSourceCountIsNoBundle() throws {
+      var short = snapshot()
+      short.sourceFileCount = 3
+      XCTAssertThrowsError(try NativeAudioTuningInputs.files(short, prefix: "x/"))
+      let source = short
+      let collected = try NativeAudioTuningInputs.collect({ _ in source }, owner: 0)
+      XCTAssertTrue(collected.package.isEmpty && collected.fallback.isEmpty)
+    }
+
+    func testLinksAreCopiesAndUnresolvedLinksFailTheSet() throws {
+      let base = NativeFirmwareInputFiles.Snapshot(
+        files: ["ADM/config.plist": Data("synthetic".utf8), "._sidecar": Data([0])],
+        links: ["ADM/alias.plist": "ADM/config.plist"])
+      let (files, count) = try NativeAudioTuningInputs.admittedFiles(base)
+      XCTAssertEqual(files["ADM/alias.plist"], Data("synthetic".utf8))
+      XCTAssertEqual(count, 2)
+      XCTAssertNil(files["._sidecar"])
+
+      var dangling = base
+      dangling.unresolved = ["ADM/gone.plist"]
+      XCTAssertThrowsError(try NativeAudioTuningInputs.admittedFiles(dangling))
+      // A sidecar link that resolves nowhere is not tuning data.
+      var sidecar = base
+      sidecar.unresolved = ["ADM/._gone.plist"]
+      XCTAssertNoThrow(try NativeAudioTuningInputs.admittedFiles(sidecar))
+      var missing = base
+      missing.links["ADM/other.plist"] = "ADM/absent.plist"
+      XCTAssertThrowsError(try NativeAudioTuningInputs.admittedFiles(missing))
+    }
+
+    func testTheSnapshotReportsDanglingAndDirectoryLinks() throws {
+      let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("tuning-\(UUID().uuidString)").resolvingSymlinksInPath()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let folder = root.appendingPathComponent("AID35/ADM")
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      try FileManager.default.createDirectory(
+        at: folder.appendingPathComponent("Sub"), withIntermediateDirectories: true)
+      try Data("synthetic".utf8).write(to: folder.appendingPathComponent("config.plist"))
+      try FileManager.default.createSymbolicLink(
+        atPath: folder.appendingPathComponent("alias.plist").path,
+        withDestinationPath: "config.plist")
+      try FileManager.default.createSymbolicLink(
+        atPath: folder.appendingPathComponent("gone.plist").path,
+        withDestinationPath: "missing.plist")
+      try FileManager.default.createSymbolicLink(
+        atPath: folder.appendingPathComponent("dir").path, withDestinationPath: "Sub")
+      let owner = geteuid()
+      let snapshot = try NativeFirmwareInputFiles.snapshot(
+        root: root, prefix: "AID35",
+        tree: NativeHandoffFileTree(root, protected: true, owner: owner), owner: owner)
+      XCTAssertEqual(snapshot.links, ["ADM/alias.plist": "ADM/config.plist"])
+      XCTAssertEqual(snapshot.unresolved, ["ADM/dir", "ADM/gone.plist"])
+      XCTAssertThrowsError(try NativeAudioTuningInputs.admittedFiles(snapshot))
     }
 
     func testNoSnapshotIsNoFiles() throws {

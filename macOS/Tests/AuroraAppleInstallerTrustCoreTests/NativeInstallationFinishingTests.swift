@@ -186,7 +186,11 @@
               files: [
                 "DSP/Graphs/builtin_speaker_out.dspg": Data("graphName \"synthetic\"\n".utf8),
                 "DSP/Strips/builtin_speaker_out_general.austrip": Data("synthetic strip".utf8),
-              ], build: "00A000")
+              ], build: "00A000",
+              selection: [
+                "DeviceDSPDatabase.plist": Data("synthetic database entry".utf8),
+                "Config/AID\(self.machine == "j314s" ? 8 : 1).plist": Data("synthetic config".utf8),
+              ])
           })
       }
       var recovery: NativeRecoveryInstallation {

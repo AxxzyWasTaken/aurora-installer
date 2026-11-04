@@ -50,6 +50,8 @@
     /// AID35 is 34 files and 2.4 MB; these bounds leave ample room.
     static let maximumFiles = 1024
     static let maximumBytes = 64 << 20
+    /// The manifest schema. 2 adds `source_file_count` and `complete`.
+    static let schema = 2
 
     struct Snapshot: Sendable, Equatable {
       /// The `acoustic-id` value, e.g. 35.
@@ -67,6 +69,9 @@
       /// strip each uses), and `Config/AID<n>.plist` unchanged (output
       /// volume ranges and scalars).
       var selection: [String: Data] = [:]
+      /// Admitted entries of the source folder (regular files and links to
+      /// them). Nil means `files.count`; anything else must equal it.
+      var sourceFileCount: Int? = nil
     }
 
     struct Manifest: Codable, Equatable {
@@ -77,6 +82,12 @@
       }
       let schema: Int
       let kind: String
+      /// Entries of the source `AID<n>` folder; equals the `AID<n>/`
+      /// records in `files`.
+      let sourceFileCount: Int
+      /// True only for a full set: every folder entry and both selection
+      /// files. Readers refuse anything else.
+      let complete: Bool
       let acousticID: UInt32
       let aid: String
       let macOSBuild: String
@@ -89,7 +100,8 @@
       let basedOn: String
 
       enum CodingKeys: String, CodingKey {
-        case schema, kind, aid, files, config
+        case schema, kind, aid, files, config, complete
+        case sourceFileCount = "source_file_count"
         case acousticID = "acoustic_id"
         case macOSBuild = "macos_build"
         case speakerThieleSmall = "speaker_thiele_small"
@@ -161,12 +173,7 @@
       }
       let snapshot = try NativeFirmwareInputFiles.snapshot(
         root: root, prefix: prefix, tree: tree, owner: owner)
-      var files = [String: Data]()
-      for (name, data) in snapshot.files where admitted(name) { files[name] = data }
-      // A link stays within its own directory; keep it as a copy of its target.
-      for (alias, target) in snapshot.links where admitted(alias) {
-        if let data = files[target] { files[alias] = data }
-      }
+      let (files, count) = try admittedFiles(snapshot)
       var selection = [String: Data]()
       let database = tuningsPrefix + "/" + databaseName
       if try !tree.isAbsent(database),
@@ -183,7 +190,33 @@
       }
       return Snapshot(
         acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build(),
-        selection: selection)
+        selection: selection, sourceFileCount: count)
+    }
+
+    /// The folder's admitted files, with each admitted link kept as a copy
+    /// of its target, and the number of admitted entries. A link that does
+    /// not end at a regular file of the folder fails the whole set, so a
+    /// short read never becomes a bundle.
+    static func admittedFiles(
+      _ snapshot: NativeFirmwareInputFiles.Snapshot
+    ) throws -> (files: [String: Data], count: Int) {
+      var files = [String: Data]()
+      var count = 0
+      for (name, data) in snapshot.files where admitted(name) {
+        files[name] = data
+        count += 1
+      }
+      guard !snapshot.unresolved.contains(where: admitted) else {
+        throw NativeFirmwareInputFailure.invalidSource
+      }
+      for (alias, target) in snapshot.links where admitted(alias) {
+        guard let data = snapshot.files[target] else {
+          throw NativeFirmwareInputFailure.invalidSource
+        }
+        files[alias] = data
+        count += 1
+      }
+      return (files, count)
     }
 
     /// `acoustic-id` and `speaker-thiele-small` of the one device-tree audio
@@ -253,9 +286,15 @@
     /// file's size and SHA-256. Empty for no snapshot.
     static func files(_ snapshot: Snapshot?, prefix: String) throws -> [String: Data] {
       guard let snapshot else { return [:] }
-      guard !snapshot.files.isEmpty, snapshot.files.count <= maximumFiles else {
+      guard !snapshot.files.isEmpty, snapshot.files.count <= maximumFiles,
+        (snapshot.sourceFileCount ?? snapshot.files.count) == snapshot.files.count
+      else {
         throw NativePeripheralInputError.localInput
       }
+      // Only a complete set is a bundle: both selection files are required.
+      guard snapshot.selection[databaseName] != nil,
+        snapshot.selection[configName(snapshot.acousticID)] != nil
+      else { throw NativePeripheralInputError.localInput }
       let aid = folder(snapshot.acousticID)
       var result = [String: Data]()
       var records = [Manifest.File]()
@@ -291,11 +330,10 @@
           path: thieleSmallName, bytes: spts.count, sha256: NativeStubFileStore.hash(spts))
       }
       let manifest = Manifest(
-        schema: 1, kind: "aurora-audio-tuning", acousticID: snapshot.acousticID, aid: aid,
+        schema: schema, kind: "aurora-audio-tuning", sourceFileCount: snapshot.files.count,
+        complete: true, acousticID: snapshot.acousticID, aid: aid,
         macOSBuild: snapshot.build, speakerThieleSmall: thieleSmall,
-        deviceDSPDatabase: snapshot.selection[databaseName] == nil ? nil : databaseName,
-        config: snapshot.selection[configName(snapshot.acousticID)] == nil
-          ? nil : configName(snapshot.acousticID),
+        deviceDSPDatabase: databaseName, config: configName(snapshot.acousticID),
         files: records,
         basedOn: "aurora-audio-dsp by saku (MIT)")
       let encoder = JSONEncoder()

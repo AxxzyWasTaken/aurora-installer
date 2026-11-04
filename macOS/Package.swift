@@ -1,6 +1,13 @@
 // swift-tools-version: 6.2
 
+import Foundation
 import PackageDescription
+
+// A build-time opt-in, restricted to debug even if the environment is set for
+// a release build. Installed applications never read this environment variable.
+let localPayloadTestSettings: [SwiftSetting] =
+  ProcessInfo.processInfo.environment["AURORA_LOCAL_PAYLOAD_TEST_BUILD"] == "1"
+  ? [.define("AURORA_LOCAL_PAYLOAD_TEST_BUILD", .when(configuration: .debug))] : []
 
 let package = Package(
   name: "AuroraAppleInstallerTrustCore",
@@ -82,6 +89,7 @@ let package = Package(
       name: "AuroraAppleInstallerTrustCore",
       dependencies: ["AuroraInstallerSystem", "RecoveryAccountCore", "AuroraFirmware"],
       path: "Sources/AuroraAppleInstaller",
+      swiftSettings: localPayloadTestSettings,
       plugins: ["AuroraInstallerIdentityPlugin"]
     ),
     .target(
@@ -109,7 +117,8 @@ let package = Package(
         "AuroraAppleInstallerTrustCore", "RecoveryAccountCore", "NativeFirmwareFixtureSupport",
       ],
       path: "Tests/AuroraAppleInstallerTrustCoreTests",
-      resources: [.copy("Fixtures")]
+      resources: [.copy("Fixtures")],
+      swiftSettings: localPayloadTestSettings
     ),
     .testTarget(
       name: "AuroraInstallerLifecycleTests",

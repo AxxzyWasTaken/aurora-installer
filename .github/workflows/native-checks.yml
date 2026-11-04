@@ -107,12 +107,22 @@ jobs:
           arguments=(--package-path "$PWD" --configuration debug)
           if [[ -n $NATIVE_TEST_FILTER ]]; then arguments+=(--filter "$NATIVE_TEST_FILTER"); fi
           xcodebuildmcp swift-package test "${arguments[@]}" 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-debug.log"
-      - name: Run release Swift tests
+      - name: Run release Swift tests with local source opt-in ignored
+        env:
+          AURORA_LOCAL_PAYLOAD_TEST_BUILD: '1'
         run: |
           set -euo pipefail
           arguments=(--package-path "$PWD" --configuration release)
           if [[ -n $NATIVE_TEST_FILTER ]]; then arguments+=(--filter "$NATIVE_TEST_FILTER"); fi
           xcodebuildmcp swift-package test "${arguments[@]}" 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-release.log"
+      - name: Verify local source in an opted-in test build
+        env:
+          AURORA_LOCAL_PAYLOAD_TEST_BUILD: '1'
+        run: |
+          set -euo pipefail
+          xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug \
+            --filter 'VerifiedArtifactStagerTests.testLocal' \
+            2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-local-payload.log"
       - name: Build the native preview
         run: bash Packaging/build-aurora-preview.sh "$RUNNER_TEMP/aurora-preview"
       - name: Check exact developer app and helper requirements

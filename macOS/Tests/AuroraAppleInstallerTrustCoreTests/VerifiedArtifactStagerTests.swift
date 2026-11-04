@@ -75,6 +75,117 @@ final class VerifiedArtifactStagerTests: XCTestCase {
     }
   }
 
+  func testLocalPayloadBuildPolicy() {
+    let requested = temporaryDirectory()
+    // Derive the expectation independently of the feature's compiler flag.
+    // An opted-in CI run must fail if the manifest ever drops that flag.
+    #if DEBUG
+      let expected = ProcessInfo.processInfo.environment["AURORA_LOCAL_PAYLOAD_TEST_BUILD"] == "1"
+    #else
+      let expected = false
+    #endif
+    if expected {
+      XCTAssertEqual(InstallerLocalPayloadPolicy.directory(requested: requested), requested)
+      XCTAssertEqual(
+        InstallerLocalPayloadPolicy.directory()?.path,
+        "/Users/Shared/AuroraInstallerTestPayloads")
+    } else {
+      // Release CI sets the build-time opt-in too: release configuration must
+      // still reject both the default source and an injected populated cache.
+      XCTAssertNil(InstallerLocalPayloadPolicy.directory(requested: requested))
+      XCTAssertNil(InstallerLocalPayloadPolicy.directory())
+    }
+  }
+
+  func testLocalPayloadSourceUsesSignedPinsOrIsIgnoredInRelease() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let cache = root.appendingPathComponent("cache")
+    for role in ["metadata", "payload"] {
+      let data = Data("signed \(role)".utf8)
+      let artifact = try PinnedInstallerArtifact(
+        role: role, sourceURL: URL(string: "https://example.invalid/\(role)")!,
+        fileName: role, expectedDigest: digest(data), expectedSizeBytes: UInt64(data.count))
+      let source = cache.appendingPathComponent(String(artifact.expectedDigest.dropFirst(7)))
+        .appendingPathComponent(artifact.fileName)
+      try FileManager.default.createDirectory(
+        at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try data.write(to: source)
+      let downloader = FixtureArtifactDownloader(data: data)
+      let stager = VerifiedArtifactStager(downloader: downloader, localPayloadDirectory: cache)
+      let stage = root.appendingPathComponent("stage-" + role)
+      let result = try await stager.stage(artifact, in: stage)
+      XCTAssertEqual(try Data(contentsOf: result.fileURL), data)
+      XCTAssertEqual(try Data(contentsOf: source), data)
+      let downloads = await downloader.downloadCount
+      #if DEBUG && AURORA_LOCAL_PAYLOAD_TEST_BUILD
+        XCTAssertFalse(stager.requiresNetwork(for: artifact))
+        XCTAssertEqual(downloads, 0)
+        // A staged copy is independent of the operator's cache.
+        try Data(repeating: 0, count: data.count).write(to: source)
+        XCTAssertEqual(try Data(contentsOf: result.fileURL), data)
+        await assertThrows(
+          try await stager.stage(artifact, in: root.appendingPathComponent("digest-" + role))
+        ) {
+          guard case .digestMismatch = $0 as? ArtifactStageError else {
+            return XCTFail("Expected digest mismatch, got \($0)")
+          }
+        }
+        try Data([0]).write(to: source)
+        await assertThrows(
+          try await stager.stage(artifact, in: root.appendingPathComponent("size-" + role))
+        ) {
+          XCTAssertEqual(
+            $0 as? ArtifactStageError,
+            .sizeMismatch(expected: UInt64(data.count), actual: 1))
+        }
+        try FileManager.default.removeItem(at: source)
+        // Missing files fail locally; no fallback to an unpublished URL.
+        await assertThrows(
+          try await stager.stage(artifact, in: root.appendingPathComponent("missing-" + role))
+        ) { _ in }
+        try data.write(to: root.appendingPathComponent("link-target"))
+        try FileManager.default.createSymbolicLink(
+          at: source, withDestinationURL: root.appendingPathComponent("link-target"))
+        await assertThrows(
+          try await stager.stage(artifact, in: root.appendingPathComponent("symlink-" + role))
+        ) {
+          XCTAssertEqual($0 as? ArtifactStageError, .unsafeStagedFile(artifact.fileName))
+        }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("link-target"))
+        let finalDownloads = await downloader.downloadCount
+        XCTAssertEqual(finalDownloads, 0)
+      #else
+        XCTAssertTrue(stager.requiresNetwork(for: artifact))
+        XCTAssertEqual(downloads, 1, "Release must ignore a populated local source")
+      #endif
+    }
+  }
+
+  #if DEBUG && AURORA_LOCAL_PAYLOAD_TEST_BUILD
+    func testLocalWholePayloadWithCatalogPartsIsVerifiedWithoutDownloadingParts() async throws {
+      let data = Data("whole zip bytes".utf8)
+      let fixture = try partsFixture(data: data)
+      let root = temporaryDirectory()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let cache = root.appendingPathComponent("cache")
+      let source = cache.appendingPathComponent(
+        String(fixture.artifact.expectedDigest.dropFirst(7))
+      )
+      .appendingPathComponent(fixture.artifact.fileName)
+      try FileManager.default.createDirectory(
+        at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try data.write(to: source)
+      let downloader = FixtureArtifactDownloader(data: Data())
+      let stager = VerifiedArtifactStager(downloader: downloader, localPayloadDirectory: cache)
+      let result = try await stager.stage(
+        fixture.artifact, in: root.appendingPathComponent("stage"))
+      XCTAssertEqual(try Data(contentsOf: result.fileURL), data)
+      let count = await downloader.downloadCount
+      XCTAssertEqual(count, 0)
+    }
+  #endif
+
   func testExactExistingArtifactIsReusedWithoutDownload() async throws {
     let data = Data("pinned installer payload".utf8)
     let downloader = FixtureArtifactDownloader(data: data)

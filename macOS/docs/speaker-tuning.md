@@ -15,19 +15,20 @@ The installer copies both, read-only, from the user's own running macOS into the
 | `acoustic-id` | device tree `/product/audio` (one audio node; a little-endian 32-bit word) | every Mac with built-in audio |
 | tuning folder | `/System/Library/Audio/Tunings/AID<acoustic-id>/`, every regular file, recursively | every Mac with an `acoustic-id` |
 | `speaker-thiele-small` | the same device-tree node, raw bytes | Macs with speaker calibration (MacBook Air and Pro); absent on Mac mini, iMac and Mac Studio |
-| DSP database entry | `/System/Library/Audio/Tunings/DeviceDSPDatabase.plist`, only the `AID<acoustic-id>` key, re-encoded as an XML property list with that one key | Macs with an entry |
-| volume configuration | `/System/Library/Audio/Tunings/Config/AID<acoustic-id>.plist`, unchanged | Macs with one |
+| DSP database entry | `/System/Library/Audio/Tunings/DeviceDSPDatabase.plist`, only the `AID<acoustic-id>` key, re-encoded as an XML property list with that one key | required |
+| volume configuration | `/System/Library/Audio/Tunings/Config/AID<acoustic-id>.plist`, unchanged | required |
 
 The DSP database entry is the selection table. For each built-in speaker configuration (general, voice, movie and so on, per speaker vendor) it gives the graph, strip and property strip to use, and the underlying device properties that select among them. The volume configuration gives the speaker's output volume range and scalars. Both are needed to reproduce macOS's speaker graph and loudness.
 
 The speaker vendor ID that selects among vendor variants is a property of macOS's underlying audio device, not one the installer has located in the device tree. It is not collected yet. It will be added to the manifest once its source is established.
 
 - The tuning folder is read from the sealed, read-only system volume, with the same protected-tree reader the installer uses for system Wi-Fi firmware.
-- AppleDouble (`._*`) and `.DS_Store` sidecars are skipped. A link is kept only when it names a file inside the folder, and is stored as a copy of that file.
+- AppleDouble (`._*`) and `.DS_Store` sidecars are skipped. A link is kept only when it names a regular file inside the folder, and is stored as a copy of that file.
+- A short read fails the whole collection: a directory that cannot be listed, a link to a directory, a link that does not resolve to a regular file inside the folder, or a missing DSP database entry or volume configuration. There is no partial bundle.
 - A Mac without speaker calibration still gets its tuning folder. A Mac without an `acoustic-id`, or without a folder for it, gets nothing and installs normally.
 - Collection never stops an installation. A failure, an ambiguous device tree (two audio nodes with an `acoustic-id`) or an implausible input leaves the tuning out entirely, never partly. Linux then uses its family fallback profiles. Cancellation still ends the step.
 - Every Mac with a protection unit is covered the same way, because the whole folder is copied. On the MacBook Neo (`AID44`), the protection parameters (lsm2) live in the speaker strip's preset, not in a separate plist, so the strip is the parameter source. On the V/I MacBooks, spp3 also has a sidecar plist. No unit-specific selection happens at collection time.
-- Bounds: at most 1024 files and 64 MiB per folder, and 4 KiB for the calibration record. The largest folder seen so far is 34 files and 2.4 MB.
+- Bounds: at most 1024 files and 64 MiB for the folder and the selection data together, 64 MiB for the DSP database read, 1 MiB for the volume configuration, and 4 KiB for the calibration record. The largest folder seen so far is 34 files and 2.4 MB.
 
 ## Outputs
 
@@ -48,12 +49,14 @@ apple/audio-tuning/
 
 On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is `/lib/firmware/vendor/apple/audio-tuning/`. The ESP copy in `vendorfw/firmware.tar` is the source of truth when that tree is absent. A firmware rebuild from the fallback archive (`asahi_firmware.update`) re-verifies every file against `manifest.json` before it repackages them; a changed file leaves the tuning out.
 
-### `manifest.json`, schema 1
+### `manifest.json`, schema 2
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "aurora-audio-tuning",
+  "source_file_count": 34,
+  "complete": true,
   "acoustic_id": 35,
   "aid": "AID35",
   "macos_build": "25G83",
@@ -65,10 +68,13 @@ On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is
 }
 ```
 
+- `source_file_count` is the number of entries of the source `AID<n>` folder that were collected (regular files and links to them, sidecars excluded). It equals the number of `files` records whose path starts with `AID<n>/`.
+- `complete` is `true`. Only a complete set is ever written: every entry of the folder and both selection files.
 - `speaker_thiele_small` is `null` on Macs without calibration.
-- `device_dsp_database` and `config` name the selection files, and are absent or `null` when the Mac has none. Those files are also listed in `files`.
+- `device_dsp_database` is `DeviceDSPDatabase.plist` and `config` is `Config/AID<n>.plist`. Both files are also listed in `files`.
 - `macos_build` is the running macOS build the folder was read from. A later macOS update can change the tuning, and re-running the firmware step collects the new set.
 - Paths are relative to the manifest's directory. Readers must reject absolute paths, `.` or `..` components, and any file whose size or SHA-256 differs from the manifest.
+- Readers must also refuse the bundle unless: `schema` is 2; `complete` is `true`; `aid` is `"AID"` followed by `acoustic_id`; `device_dsp_database` and `config` hold the names above and both are listed in `files`; every `files` path is under `AID<n>/` or is one of those two names, with no duplicates; `source_file_count` equals the number of `AID<n>/` records; each file is a regular file reached without links; and the file and byte bounds above hold. Schema 1 bundles cannot show completeness and are refused.
 
 The bundle is a superset of the one saku's collector writes (`audio-tuning-AID<n>/` with `AID<n>/`, `speaker-thiele-small.bin` and `metadata.json`), and the Linux reader accepts both layouts.
 

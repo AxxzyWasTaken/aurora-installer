@@ -17,10 +17,11 @@ The installer copies both, read-only, from the user's own running macOS into the
 | `speaker-thiele-small` | the same device-tree node, raw bytes | Macs with speaker calibration (MacBook Air and Pro); absent on Mac mini, iMac and Mac Studio |
 | DSP database entry | `/System/Library/Audio/Tunings/DeviceDSPDatabase.plist`, only the `AID<acoustic-id>` key, re-encoded as an XML property list with that one key | required |
 | volume configuration | `/System/Library/Audio/Tunings/Config/AID<acoustic-id>.plist`, unchanged | required |
+| speaker ID (`spid`) | IORegistry service plane: `speakerID` of the one `AppleEmbeddedAudioDevice` whose `device UID` is `Speaker` | Macs whose speaker driver publishes it (the J616s does); optional |
 
 The DSP database entry is the selection table. For each built-in speaker configuration (general, voice, movie and so on, per speaker vendor) it gives the graph, strip and property strip to use, and the underlying device properties that select among them. The volume configuration gives the speaker's output volume range and scalars. Both are needed to reproduce macOS's speaker graph and loudness.
 
-The speaker vendor ID that selects among vendor variants is a property of macOS's underlying audio device, not one the installer has located in the device tree. It is not collected yet. It will be added to the manifest once its source is established.
+The speaker ID selects among the speaker vendor variants in the DSP database entry. It is the HAL's `spid` property, which macOS reads from the IORegistry property `speakerID` of the built-in speaker device (`AppleEmbeddedAudioDevice`, `device UID` `Speaker`). The driver builds it from the speaker assembly's strap pins and publishes 65535 when the strap is not a valid ID. The native installer reads it through IOKit, read only, without opening any user client. The Python installer reads the same property with `ioreg`. Exactly one `Speaker` service must carry it as an integer from 0 to 4294967295. Otherwise the ID is unknown, and an unknown ID never fails collection. The value is stored as reported, so 65535 is kept as 65535.
 
 - The tuning folder is read from the sealed, read-only system volume, with the same protected-tree reader the installer uses for system Wi-Fi firmware.
 - AppleDouble (`._*`) and `.DS_Store` sidecars are skipped. A link is kept only when it names a regular file inside the folder, and is stored as a copy of that file.
@@ -63,6 +64,7 @@ On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is
   "speaker_thiele_small": {"path": "speaker-thiele-small.bin", "bytes": 138, "sha256": "…"},
   "device_dsp_database": "DeviceDSPDatabase.plist",
   "config": "Config/AID35.plist",
+  "speaker_id": 3,
   "files": [{"path": "AID35/ADM/config.plist", "bytes": 1234, "sha256": "…"}],
   "based_on": "aurora-audio-dsp by saku (MIT)"
 }
@@ -72,6 +74,7 @@ On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is
 - `complete` is `true`. Only a complete set is ever written: every entry of the folder and both selection files.
 - `speaker_thiele_small` is `null` on Macs without calibration.
 - `device_dsp_database` is `DeviceDSPDatabase.plist` and `config` is `Config/AID<n>.plist`. Both files are also listed in `files`.
+- `speaker_id` is the speaker ID (`spid`) as an integer from 0 to 4294967295, kept exactly as macOS reports it (65535 means an invalid strap). It is omitted or `null` when unknown. Readers accept it missing, `null`, or such an integer, and refuse the bundle for any other value (boolean, fraction, negative, string). It does not change the schema version.
 - `macos_build` is the running macOS build the folder was read from. A later macOS update can change the tuning, and re-running the firmware step collects the new set.
 - Paths are relative to the manifest's directory. Readers must reject absolute paths, `.` or `..` components, and any file whose size or SHA-256 differs from the manifest.
 - Readers must also refuse the bundle unless: `schema` is 2; `complete` is `true`; `aid` is `"AID"` followed by `acoustic_id`; `device_dsp_database` and `config` hold the names above and both are listed in `files`; every `files` path is under `AID<n>/` or is one of those two names, with no duplicates; `source_file_count` equals the number of `AID<n>/` records; each file is a regular file reached without links; and the file and byte bounds above hold. Schema 1 bundles cannot show completeness and are refused.

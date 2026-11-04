@@ -191,6 +191,71 @@
       XCTAssertThrowsError(try NativeAudioTuningInputs.admittedFiles(snapshot))
     }
 
+    func testTheSpeakerIDComesFromTheOneSpeakerService() {
+      let speaker: [String: Any] = ["device UID": "Speaker", "speakerID": NSNumber(value: UInt32(3))]
+      let codec: [String: Any] = ["device UID": "Codec Output", "speakerID": NSNumber(value: 1)]
+      XCTAssertEqual(NativeAudioTuningInputs.liveSpeakerID { [speaker, codec] }, 3)
+      XCTAssertEqual(
+        NativeAudioTuningInputs.speakerID([["device UID": "Speaker", "speakerID": 65535]]), 65535)
+      XCTAssertEqual(
+        NativeAudioTuningInputs.speakerID([
+          ["device UID": "Speaker", "speakerID": NSNumber(value: UInt32.max)]
+        ]), UInt32.max)
+      // Absent, duplicated, malformed or out of range is unknown.
+      XCTAssertNil(NativeAudioTuningInputs.liveSpeakerID { [] })
+      XCTAssertNil(NativeAudioTuningInputs.speakerID([["device UID": "Speaker"]]))
+      XCTAssertNil(NativeAudioTuningInputs.speakerID([codec]))
+      XCTAssertNil(NativeAudioTuningInputs.speakerID([speaker, speaker]))
+      for bad: Any in [
+        "3", true, 3.0, Double(2.5), -1, Int64(UInt32.max) + 1, UInt64.max, Data([3, 0, 0, 0]),
+      ] {
+        XCTAssertNil(
+          NativeAudioTuningInputs.speakerID([["device UID": "Speaker", "speakerID": bad]]),
+          "\(bad)")
+      }
+    }
+
+    func testTheManifestCarriesTheSpeakerID() throws {
+      for id: UInt32? in [3, 65535, nil] {
+        var source = snapshot()
+        source.speakerID = id
+        let files = try NativeAudioTuningInputs.files(source, prefix: "")
+        let data = try XCTUnwrap(files["manifest.json"])
+        let manifest = try JSONDecoder().decode(NativeAudioTuningInputs.Manifest.self, from: data)
+        XCTAssertEqual(manifest.speakerID, id)
+        let object = try XCTUnwrap(
+          JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["speaker_id"] as? Int, id.map(Int.init))
+        // Re-encoding the decoded manifest gives the same bytes.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
+        XCTAssertEqual(try encoder.encode(manifest), data)
+      }
+      // A manifest with speaker_id null decodes as unknown.
+      var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: XCTUnwrap(try NativeAudioTuningInputs.files(snapshot(), prefix: "")["manifest.json"]))
+          as? [String: Any])
+      object["speaker_id"] = NSNull()
+      let decoded = try JSONDecoder().decode(
+        NativeAudioTuningInputs.Manifest.self, from: JSONSerialization.data(withJSONObject: object))
+      XCTAssertNil(decoded.speakerID)
+    }
+
+    func testAnUnknownSpeakerIDNeverFailsCollection() throws {
+      var unknown = snapshot()
+      unknown.speakerID = nil
+      let source = unknown
+      let collected = try NativeAudioTuningInputs.collect({ _ in source }, owner: 0)
+      XCTAssertEqual(collected.package.count, 6)
+      var failing = snapshot()
+      failing.speakerID = 3
+      failing.selection["Config/AID35.plist"] = nil
+      let broken = failing
+      let none = try NativeAudioTuningInputs.collect({ _ in broken }, owner: 0)
+      XCTAssertTrue(none.package.isEmpty && none.fallback.isEmpty)
+    }
+
     func testNoSnapshotIsNoFiles() throws {
       XCTAssertTrue(try NativeAudioTuningInputs.files(nil, prefix: "x/").isEmpty)
     }

@@ -72,6 +72,10 @@
       /// Admitted entries of the source folder (regular files and links to
       /// them). Nil means `files.count`; anything else must equal it.
       var sourceFileCount: Int? = nil
+      /// The HAL's `spid`: IORegistry `speakerID` of the built-in speaker
+      /// device, which selects among speaker vendor variants. Nil when
+      /// unknown; 65535 (an invalid strap) is kept as reported.
+      var speakerID: UInt32? = nil
     }
 
     struct Manifest: Codable, Equatable {
@@ -96,6 +100,8 @@
       let deviceDSPDatabase: String?
       /// Bundle path of `Config/AID<n>.plist`, when present.
       let config: String?
+      /// The speaker ID (`spid`); omitted when unknown.
+      let speakerID: UInt32?
       let files: [File]
       let basedOn: String
 
@@ -106,6 +112,7 @@
         case macOSBuild = "macos_build"
         case speakerThieleSmall = "speaker_thiele_small"
         case deviceDSPDatabase = "device_dsp_database"
+        case speakerID = "speaker_id"
         case basedOn = "based_on"
       }
     }
@@ -190,7 +197,60 @@
       }
       return Snapshot(
         acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build(),
-        selection: selection, sourceFileCount: count)
+        selection: selection, sourceFileCount: count, speakerID: liveSpeakerID())
+    }
+
+    static let speakerServiceClass = "AppleEmbeddedAudioDevice"
+
+    /// The speaker ID from registry entries' `device UID` and `speakerID`:
+    /// exactly one entry must be the `Speaker` device, and its value an
+    /// integral CFNumber that fits a UInt32. Anything else is unknown.
+    static func speakerID(_ services: [[String: Any]]) -> UInt32? {
+      let speakers = services.filter { ($0["device UID"] as? String) == "Speaker" }
+      guard speakers.count == 1, let value = speakers[0]["speakerID"] else { return nil }
+      let object = value as AnyObject
+      guard CFGetTypeID(object) == CFNumberGetTypeID() else { return nil }
+      let number = unsafeBitCast(object, to: CFNumber.self)
+      var wide: Int64 = 0
+      guard !CFNumberIsFloatType(number), CFNumberGetValue(number, .sInt64Type, &wide),
+        wide >= 0, wide <= Int64(UInt32.max)
+      else { return nil }
+      return UInt32(wide)
+    }
+
+    /// The live speaker ID. `read` returns the registry entries; it is a
+    /// parameter so tests need no IOKit. Absence never fails collection.
+    static func liveSpeakerID(_ read: () -> [[String: Any]] = speakerServices) -> UInt32? {
+      speakerID(read())
+    }
+
+    /// `device UID` and `speakerID` of every `AppleEmbeddedAudioDevice` in
+    /// the service plane. Read only: no user client is opened and nothing
+    /// is written. Empty on any failure.
+    static func speakerServices() -> [[String: Any]] {
+      guard let matching = IOServiceMatching(speakerServiceClass) else { return [] }
+      var iterator: io_iterator_t = 0
+      guard
+        IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS
+      else { return [] }
+      defer { IOObjectRelease(iterator) }
+      var services = [[String: Any]]()
+      while true {
+        let entry = IOIteratorNext(iterator)
+        if entry == 0 { break }
+        defer { IOObjectRelease(entry) }
+        guard services.count < 256 else { return [] }
+        var properties = [String: Any]()
+        for key in ["device UID", "speakerID"] {
+          if let value = IORegistryEntryCreateCFProperty(
+            entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+          {
+            properties[key] = value
+          }
+        }
+        services.append(properties)
+      }
+      return services
     }
 
     /// The folder's admitted files, with each admitted link kept as a copy
@@ -334,6 +394,7 @@
         complete: true, acousticID: snapshot.acousticID, aid: aid,
         macOSBuild: snapshot.build, speakerThieleSmall: thieleSmall,
         deviceDSPDatabase: databaseName, config: configName(snapshot.acousticID),
+        speakerID: snapshot.speakerID,
         files: records,
         basedOn: "aurora-audio-dsp by saku (MIT)")
       let encoder = JSONEncoder()

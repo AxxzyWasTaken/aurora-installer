@@ -20,8 +20,14 @@ from asahi_firmware import audio_tuning  # noqa: E402
 from asahi_firmware.audio_tuning import AudioTuningFWCollection  # noqa: E402
 
 
-def fake_run(nodes, build=b"00A000\n"):
+def fake_run(nodes, build=b"00A000\n", speakers=None):
     def run(args, capture_output=True):
+        if args[0] == "ioreg" and "AppleEmbeddedAudioDevice" in args:
+            if speakers is None:
+                return subprocess.CompletedProcess(args, 0, b"", b"")
+            if isinstance(speakers, Exception):
+                raise speakers
+            return subprocess.CompletedProcess(args, 0, plistlib.dumps(speakers, fmt=plistlib.FMT_XML), b"")
         if args[0] == "ioreg":
             return subprocess.CompletedProcess(args, 0, plistlib.dumps(nodes, fmt=plistlib.FMT_XML), b"")
         if args[0] == "sysctl":
@@ -297,6 +303,78 @@ class CompletenessTest(unittest.TestCase):
             with self.assertLogs("asahi_firmware.audio_tuning", "WARNING"):
                 self.assertFalse(col.write_fallback(str(out)))
             self.assertFalse((out / "audio-tuning").exists())
+
+
+
+SPEAKER = {"device UID": "Speaker", "speakerID": 3}
+
+
+class SpeakerIDTest(unittest.TestCase):
+    def test_selection(self):
+        sid = audio_tuning.speaker_id
+        self.assertEqual(sid([SPEAKER, {"device UID": "Codec Output", "speakerID": 1}]), 3)
+        self.assertEqual(sid([{"device UID": "Speaker", "speakerID": 65535}]), 65535)
+        self.assertIsNone(sid([]))
+        self.assertIsNone(sid([{"device UID": "Speaker"}]))
+        self.assertIsNone(sid([SPEAKER, dict(SPEAKER)]))
+        for bad in (True, 3.0, -1, 1 << 32, "3", b"\x03\0\0\0"):
+            with self.subTest(bad):
+                self.assertIsNone(sid([{"device UID": "Speaker", "speakerID": bad}]))
+
+    def collected(self, root, speakers):
+        col = AudioTuningFWCollection(
+            tunings_root=str(root), run=fake_run(AID35, speakers=speakers))
+        return col, json.loads(dict(col.files())["apple/audio-tuning/manifest.json"].data)
+
+    def test_manifest_round_trip_and_fallback_recollection(self):
+        for speakers, expected in (([SPEAKER], 3),
+                                   ([{"device UID": "Speaker", "speakerID": 65535}], 65535),
+                                   (None, None),
+                                   ([{"device UID": "Speaker", "speakerID": 2.5}], None),
+                                   ([SPEAKER, SPEAKER], None),
+                                   (OSError("ioreg failed"), None)):
+            with self.subTest(expected=expected, speakers=speakers), \
+                    tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                tunings(root)
+                col, meta = self.collected(root, speakers)
+                self.assertIn("speaker_id", meta)
+                self.assertEqual(meta["speaker_id"], expected)
+                self.assertEqual(len(col.files()), 5)
+                out = root / "fallback"
+                self.assertTrue(col.write_fallback(str(out)))
+                again = AudioTuningFWCollection(str(out))
+                meta = json.loads(dict(again.files())["apple/audio-tuning/manifest.json"].data)
+                self.assertEqual(meta["speaker_id"], expected)
+
+    def test_update_checks_the_speaker_id(self):
+        accepted = {"missing": lambda m: m.pop("speaker_id"),
+                    "null": lambda m: m.update(speaker_id=None),
+                    "zero": lambda m: m.update(speaker_id=0),
+                    "max": lambda m: m.update(speaker_id=4294967295)}
+        refused = {"bool": True, "float": 3.0, "negative": -1, "string": "3",
+                   "overflow": 4294967296, "list": [3]}
+        for name, edit in accepted.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                out, bundle = fallback(tmp)
+                rewrite(bundle, edit)
+                self.assertEqual(len(AudioTuningFWCollection(str(out)).files()), 5)
+        for name, value in refused.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                out, bundle = fallback(tmp)
+                rewrite(bundle, lambda m: m.update(speaker_id=value))
+                self.assertEqual(AudioTuningFWCollection(str(out)).files(), [])
+
+    def test_collection_failure_stays_non_fatal_with_a_speaker_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            (root / "Config" / "AID35.plist").unlink()
+            with self.assertLogs("asahi_firmware.audio_tuning", "WARNING"):
+                col = AudioTuningFWCollection(
+                    tunings_root=str(root), run=fake_run(AID35, speakers=[SPEAKER]))
+            self.assertEqual(col.files(), [])
+            self.assertFalse(col.write_fallback(tmp))
 
 
 if __name__ == "__main__":

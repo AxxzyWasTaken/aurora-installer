@@ -131,6 +131,42 @@ def probe(run=subprocess.run):
     return found[0]
 
 
+SPEAKER_SERVICE = "AppleEmbeddedAudioDevice"
+MAX_SPEAKER_ID = 0xFFFFFFFF
+
+
+def speaker_id(services):
+    """The `speakerID` of the one AppleEmbeddedAudioDevice whose `device UID`
+    is `Speaker`: the HAL's `spid`, which selects among speaker vendor
+    variants. None (unknown) for no such service, several, or a value that
+    is not an integer from 0 to 2^32-1. 65535 (an invalid strap) is kept
+    as reported."""
+    if not isinstance(services, list):
+        return None
+    speakers = [s for s in services
+                if isinstance(s, dict) and s.get("device UID") == "Speaker"]
+    if len(speakers) != 1:
+        return None
+    value = speakers[0].get("speakerID")
+    if type(value) is not int or not 0 <= value <= MAX_SPEAKER_ID:
+        return None
+    return value
+
+
+def probe_speaker_id(run=subprocess.run):
+    """Read-only `speakerID` from the IORegistry service plane, or None.
+    Never fails the collection."""
+    try:
+        p = run(["ioreg", "-a", "-r", "-c", SPEAKER_SERVICE, "-k", "speakerID"],
+                capture_output=True)
+        if p.returncode != 0 or not p.stdout.strip():
+            return None
+        return speaker_id(plistlib.loads(p.stdout))
+    except Exception as e:
+        log.info(f"Speaker ID unknown: {e}")
+        return None
+
+
 def read_folder(path):
     """Regular files of a tuning folder by relative path, and the number of
     admitted entries found; links within the folder are kept as copies of
@@ -165,9 +201,11 @@ def read_folder(path):
     return files, count
 
 
-def manifest(aid, acoustic, files, spts, build, selection=None):
+def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None):
     selection = selection or {}
     return {
+        # The HAL's `spid` (IORegistry `speakerID`), or null when unknown.
+        "speaker_id": speaker,
         "schema": SCHEMA,
         "kind": "aurora-audio-tuning",
         # Entries of the source AID<n> folder (regular files and links to
@@ -193,7 +231,7 @@ def manifest(aid, acoustic, files, spts, build, selection=None):
     }
 
 
-def tree(acoustic, files, spts, build, selection=None, source_count=None):
+def tree(acoustic, files, spts, build, selection=None, source_count=None, speaker=None):
     """Relative path -> bytes for one bundle: AID<n>/..., the selection
     data, the record, the manifest. Only a complete set makes a bundle."""
     selection = selection or {}
@@ -211,6 +249,8 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None):
         raise ValueError("tuning folder over budget")
     if spts is not None and not 0 < len(spts) <= MAX_SPTS_BYTES:
         raise ValueError("implausible speaker-thiele-small")
+    if speaker is not None and (type(speaker) is not int or not 0 <= speaker <= MAX_SPEAKER_ID):
+        raise ValueError("implausible speaker ID")
     aid = f"AID{acoustic}"
     out = {}
     for rel, data in files.items():
@@ -220,7 +260,7 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None):
     out.update(selection)
     if spts is not None:
         out[SPTS] = spts
-    out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection),
+    out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection, speaker),
                                indent=2, sort_keys=True).encode("utf-8")
     return out
 
@@ -278,7 +318,8 @@ class AudioTuningFWCollection(object):
         cfg_path = os.path.join(tunings_root, config_name(acoustic))
         if os.path.lexists(cfg_path):
             selection[config_name(acoustic)] = read_bounded(cfg_path, MAX_CONFIG_BYTES)
-        self._publish(tree(acoustic, files, props[1], os_build(run), selection, count))
+        speaker = probe_speaker_id(run)
+        self._publish(tree(acoustic, files, props[1], os_build(run), selection, count, speaker))
         log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files)")
 
     def update(self, path):
@@ -299,6 +340,10 @@ class AudioTuningFWCollection(object):
         selection = (DATABASE, config_name(acoustic))
         if meta.get("aid") != aid:
             raise ValueError("manifest aid does not match acoustic_id")
+        speaker = meta.get("speaker_id")
+        if speaker is not None and (type(speaker) is not int
+                                    or not 0 <= speaker <= MAX_SPEAKER_ID):
+            raise ValueError("malformed speaker_id")
         if meta.get("complete") is not True:
             raise ValueError("incomplete speaker tuning bundle")
         if meta.get("device_dsp_database") != DATABASE \

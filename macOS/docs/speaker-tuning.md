@@ -20,6 +20,7 @@ The installer copies both, read-only, from the user's own running macOS into the
 - AppleDouble (`._*`) and `.DS_Store` sidecars are skipped. A link is kept only when it names a file inside the folder, and is stored as a copy of that file.
 - A Mac without speaker calibration still gets its tuning folder. A Mac without an `acoustic-id`, or without a folder for it, gets nothing and installs normally.
 - Collection never stops an installation. A failure, an ambiguous device tree (two audio nodes with an `acoustic-id`) or an implausible input leaves the tuning out entirely, never partly. Linux then uses its family fallback profiles. Cancellation still ends the step.
+- Every Mac with a protection unit is covered the same way, because the whole folder is copied. On the MacBook Neo (`AID44`), the protection parameters (lsm2) live in the speaker strip's preset, not in a separate plist, so the strip is the parameter source. On the V/I MacBooks, spp3 also has a sidecar plist. No unit-specific selection happens at collection time.
 - Bounds: at most 1024 files and 64 MiB per folder, and 4 KiB for the calibration record. The largest folder seen so far is 34 files and 2.4 MB.
 
 ## Outputs

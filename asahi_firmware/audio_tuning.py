@@ -49,6 +49,22 @@ PACKAGE_PREFIX = "apple/audio-tuning/"
 FALLBACK_DIR = "audio-tuning"
 MANIFEST = "manifest.json"
 SPTS = "speaker-thiele-small.bin"
+DATABASE = "DeviceDSPDatabase.plist"
+
+
+def config_name(acoustic):
+    return f"Config/AID{acoustic}.plist"
+
+
+def database_entry(data, acoustic):
+    """This Mac's entry of the DSP database, as a plist with that one key."""
+    root = plistlib.loads(data)
+    if not isinstance(root, dict):
+        raise ValueError("DSP database is not a dictionary")
+    key = f"AID{acoustic}"
+    if key not in root:
+        return None
+    return plistlib.dumps({key: root[key]}, fmt=plistlib.FMT_XML)
 MAX_FILES = 1024
 MAX_BYTES = 64 << 20
 BASED_ON = "aurora-audio-dsp by saku (MIT)"
@@ -112,7 +128,8 @@ def read_folder(path):
     return files
 
 
-def manifest(aid, acoustic, files, spts, build):
+def manifest(aid, acoustic, files, spts, build, selection=None):
+    selection = selection or {}
     return {
         "schema": 1,
         "kind": "aurora-audio-tuning",
@@ -121,15 +138,25 @@ def manifest(aid, acoustic, files, spts, build):
         "macos_build": build,
         "speaker_thiele_small": None if spts is None else {
             "path": SPTS, "bytes": len(spts), "sha256": hashlib.sha256(spts).hexdigest()},
+        "device_dsp_database": DATABASE if DATABASE in selection else None,
+        "config": config_name(acoustic) if config_name(acoustic) in selection else None,
         "files": [{"path": f"{aid}/{rel}", "bytes": len(files[rel]),
                    "sha256": hashlib.sha256(files[rel]).hexdigest()}
-                  for rel in sorted(files)],
+                  for rel in sorted(files)]
+                 + [{"path": name, "bytes": len(selection[name]),
+                     "sha256": hashlib.sha256(selection[name]).hexdigest()}
+                    for name in sorted(selection)],
         "based_on": BASED_ON,
     }
 
 
-def tree(acoustic, files, spts, build):
-    """Relative path -> bytes for one bundle: AID<n>/..., the record, the manifest."""
+def tree(acoustic, files, spts, build, selection=None):
+    """Relative path -> bytes for one bundle: AID<n>/..., the selection
+    data, the record, the manifest."""
+    selection = selection or {}
+    for name in selection:
+        if name not in (DATABASE, config_name(acoustic)):
+            raise ValueError(f"unexpected selection file {name!r}")
     if not files or len(files) > MAX_FILES:
         raise ValueError("empty or oversized tuning folder")
     if spts is not None and not 0 < len(spts) <= 4096:
@@ -140,9 +167,10 @@ def tree(acoustic, files, spts, build):
         if not admitted(rel):
             raise ValueError(f"inadmissible tuning path {rel!r}")
         out[f"{aid}/{rel}"] = data
+    out.update(selection)
     if spts is not None:
         out[SPTS] = spts
-    out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build),
+    out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection),
                                indent=2, sort_keys=True).encode("utf-8")
     return out
 
@@ -191,7 +219,16 @@ class AudioTuningFWCollection(object):
             log.info(f"No tuning folder {folder}")
             return
         files = read_folder(folder)
-        self._publish(tree(acoustic, files, props[1], os_build(run)))
+        selection = {}
+        db_path = os.path.join(tunings_root, DATABASE)
+        if os.path.isfile(db_path):
+            entry = database_entry(open(db_path, "rb").read(), acoustic)
+            if entry is not None:
+                selection[DATABASE] = entry
+        cfg_path = os.path.join(tunings_root, config_name(acoustic))
+        if os.path.isfile(cfg_path):
+            selection[config_name(acoustic)] = open(cfg_path, "rb").read()
+        self._publish(tree(acoustic, files, props[1], os_build(run), selection))
         log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files)")
 
     def update(self, path):

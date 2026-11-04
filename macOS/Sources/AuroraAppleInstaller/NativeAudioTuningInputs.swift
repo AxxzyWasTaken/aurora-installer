@@ -61,6 +61,12 @@
       var files: [String: Data]
       /// The macOS build the files came from, e.g. 25G83.
       var build: String
+      /// The machine's selection data from the Tunings root, by bundle path:
+      /// `DeviceDSPDatabase.plist` holding only this Mac's `AID<n>` entry
+      /// (the speaker configurations and the graph, strip and property
+      /// strip each uses), and `Config/AID<n>.plist` unchanged (output
+      /// volume ranges and scalars).
+      var selection: [String: Data] = [:]
     }
 
     struct Manifest: Codable, Equatable {
@@ -75,16 +81,39 @@
       let aid: String
       let macOSBuild: String
       let speakerThieleSmall: File?
+      /// Bundle path of the filtered DSP database, when the Mac has an entry.
+      let deviceDSPDatabase: String?
+      /// Bundle path of `Config/AID<n>.plist`, when present.
+      let config: String?
       let files: [File]
       let basedOn: String
 
       enum CodingKeys: String, CodingKey {
-        case schema, kind, aid, files
+        case schema, kind, aid, files, config
         case acousticID = "acoustic_id"
         case macOSBuild = "macos_build"
         case speakerThieleSmall = "speaker_thiele_small"
+        case deviceDSPDatabase = "device_dsp_database"
         case basedOn = "based_on"
       }
+    }
+
+    static let databaseName = "DeviceDSPDatabase.plist"
+    static func configName(_ acousticID: UInt32) -> String {
+      "Config/" + folder(acousticID) + ".plist"
+    }
+
+    /// This Mac's entry of the DSP database, as a property list with that
+    /// one key. Nil when the database has no entry for it.
+    static func databaseEntry(_ database: Data, acousticID: UInt32) throws -> Data? {
+      guard
+        let root = try PropertyListSerialization.propertyList(from: database, format: nil)
+          as? [String: Any]
+      else { throw NativePeripheralInputError.localInput }
+      let key = folder(acousticID)
+      guard let entry = root[key] else { return nil }
+      return try PropertyListSerialization.data(
+        fromPropertyList: [key: entry], format: .xml, options: 0)
     }
 
     /// `AID<n>`, the folder name for an acoustic ID.
@@ -138,8 +167,23 @@
       for (alias, target) in snapshot.links where admitted(alias) {
         if let data = files[target] { files[alias] = data }
       }
+      var selection = [String: Data]()
+      let database = tuningsPrefix + "/" + databaseName
+      if try !tree.isAbsent(database),
+        let entry = try databaseEntry(
+          NativeFirmwareInputFiles.read(tree, path: database, maximum: 64 << 20, owner: owner),
+          acousticID: acousticID)
+      {
+        selection[databaseName] = entry
+      }
+      let config = tuningsPrefix + "/" + configName(acousticID)
+      if try !tree.isAbsent(config) {
+        selection[configName(acousticID)] = try NativeFirmwareInputFiles.read(
+          tree, path: config, maximum: 1 << 20, owner: owner)
+      }
       return Snapshot(
-        acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build())
+        acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build(),
+        selection: selection)
     }
 
     /// `acoustic-id` and `speaker-thiele-small` of the one device-tree audio
@@ -227,6 +271,16 @@
           Manifest.File(
             path: aid + "/" + name, bytes: data.count, sha256: NativeStubFileStore.hash(data)))
       }
+      for name in snapshot.selection.keys.sorted() {
+        let data = snapshot.selection[name]!
+        guard name == databaseName || name == configName(snapshot.acousticID),
+          !data.isEmpty, data.count <= maximumBytes - total
+        else { throw NativePeripheralInputError.localInput }
+        total += data.count
+        result[prefix + name] = data
+        records.append(
+          Manifest.File(path: name, bytes: data.count, sha256: NativeStubFileStore.hash(data)))
+      }
       var thieleSmall: Manifest.File?
       if let spts = snapshot.thieleSmall {
         guard !spts.isEmpty, spts.count <= 4096 else {
@@ -238,7 +292,11 @@
       }
       let manifest = Manifest(
         schema: 1, kind: "aurora-audio-tuning", acousticID: snapshot.acousticID, aid: aid,
-        macOSBuild: snapshot.build, speakerThieleSmall: thieleSmall, files: records,
+        macOSBuild: snapshot.build, speakerThieleSmall: thieleSmall,
+        deviceDSPDatabase: snapshot.selection[databaseName] == nil ? nil : databaseName,
+        config: snapshot.selection[configName(snapshot.acousticID)] == nil
+          ? nil : configName(snapshot.acousticID),
+        files: records,
         basedOn: "aurora-audio-dsp by saku (MIT)")
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]

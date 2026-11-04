@@ -15,6 +15,12 @@ The installer copies both, read-only, from the user's own running macOS into the
 | `acoustic-id` | device tree `/product/audio` (one audio node; a little-endian 32-bit word) | every Mac with built-in audio |
 | tuning folder | `/System/Library/Audio/Tunings/AID<acoustic-id>/`, every regular file, recursively | every Mac with an `acoustic-id` |
 | `speaker-thiele-small` | the same device-tree node, raw bytes | Macs with speaker calibration (MacBook Air and Pro); absent on Mac mini, iMac and Mac Studio |
+| DSP database entry | `/System/Library/Audio/Tunings/DeviceDSPDatabase.plist`, only the `AID<acoustic-id>` key, re-encoded as an XML property list with that one key | Macs with an entry |
+| volume configuration | `/System/Library/Audio/Tunings/Config/AID<acoustic-id>.plist`, unchanged | Macs with one |
+
+The DSP database entry is the selection table. For each built-in speaker configuration (general, voice, movie and so on, per speaker vendor) it gives the graph, strip and property strip to use, and the underlying device properties that select among them. The volume configuration gives the speaker's output volume range and scalars. Both are needed to reproduce macOS's speaker graph and loudness.
+
+The speaker vendor ID that selects among vendor variants is a property of macOS's underlying audio device, not one the installer has located in the device tree. It is not collected yet. It will be added to the manifest once its source is established.
 
 - The tuning folder is read from the sealed, read-only system volume, with the same protected-tree reader the installer uses for system Wi-Fi firmware.
 - AppleDouble (`._*`) and `.DS_Store` sidecars are skipped. A link is kept only when it names a file inside the folder, and is stored as a copy of that file.
@@ -36,6 +42,8 @@ apple/audio-tuning/
   AID<n>/DSP/Strips/builtin_speaker_out_general.austrip
   AID<n>/DSP/Strips/aid<n>-aufx-spp3-appl.plist
   AID<n>/...                       (every file of the folder, unchanged)
+  DeviceDSPDatabase.plist          (this Mac's entry only)
+  Config/AID<n>.plist
 ```
 
 On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is `/lib/firmware/vendor/apple/audio-tuning/`. The ESP copy in `vendorfw/firmware.tar` is the source of truth when that tree is absent. A firmware rebuild from the fallback archive (`asahi_firmware.update`) re-verifies every file against `manifest.json` before it repackages them; a changed file leaves the tuning out.
@@ -50,12 +58,15 @@ On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is
   "aid": "AID35",
   "macos_build": "25G83",
   "speaker_thiele_small": {"path": "speaker-thiele-small.bin", "bytes": 138, "sha256": "…"},
+  "device_dsp_database": "DeviceDSPDatabase.plist",
+  "config": "Config/AID35.plist",
   "files": [{"path": "AID35/ADM/config.plist", "bytes": 1234, "sha256": "…"}],
   "based_on": "aurora-audio-dsp by saku (MIT)"
 }
 ```
 
 - `speaker_thiele_small` is `null` on Macs without calibration.
+- `device_dsp_database` and `config` name the selection files, and are absent or `null` when the Mac has none. Those files are also listed in `files`.
 - `macos_build` is the running macOS build the folder was read from. A later macOS update can change the tuning, and re-running the firmware step collects the new set.
 - Paths are relative to the manifest's directory. Readers must reject absolute paths, `.` or `..` components, and any file whose size or SHA-256 differs from the manifest.
 

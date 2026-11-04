@@ -12,7 +12,11 @@
         files: [
           "ADM/config.plist": Data("synthetic config".utf8),
           "DSP/Strips/aid35-aufx-spp3-appl.plist": Data("synthetic spp3".utf8),
-        ], build: "00A000")
+        ], build: "00A000",
+        selection: [
+          "DeviceDSPDatabase.plist": Data("synthetic database entry".utf8),
+          "Config/AID35.plist": Data("synthetic config".utf8),
+        ])
     }
 
     func testAcousticIDIsOneLittleEndianWord() {
@@ -42,6 +46,8 @@
           "apple/audio-tuning/AID35/DSP/Strips/aid35-aufx-spp3-appl.plist",
           "apple/audio-tuning/speaker-thiele-small.bin",
           "apple/audio-tuning/manifest.json",
+          "apple/audio-tuning/DeviceDSPDatabase.plist",
+          "apple/audio-tuning/Config/AID35.plist",
         ])
       let manifest = try JSONDecoder().decode(
         NativeAudioTuningInputs.Manifest.self,
@@ -55,7 +61,10 @@
         manifest.files.map(\.path),
         [
           "AID35/ADM/config.plist", "AID35/DSP/Strips/aid35-aufx-spp3-appl.plist",
+          "Config/AID35.plist", "DeviceDSPDatabase.plist",
         ])
+      XCTAssertEqual(manifest.deviceDSPDatabase, "DeviceDSPDatabase.plist")
+      XCTAssertEqual(manifest.config, "Config/AID35.plist")
       for record in manifest.files {
         let data = try XCTUnwrap(files["apple/audio-tuning/" + record.path])
         XCTAssertEqual(record.bytes, data.count)
@@ -73,6 +82,27 @@
         NativeAudioTuningInputs.Manifest.self,
         from: XCTUnwrap(files["audio-tuning/manifest.json"]))
       XCTAssertNil(manifest.speakerThieleSmall)
+    }
+
+    func testTheDatabaseKeepsOnlyThisMacsEntry() throws {
+      let database = try PropertyListSerialization.data(
+        fromPropertyList: [
+          "AID35": ["Built-in Speaker": ["48k - General": ["Graph": "synthetic.dspg"]]],
+          "AID9": ["Built-in Speaker": ["48k - General": ["Graph": "other.dspg"]]],
+        ], format: .binary, options: 0)
+      let entry = try XCTUnwrap(NativeAudioTuningInputs.databaseEntry(database, acousticID: 35))
+      let decoded = try XCTUnwrap(
+        PropertyListSerialization.propertyList(from: entry, format: nil) as? [String: Any])
+      XCTAssertEqual(Set(decoded.keys), ["AID35"])
+      XCTAssertNil(try NativeAudioTuningInputs.databaseEntry(database, acousticID: 44))
+      XCTAssertThrowsError(
+        try NativeAudioTuningInputs.databaseEntry(Data("not a plist".utf8), acousticID: 35))
+    }
+
+    func testSelectionNamesAreFixed() throws {
+      var other = snapshot()
+      other.selection["Config/AID9.plist"] = Data([1])
+      XCTAssertThrowsError(try NativeAudioTuningInputs.files(other, prefix: "x/"))
     }
 
     func testNoSnapshotIsNoFiles() throws {
@@ -100,8 +130,8 @@
         try NativeAudioTuningInputs.collect({ _ in throw CancellationError() }, owner: 0))
       let good = snapshot()
       let collected = try NativeAudioTuningInputs.collect({ _ in good }, owner: 0)
-      XCTAssertEqual(collected.package.count, 4)
-      XCTAssertEqual(collected.fallback.count, 4)
+      XCTAssertEqual(collected.package.count, 6)
+      XCTAssertEqual(collected.fallback.count, 6)
     }
   }
 #endif

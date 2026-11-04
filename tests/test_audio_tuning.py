@@ -37,6 +37,11 @@ def tunings(root, aid="AID35"):
     (folder / "DSP" / "Strips" / "aid35-aufx-spp3-appl.plist").write_bytes(b"synthetic spp3")
     (folder / "DSP" / "Strips" / "._aid35-aufx-spp3-appl.plist").write_bytes(b"sidecar")
     (folder / ".DS_Store").write_bytes(b"finder")
+    (root / "Config").mkdir(exist_ok=True)
+    (root / "Config" / f"{aid}.plist").write_bytes(b"synthetic volume config")
+    database = {aid: {"Built-in Speaker": {"48k - General": {"Graph": "synthetic.dspg"}}},
+                "AID999": {"Built-in Speaker": {}}}
+    (root / "DeviceDSPDatabase.plist").write_bytes(plistlib.dumps(database, fmt=plistlib.FMT_BINARY))
     return folder
 
 
@@ -58,6 +63,8 @@ class AudioTuningTest(unittest.TestCase):
             self.assertEqual(names, [
                 "apple/audio-tuning/AID35/ADM/config.plist",
                 "apple/audio-tuning/AID35/DSP/Strips/aid35-aufx-spp3-appl.plist",
+                "apple/audio-tuning/Config/AID35.plist",
+                "apple/audio-tuning/DeviceDSPDatabase.plist",
                 "apple/audio-tuning/manifest.json",
                 "apple/audio-tuning/speaker-thiele-small.bin",
             ])
@@ -66,6 +73,10 @@ class AudioTuningTest(unittest.TestCase):
             self.assertEqual(meta["aid"], "AID35")
             self.assertEqual(meta["macos_build"], "00A000")
             self.assertEqual(meta["based_on"], "aurora-audio-dsp by saku (MIT)")
+            self.assertEqual(meta["device_dsp_database"], "DeviceDSPDatabase.plist")
+            self.assertEqual(meta["config"], "Config/AID35.plist")
+            entry = plistlib.loads(files["apple/audio-tuning/DeviceDSPDatabase.plist"].data)
+            self.assertEqual(list(entry), ["AID35"])
             self.assertEqual(meta["speaker_thiele_small"]["sha256"], hashlib.sha256(spts).hexdigest())
             for rec in meta["files"]:
                 data = files["apple/audio-tuning/" + rec["path"]].data

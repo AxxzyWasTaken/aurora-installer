@@ -169,6 +169,14 @@
           },
           admitESPFilesystem: { _ in },
           wifiBoard: { self.wifiBoard },
+          systemWiFi: { owner in
+            guard let root = self.systemFirmware else {
+              throw NativeFirmwareInputFailure.invalidSource
+            }
+            return try NativeFirmwareInputFiles.snapshot(
+              root: root, prefix: "wifi",
+              tree: NativeHandoffFileTree(root, protected: true, owner: owner), owner: owner)
+          },
           audioTuning: { _ in
             // Synthetic tuning: a laptop with speaker calibration, and a
             // desktop without it that still gets its tuning folder.
@@ -179,14 +187,6 @@
                 "DSP/Graphs/builtin_speaker_out.dspg": Data("graphName \"synthetic\"\n".utf8),
                 "DSP/Strips/builtin_speaker_out_general.austrip": Data("synthetic strip".utf8),
               ], build: "00A000")
-          },
-          systemWiFi: { owner in
-            guard let root = self.systemFirmware else {
-              throw NativeFirmwareInputFailure.invalidSource
-            }
-            return try NativeFirmwareInputFiles.snapshot(
-              root: root, prefix: "wifi",
-              tree: NativeHandoffFileTree(root, protected: true, owner: owner), owner: owner)
           })
       }
       var recovery: NativeRecoveryInstallation {

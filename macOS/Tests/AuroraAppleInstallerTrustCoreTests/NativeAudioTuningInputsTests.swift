@@ -90,7 +90,8 @@
       oversized.thieleSmall = Data(count: 8192)
       XCTAssertThrowsError(try NativeAudioTuningInputs.files(oversized, prefix: "x/"))
 
-      let rejected = try NativeAudioTuningInputs.collect({ _ in escaping }, owner: 0)
+      let invalid = escaping
+      let rejected = try NativeAudioTuningInputs.collect({ _ in invalid }, owner: 0)
       XCTAssertTrue(rejected.package.isEmpty && rejected.fallback.isEmpty)
       struct Failure: Error {}
       let failed = try NativeAudioTuningInputs.collect({ _ in throw Failure() }, owner: 0)

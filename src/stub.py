@@ -7,6 +7,7 @@ from asahi_firmware.multitouch import MultitouchFWCollection
 from asahi_firmware.kernel import KernelFWCollection
 from asahi_firmware.isp import ISPFWCollection
 from asahi_firmware.als import AlsFWCollection, FACTORY_DIR
+from asahi_firmware.audio_tuning import AudioTuningFWCollection, FALLBACK_DIR
 from util import *
 
 class StubInstaller(PackageInstaller):
@@ -468,17 +469,21 @@ class StubInstaller(PackageInstaller):
         col = AlsFWCollection()
         als_files = sorted(col.files())
         pkg.add_files(als_files)
+        logging.info("Collecting speaker tuning")
+        tuning = AudioTuningFWCollection()
+        pkg.add_files(sorted(tuning.files()))
         logging.info("Making fallback firmware archive")
         with tempfile.TemporaryDirectory() as tmpdir:
             os.makedirs(f"{tmpdir}/apple")
             for name, fwf in als_files:
                 open(f"{tmpdir}/{name}", "wb").write(fwf.data)
+            extra = [FALLBACK_DIR] if tuning.write_fallback(tmpdir) else []
             subprocess.run(["tar", "czf", "all_firmware.tar.gz",
                             "fud_firmware",
                             "-C", "recovery/usr/share", "firmware",
                             "-C", "../../usr/sbin", "appleh13camerad",
                             "-C", os.path.dirname(FACTORY_DIR), os.path.basename(FACTORY_DIR),
-                            "-C", tmpdir, "apple",
+                            "-C", tmpdir, "apple", *extra,
                             ], check=True)
         self.copy_idata.append(("all_firmware.tar.gz", "all_firmware.tar.gz"))
         logging.info("Detaching recovery ramdisk")

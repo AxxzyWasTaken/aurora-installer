@@ -192,7 +192,9 @@
     }
 
     func testTheSpeakerIDComesFromTheOneSpeakerService() {
-      let speaker: [String: Any] = ["device UID": "Speaker", "speakerID": NSNumber(value: UInt32(3))]
+      let speaker: [String: Any] = [
+        "device UID": "Speaker", "speakerID": NSNumber(value: UInt32(3)),
+      ]
       let codec: [String: Any] = ["device UID": "Codec Output", "speakerID": NSNumber(value: 1)]
       XCTAssertEqual(NativeAudioTuningInputs.liveSpeakerID { [speaker, codec] }, 3)
       XCTAssertEqual(
@@ -234,7 +236,8 @@
       // A manifest with speaker_id null decodes as unknown.
       var object = try XCTUnwrap(
         JSONSerialization.jsonObject(
-          with: XCTUnwrap(try NativeAudioTuningInputs.files(snapshot(), prefix: "")["manifest.json"]))
+          with: XCTUnwrap(
+            try NativeAudioTuningInputs.files(snapshot(), prefix: "")["manifest.json"]))
           as? [String: Any])
       object["speaker_id"] = NSNull()
       let decoded = try JSONDecoder().decode(

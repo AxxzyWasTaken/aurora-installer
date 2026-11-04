@@ -141,6 +141,10 @@
     struct Snapshot: Sendable {
       var files: [String: Data]
       var links: [String: String]
+      /// Links that end nowhere or at something other than a regular file.
+      /// Firmware collection leaves them out; a caller that must have the
+      /// whole set fails on them.
+      var unresolved: [String] = []
     }
 
     static func snapshot(
@@ -184,6 +188,7 @@
       // Follow each link through at most a few other links to a regular file.
       // A link that ends nowhere is left out, like a file the image lacks.
       var links = [String: String]()
+      var unresolved = [String]()
       for (alias, first) in named {
         var target = first
         var hops = 1
@@ -192,9 +197,9 @@
           guard hops <= 8 else { throw NativeFirmwareInputFailure.invalidSource }
           target = next
         }
-        if files[target] != nil { links[alias] = target }
+        if files[target] != nil { links[alias] = target } else { unresolved.append(alias) }
       }
-      return Snapshot(files: files, links: links)
+      return Snapshot(files: files, links: links, unresolved: unresolved.sorted())
     }
 
     /// A link may only name another entry in its own directory.

@@ -8,6 +8,7 @@ from .multitouch import MultitouchFWCollection
 from .kernel import KernelFWCollection
 from .isp import ISPFWCollection
 from .als import AlsFWCollection
+from .audio_tuning import AudioTuningFWCollection
 
 def update_firmware(source, dest):
     raw_fw = source.joinpath("all_firmware.tar.gz")
@@ -33,6 +34,9 @@ def update_firmware(source, dest):
         pkg.add_files(sorted(col.files()))
 
         col = AlsFWCollection(str(tmpdir))
+        pkg.add_files(sorted(col.files()))
+
+        col = AudioTuningFWCollection(str(tmpdir))
         pkg.add_files(sorted(col.files()))
 
     col = KernelFWCollection(str(source))

@@ -35,11 +35,16 @@ copied unchanged, read-only, into the per-machine vendor firmware under
 the raw fallback archive under `audio-tuning/`. Nothing is shipped: the data
 comes from the user's own system volume and stays on the user's own ESP.
 
+The bundle also carries the lsm2 masker's bucket lattice, read from this
+Mac's own AudioDSP component (see lsm2_lattice). A collection without it is
+no bundle.
+
 Collection never stops an installation; Linux falls back to its family
 profiles without it.
 """
 import hashlib, json, logging, os, plistlib, shutil, stat, subprocess
 
+from . import lsm2_lattice
 from .core import FWFile
 
 log = logging.getLogger("asahi_firmware.audio_tuning")
@@ -50,6 +55,10 @@ FALLBACK_DIR = "audio-tuning"
 MANIFEST = "manifest.json"
 SPTS = "speaker-thiele-small.bin"
 DATABASE = "DeviceDSPDatabase.plist"
+# The lsm2 masker's bucket lattice (lsm2_lattice), as its 800 bytes.
+LATTICE = "lsm2-mask-lattice.bin"
+# Where it is read: the AudioDSP component of the running macOS.
+AUDIODSP_PATH = "/" + lsm2_lattice.AUDIODSP
 
 
 # macOS 27 keeps each Mac's entry in its own folder instead of the shared
@@ -277,8 +286,15 @@ def record(path, data):
     return {"path": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def lattice_record(data):
+    rec = record(LATTICE, data)
+    rec.update({"version": lsm2_lattice.VERSION, "format": lsm2_lattice.FORMAT,
+                "entries": lsm2_lattice.ENTRIES})
+    return rec
+
+
 def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None,
-             shared=None, loudness=None, source=DATABASE):
+             shared=None, loudness=None, source=DATABASE, lattice=None):
     selection = selection or {}
     shared = shared or {}
     return {
@@ -308,6 +324,10 @@ def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None,
         "shared_files": [record(path, shared[path]) for path in sorted(shared)],
         # The loudness manager, only when it lists this AID. Optional.
         "loudness_manager": None if loudness is None else record(LOUDNESS, loudness),
+        # The lsm2 masker's bucket lattice from this Mac's AudioDSP: 100
+        # little-endian u64 exclusive bucket ends (version 1). Optional for
+        # readers: bundles collected before it have none.
+        "lsm2_mask_lattice": None if lattice is None else lattice_record(lattice),
         "config": config_name(acoustic) if config_name(acoustic) in selection else None,
         "files": [{"path": f"{aid}/{rel}", "bytes": len(files[rel]),
                    "sha256": hashlib.sha256(files[rel]).hexdigest()}
@@ -320,7 +340,7 @@ def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None,
 
 
 def tree(acoustic, files, spts, build, selection=None, source_count=None, speaker=None,
-         shared=None, loudness=None, source=DATABASE):
+         shared=None, loudness=None, source=DATABASE, lattice=None):
     """Relative path -> bytes for one bundle: AID<n>/..., the selection
     data, the shared files the speaker graph references, the loudness
     manager, the record, the manifest. Only a complete set makes a bundle."""
@@ -352,6 +372,8 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None, speake
         raise ValueError("implausible speaker-thiele-small")
     if speaker is not None and (type(speaker) is not int or not 0 <= speaker <= MAX_SPEAKER_ID):
         raise ValueError("implausible speaker ID")
+    if not lsm2_lattice.valid(lattice):
+        raise ValueError("incomplete speaker tuning: no valid lsm2 masker lattice")
     aid = f"AID{acoustic}"
     out = {}
     for rel, data in files.items():
@@ -365,8 +387,9 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None, speake
     check_references(out, acoustic)
     if spts is not None:
         out[SPTS] = spts
+    out[LATTICE] = bytes(lattice)
     out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection, speaker,
-                                        shared, loudness, source),
+                                        shared, loudness, source, bytes(lattice)),
                                indent=2, sort_keys=True).encode("utf-8")
     return out
 
@@ -395,14 +418,18 @@ class AudioTuningFWCollection(object):
     """Live collection on macOS (path None), or re-collection from an
     extracted fallback archive (path = the directory holding audio-tuning/)."""
 
-    def __init__(self, path=None, tunings_root=TUNINGS_ROOT, run=subprocess.run):
+    def __init__(self, path=None, tunings_root=TUNINGS_ROOT, run=subprocess.run, audiodsp=None):
         self.fwfiles = []
         self.bundle = {}
         try:
             if path is None:
-                self.load(tunings_root, run)
+                self.load(tunings_root, run, AUDIODSP_PATH if audiodsp is None else audiodsp)
             else:
                 self.update(os.path.join(path, FALLBACK_DIR))
+        except lsm2_lattice.LatticeError as e:
+            log.error(f"Speaker tuning not collected: the lsm2 masker lattice: {e}")
+            self.fwfiles = []
+            self.bundle = {}
         except Exception as e:
             log.warning(f"Speaker tuning not collected: {e}")
             self.fwfiles = []
@@ -416,7 +443,7 @@ class AudioTuningFWCollection(object):
         self.fwfiles = [(PACKAGE_PREFIX + rel, FWFile(PACKAGE_PREFIX + rel, data))
                         for rel, data in sorted(bundle.items())]
 
-    def load(self, tunings_root, run):
+    def load(self, tunings_root, run, audiodsp=AUDIODSP_PATH):
         props = probe(run)
         if props is None:
             log.info("No device-tree acoustic-id; no speaker tuning to collect")
@@ -459,11 +486,14 @@ class AudioTuningFWCollection(object):
             if loudness_lists(data, acoustic):
                 loudness = data
         speaker = probe_speaker_id(run)
+        # Exactly one valid lattice, or no bundle: never a guessed table.
+        lattice = lsm2_lattice.read(audiodsp)
         self._publish(tree(acoustic, files, props[1], os_build(run), selection, count, speaker,
-                           shared, loudness, source))
+                           shared, loudness, source, lattice))
         log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files"
                  + (f", {len(shared)} shared" if shared else "")
-                 + (", loudness manager" if loudness is not None else "") + ")")
+                 + (", loudness manager" if loudness is not None else "")
+                 + ", lsm2 masker lattice)")
 
     def update(self, path):
         """Re-verify an extracted fallback bundle against its manifest.
@@ -536,13 +566,25 @@ class AudioTuningFWCollection(object):
             if not isinstance(spts, dict) or spts.get("path") != SPTS:
                 raise ValueError("malformed speaker-thiele-small record")
             records = records + [spts]
+        lattice = meta.get("lsm2_mask_lattice")
+        if lattice is not None:
+            if not isinstance(lattice, dict) or lattice.get("path") != LATTICE \
+                    or lattice.get("version") != lsm2_lattice.VERSION \
+                    or lattice.get("format") != lsm2_lattice.FORMAT \
+                    or lattice.get("entries") != lsm2_lattice.ENTRIES \
+                    or lattice.get("bytes") != lsm2_lattice.SIZE:
+                raise ValueError("malformed lsm2 masker lattice record")
+            records = records + [lattice]
+        else:
+            log.warning("This speaker tuning bundle has no lsm2 masker lattice (collected "
+                        "before the installer read it); collect it again on macOS")
         root = os.path.realpath(path)
         bundle = {}
         total = 0
         for rec in records:
             rel = rec["path"]
             size = rec.get("bytes")
-            limit = MAX_SPTS_BYTES if rel == SPTS else \
+            limit = MAX_SPTS_BYTES if rel == SPTS else lsm2_lattice.SIZE if rel == LATTICE else \
                 min(MAX_CONFIG_BYTES, MAX_BYTES - total) if rel == LOUDNESS else MAX_BYTES - total
             if type(size) is not int or not 0 <= size <= limit:
                 raise ValueError(f"tuning file over budget: {rel}")
@@ -552,9 +594,11 @@ class AudioTuningFWCollection(object):
             data = read_bounded(full, size)
             if len(data) != size or hashlib.sha256(data).hexdigest() != rec.get("sha256"):
                 raise ValueError(f"tuning file changed: {rel}")
-            if rel != SPTS:
+            if rel not in (SPTS, LATTICE):
                 total += size
             bundle[rel] = data
+        if LATTICE in bundle and not lsm2_lattice.valid(bundle[LATTICE]):
+            raise ValueError("the lsm2 masker lattice is not valid")
         if LOUDNESS in bundle and not loudness_lists(bundle[LOUDNESS], acoustic):
             raise ValueError("the loudness manager does not list this AID")
         check_references(bundle, acoustic)

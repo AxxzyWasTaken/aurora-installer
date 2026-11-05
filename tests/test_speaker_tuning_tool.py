@@ -22,8 +22,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools" / "speaker-tuning"))
 
+sys.path.insert(0, str(ROOT / "tests"))
+
 import speaker_tuning as st  # noqa: E402
+from asahi_firmware import audio_tuning  # noqa: E402
 from asahi_firmware.audio_tuning import AudioTuningFWCollection  # noqa: E402
+from macho_fixtures import CPU_X86_64, fat, padded, synthetic_lattice, thin  # noqa: E402
 
 
 def der(tag, body):
@@ -119,12 +123,23 @@ def snapshot(path):
             for p in sorted(path.rglob("*")) if p.is_file()}
 
 
+_component = None
+
+
 def setUpModule():
+    """Collections read a synthetic AudioDSP component (macho_fixtures)."""
+    global _component
     logging.disable(logging.WARNING)
+    _component = tempfile.TemporaryDirectory()
+    path = pathlib.Path(_component.name) / "AudioDSP"
+    path.write_bytes(fat(thin(padded(synthetic_lattice()), cpu=CPU_X86_64),
+                         thin(padded(synthetic_lattice()))))
+    audio_tuning.AUDIODSP_PATH = str(path)
 
 
 def tearDownModule():
     logging.disable(logging.NOTSET)
+    _component.cleanup()
 
 
 class Quiet:
@@ -158,6 +173,22 @@ class CollectTest(unittest.TestCase):
                 self.assertEqual(got["aid"], "AID35")
             s = st.summary(bundle)
             self.assertEqual((s["aid"], s["files"], s["calibration"]), ("AID35", 2, True))
+            self.assertTrue(s["lattice"])
+            self.assertIn("audio-tuning/lsm2-mask-lattice.bin", names)
+            self.assertIn("lsm2 masker lattice present", st.describe(bundle))
+
+    def test_collect_without_a_lattice_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            tunings(tmp / "tunings")
+            component = tmp / "AudioDSP"
+            for image in (thin(b"\x11" * 2048), thin(padded(synthetic_lattice()) * 2)):
+                component.write_bytes(image)
+                with mock.patch.object(audio_tuning, "AUDIODSP_PATH", str(component)):
+                    with self.assertRaises(st.Refused):
+                        st.collect(tmp / "out.tar.gz", tunings_root=str(tmp / "tunings"),
+                                   run=fake_run())
+                self.assertFalse((tmp / "out.tar.gz").exists())
 
     def test_collect_macos27_layout(self):
         with tempfile.TemporaryDirectory() as tmp:

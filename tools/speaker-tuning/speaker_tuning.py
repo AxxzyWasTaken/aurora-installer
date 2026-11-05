@@ -64,6 +64,7 @@ def summary(bundle):
         "database_source": meta.get("device_dsp_database_source") or audio_tuning.DATABASE,
         "shared": len(meta.get("shared_files") or []),
         "loudness": meta.get("loudness_manager") is not None,
+        "lattice": meta.get("lsm2_mask_lattice") is not None,
     }
 
 
@@ -74,7 +75,8 @@ def describe(bundle):
         (", loudness manager" if s["loudness"] else "")
     return (f"{s['aid']}, {s['files']} tuning files{extra}, calibration "
             f"{'present' if s['calibration'] else 'absent'}, speaker ID {spid}, "
-            f"macOS {s['macos_build']}")
+            f"macOS {s['macos_build']}, lsm2 masker lattice "
+            f"{'present' if s['lattice'] else 'absent (collect again on macOS)'}")
 
 
 def verified(path):
@@ -763,6 +765,7 @@ def main(argv=None):
             print(f"Calibration (speaker-thiele-small): {'present' if s['calibration'] else 'absent'}")
             print(f"Speaker ID: {'unknown' if s['speaker_id'] is None else s['speaker_id']}")
             print(f"DSP database: {s['database_source']}")
+            print("lsm2 masker lattice: read from AudioDSP (one per slice, identical)")
             if s["shared"] or s["loudness"]:
                 print(f"Shared files: {s['shared']}, loudness manager: "
                       f"{'yes' if s['loudness'] else 'no'}")

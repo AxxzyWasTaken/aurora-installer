@@ -159,6 +159,24 @@ class CollectTest(unittest.TestCase):
             s = st.summary(bundle)
             self.assertEqual((s["aid"], s["files"], s["calibration"]), ("AID35", 2, True))
 
+    def test_collect_macos27_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            root = tmp / "tunings"
+            tunings(root)
+            os.unlink(root / "DeviceDSPDatabase.plist")
+            entry = {"AID35": {"Built-in Speaker": {"General": {"Path": "Common/Strips/s.austrip"}}}}
+            (root / "AID35" / "DSP" / "DSPDatabase.plist").write_bytes(plistlib.dumps(entry))
+            (root / "Common" / "Strips").mkdir(parents=True)
+            (root / "Common" / "Strips" / "s.austrip").write_bytes(b"synthetic shared strip")
+            out, bundle, _ = st.collect(tmp / "out.tar.gz", tunings_root=str(root), run=fake_run())
+            s = st.summary(bundle)
+            self.assertEqual((s["database_source"], s["shared"]),
+                             ("AID35/DSP/DSPDatabase.plist", 1))
+            self.assertIn("1 shared files", st.describe(bundle))
+            with st.opened_bundle(out) as (again, _):
+                self.assertEqual(again, bundle)
+
     def test_collect_without_tuning_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)

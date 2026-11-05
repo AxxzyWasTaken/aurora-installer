@@ -61,13 +61,18 @@ def summary(bundle):
         "calibration": meta.get("speaker_thiele_small") is not None,
         "speaker_id": meta.get("speaker_id"),
         "macos_build": meta.get("macos_build"),
+        "database_source": meta.get("device_dsp_database_source") or audio_tuning.DATABASE,
+        "shared": len(meta.get("shared_files") or []),
+        "loudness": meta.get("loudness_manager") is not None,
     }
 
 
 def describe(bundle):
     s = summary(bundle)
     spid = "unknown" if s["speaker_id"] is None else s["speaker_id"]
-    return (f"{s['aid']}, {s['files']} tuning files, calibration "
+    extra = (f", {s['shared']} shared files" if s["shared"] else "") + \
+        (", loudness manager" if s["loudness"] else "")
+    return (f"{s['aid']}, {s['files']} tuning files{extra}, calibration "
             f"{'present' if s['calibration'] else 'absent'}, speaker ID {spid}, "
             f"macOS {s['macos_build']}")
 
@@ -757,6 +762,10 @@ def main(argv=None):
             print(f"Files: {s['files']} tuning files ({len(bundle)} in the bundle)")
             print(f"Calibration (speaker-thiele-small): {'present' if s['calibration'] else 'absent'}")
             print(f"Speaker ID: {'unknown' if s['speaker_id'] is None else s['speaker_id']}")
+            print(f"DSP database: {s['database_source']}")
+            if s["shared"] or s["loudness"]:
+                print(f"Shared files: {s['shared']}, loudness manager: "
+                      f"{'yes' if s['loudness'] else 'no'}")
             print(f"Mac: {info['target']} ({info['model']}), macOS {s['macos_build']}")
             print(f"Wrote {path}")
             print(f"SHA-256 {file_sha256(path)}")

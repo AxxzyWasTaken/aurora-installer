@@ -377,5 +377,197 @@ class SpeakerIDTest(unittest.TestCase):
             self.assertFalse(col.write_fallback(tmp))
 
 
+
+def speaker_entry(aid="AID35", speaker_paths=(), headphone_paths=()):
+    """A synthetic database entry shaped like macOS's: modes holding
+    {"Path": ...} references relative to the Tunings root."""
+    def mode(paths):
+        return {"Output": [{"Hardware": [{"Graph": {"Path": p}} for p in paths]}],
+                "UnderlyingDeviceProperties": [{"Selector": "spid", "Value": 65535}]}
+    return {aid: {"Built-in Speaker": {"48k - General": mode(speaker_paths)},
+                  "Built-in Headphone": {"48k - General": mode(headphone_paths)}}}
+
+
+def layout27(root, speaker_paths=("AID35/DSP/Strips/aid35-aufx-spp3-appl.plist",),
+             headphone_paths=("Common/Graphs/builtin_headphone_out.dspg",), shared_db=False):
+    """The macOS 27 layout: no shared DeviceDSPDatabase.plist, the entry in
+    AID<n>/DSP/DSPDatabase.plist, shared graphs under Common/, a generic
+    database and the loudness manager."""
+    tunings(root)
+    if not shared_db:
+        (root / "DeviceDSPDatabase.plist").unlink()
+    entry = speaker_entry(speaker_paths=speaker_paths, headphone_paths=headphone_paths)
+    (root / "AID35" / "DSP" / "DSPDatabase.plist").write_bytes(
+        plistlib.dumps(entry, fmt=plistlib.FMT_BINARY))
+    (root / "Common" / "Graphs").mkdir(parents=True)
+    (root / "Common" / "Strips").mkdir()
+    (root / "Common" / "Graphs" / "builtin_headphone_out.dspg").write_bytes(b"synthetic hp graph")
+    (root / "Common" / "Strips" / "shared_speaker.austrip").write_bytes(b"synthetic shared strip")
+    (root / "GenericDSPDatabase.plist").write_bytes(plistlib.dumps({"Generic": {}}))
+    (root / "DRC").mkdir()
+    loudness(root, ["AID44"])
+    return entry
+
+
+def loudness(root, listed):
+    (root / "DRC" / "loudness-manager.plist").write_bytes(
+        plistlib.dumps({"Format": {"Default": {}}, "Supported_Hardware": listed}))
+
+
+class LayoutTest(unittest.TestCase):
+    """Both database layouts, shared references and the loudness manager."""
+
+    def roundtrip(self, col, tmp):
+        out = pathlib.Path(tmp) / "fallback"
+        self.assertTrue(col.write_fallback(str(out)))
+        again = AudioTuningFWCollection(str(out))
+        self.assertEqual(again.bundle, col.bundle)
+        return out, out / "audio-tuning"
+
+    def test_macos26_records_the_shared_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            col = collect(root)
+            meta = json.loads(col.bundle["manifest.json"])
+            self.assertEqual(meta["device_dsp_database_source"], "DeviceDSPDatabase.plist")
+            self.assertEqual((meta["shared_files"], meta["loudness_manager"]), ([], None))
+            self.assertEqual(meta["schema"], 2)
+            self.roundtrip(col, tmp)
+
+    def test_macos27_reads_the_entry_from_the_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            entry = layout27(root)
+            col = collect(root)
+            self.assertTrue(col.bundle)
+            meta = json.loads(col.bundle["manifest.json"])
+            self.assertEqual(meta["device_dsp_database_source"], "AID35/DSP/DSPDatabase.plist")
+            self.assertEqual(meta["device_dsp_database"], "DeviceDSPDatabase.plist")
+            self.assertEqual(plistlib.loads(col.bundle["DeviceDSPDatabase.plist"]), entry)
+            self.assertIn("AID35/DSP/DSPDatabase.plist", col.bundle)
+            # Headphone-only shared files, the generic database and a
+            # loudness manager that does not list this AID stay out.
+            self.assertEqual(meta["shared_files"], [])
+            self.assertIsNone(meta["loudness_manager"])
+            self.assertFalse(any(p.startswith(("Common/", "DRC/", "Generic")) for p in col.bundle))
+            self.roundtrip(col, tmp)
+
+    def test_folder_entry_wins_over_the_shared_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            entry = layout27(root, shared_db=True)
+            meta = json.loads(collect(root).bundle["manifest.json"])
+            self.assertEqual(meta["device_dsp_database_source"], "AID35/DSP/DSPDatabase.plist")
+            self.assertEqual(plistlib.loads(collect(root).bundle["DeviceDSPDatabase.plist"]), entry)
+
+    def test_speaker_references_into_common_are_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            layout27(root, speaker_paths=("AID35/ADM/config.plist",
+                                          "Common/Strips/shared_speaker.austrip"))
+            loudness(root, ["AID35", "AID44"])
+            col = collect(root)
+            meta = json.loads(col.bundle["manifest.json"])
+            self.assertEqual([r["path"] for r in meta["shared_files"]],
+                             ["Common/Strips/shared_speaker.austrip"])
+            self.assertEqual(meta["loudness_manager"]["path"], "DRC/loudness-manager.plist")
+            self.assertNotIn("Common/Graphs/builtin_headphone_out.dspg", col.bundle)
+            names = [n for n, _ in col.files()]
+            self.assertIn("apple/audio-tuning/Common/Strips/shared_speaker.austrip", names)
+            self.assertIn("apple/audio-tuning/DRC/loudness-manager.plist", names)
+            # Schema 2 readers only look at `files`, which is unchanged.
+            self.assertFalse(any(r["path"].startswith(("Common/", "DRC/")) for r in meta["files"]))
+            out, bundle = self.roundtrip(col, tmp)
+            (bundle / "Common" / "Strips" / "shared_speaker.austrip").write_bytes(b"changed")
+            self.assertEqual(AudioTuningFWCollection(str(out)).bundle, {})
+
+    def test_bad_references_leave_the_tuning_out(self):
+        cases = {
+            "missing shared file": ("Common/Strips/gone.austrip",),
+            "missing folder file": ("AID35/DSP/Strips/gone.austrip",),
+            "outside Common": ("Mac-0000000000000000/Strips/x.austrip",),
+            "another AID": ("AID36/DSP/Strips/x.austrip",),
+            "traversal": ("Common/../AID36/x",),
+            "absolute": ("/etc/passwd",),
+            "bare root": ("Common",),
+        }
+        for name, paths in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                layout27(root, speaker_paths=paths)
+                self.assertEqual(collect(root).bundle, {})
+
+    def test_shared_link_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            layout27(root, speaker_paths=("Common/Strips/linked.austrip",))
+            (root / "Common" / "Strips" / "linked.austrip").symlink_to("shared_speaker.austrip")
+            self.assertEqual(collect(root).bundle, {})
+
+    def test_malformed_loudness_manager_leaves_the_tuning_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            layout27(root)
+            (root / "DRC" / "loudness-manager.plist").write_bytes(
+                plistlib.dumps({"Supported_Hardware": "AID35"}))
+            self.assertEqual(collect(root).bundle, {})
+
+    def test_update_refuses_inconsistent_shared_records(self):
+        def drop_shared(meta):
+            meta["shared_files"] = []
+
+        def shared_outside(meta):
+            meta["shared_files"][0]["path"] = "DRC/x"
+
+        def shared_duplicate(meta):
+            meta["shared_files"].append(dict(meta["shared_files"][0]))
+
+        def loudness_moved(meta):
+            meta["loudness_manager"]["path"] = "Common/loudness.plist"
+
+        edits = {
+            "shared record dropped": drop_shared,
+            "shared outside Common": shared_outside,
+            "shared duplicate": shared_duplicate,
+            "loudness moved": loudness_moved,
+            "unknown source": lambda m: m.update(device_dsp_database_source="Elsewhere.plist"),
+            "source for another AID": lambda m: m.update(
+                device_dsp_database_source="AID36/DSP/DSPDatabase.plist"),
+        }
+        for name, edit in edits.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp) / "t"
+                root.mkdir()
+                layout27(root, speaker_paths=("Common/Strips/shared_speaker.austrip",))
+                loudness(root, ["AID35"])
+                col = collect(root)
+                self.assertTrue(col.bundle)
+                out, bundle = self.roundtrip(col, tmp)
+                rewrite(bundle, edit)
+                self.assertEqual(AudioTuningFWCollection(str(out)).bundle, {})
+
+    def test_update_refuses_a_loudness_manager_for_other_aids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "t"
+            root.mkdir()
+            layout27(root)
+            loudness(root, ["AID35"])
+            out, bundle = self.roundtrip(collect(root), tmp)
+            data = plistlib.dumps({"Supported_Hardware": ["AID44"]})
+            (bundle / "DRC" / "loudness-manager.plist").write_bytes(data)
+            rewrite(bundle, lambda m: m["loudness_manager"].update(
+                bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+            self.assertEqual(AudioTuningFWCollection(str(out)).bundle, {})
+
+    def test_bundles_without_the_new_keys_still_verify(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, bundle = fallback(tmp)
+            rewrite(bundle, lambda m: [m.pop(k) for k in
+                                       ("device_dsp_database_source", "shared_files",
+                                        "loudness_manager")])
+            self.assertTrue(AudioTuningFWCollection(str(out)).bundle)
+
+
 if __name__ == "__main__":
     unittest.main()

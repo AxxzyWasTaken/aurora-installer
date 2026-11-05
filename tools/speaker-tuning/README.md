@@ -20,6 +20,10 @@ the number of tuning files, whether the per-unit calibration
 write it somewhere else. Copy the tarball to the Linux side of the same Mac,
 for example with a USB stick or `scp`.
 
+It reads both tuning layouts: the shared `DeviceDSPDatabase.plist` up to
+macOS 26, and the per-Mac `AID<n>/DSP/DSPDatabase.plist` of macOS 27, and
+prints which one it used.
+
 The tarball holds `audio-tuning/` exactly as the installer writes it, plus
 `aurora-speaker-tuning.json` with the Mac's model (`hw.target`, such as
 J413AP) so the Linux side can refuse a bundle from another model.

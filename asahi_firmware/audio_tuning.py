@@ -52,8 +52,63 @@ SPTS = "speaker-thiele-small.bin"
 DATABASE = "DeviceDSPDatabase.plist"
 
 
+# macOS 27 keeps each Mac's entry in its own folder instead of the shared
+# database, with the same shape: one top-level key, AID<n>.
+AID_DATABASE = "DSP/DSPDatabase.plist"
+# Shared files the speaker graph may reference outside AID<n>/.
+SHARED_ROOTS = ("Common",)
+SPEAKER_DEVICE = "Built-in Speaker"
+# The loudness manager's DRC applies to the AIDs it lists.
+LOUDNESS = "DRC/loudness-manager.plist"
+
+
 def config_name(acoustic):
     return f"Config/AID{acoustic}.plist"
+
+
+def aid_database(acoustic):
+    return f"AID{acoustic}/{AID_DATABASE}"
+
+
+def _paths(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "Path" and isinstance(value, str):
+                yield value
+            else:
+                yield from _paths(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _paths(value)
+
+
+def speaker_references(entry, acoustic):
+    """(paths under AID<n>/ relative to it, shared paths) that the database
+    entry's built-in speaker modes reference. Paths are relative to the
+    Tunings root. Anything outside AID<n>/ and Common/ is refused."""
+    root = plistlib.loads(entry)
+    aid = f"AID{acoustic}"
+    speaker = root.get(aid, {}).get(SPEAKER_DEVICE) if isinstance(root.get(aid), dict) else None
+    own, shared = set(), set()
+    for path in _paths(speaker or {}):
+        if not admitted(path):
+            raise ValueError(f"inadmissible speaker graph reference {path!r}")
+        if path.startswith(aid + "/"):
+            own.add(path[len(aid) + 1:])
+        elif path.split("/")[0] in SHARED_ROOTS and "/" in path:
+            shared.add(path)
+        else:
+            raise ValueError(f"speaker graph references a file outside {aid}/ and Common/: {path}")
+    return own, shared
+
+
+def loudness_lists(data, acoustic):
+    """Whether the loudness manager plist lists AID<n>."""
+    root = plistlib.loads(data)
+    listed = root.get("Supported_Hardware") if isinstance(root, dict) else None
+    if not isinstance(listed, list) or not all(isinstance(x, str) for x in listed):
+        raise ValueError("malformed loudness manager")
+    return f"AID{acoustic}" in listed
 
 
 def database_entry(data, acoustic):
@@ -167,6 +222,16 @@ def probe_speaker_id(run=subprocess.run):
         return None
 
 
+def read_shared(tunings_root, path):
+    """A shared file the speaker graph references, a regular file reached
+    without links inside its Tunings subdirectory."""
+    root = os.path.realpath(tunings_root)
+    full = os.path.join(root, path)
+    if os.path.realpath(full) != full:
+        raise ValueError(f"shared tuning file is reached through a link: {path}")
+    return read_bounded(full, MAX_BYTES)
+
+
 def read_folder(path):
     """Regular files of a tuning folder by relative path, and the number of
     admitted entries found; links within the folder are kept as copies of
@@ -201,8 +266,14 @@ def read_folder(path):
     return files, count
 
 
-def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None):
+def record(path, data):
+    return {"path": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None,
+             shared=None, loudness=None, source=DATABASE):
     selection = selection or {}
+    shared = shared or {}
     return {
         # The HAL's `spid` (IORegistry `speakerID`), or null when unknown.
         "speaker_id": speaker,
@@ -220,6 +291,16 @@ def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None):
         "speaker_thiele_small": None if spts is None else {
             "path": SPTS, "bytes": len(spts), "sha256": hashlib.sha256(spts).hexdigest()},
         "device_dsp_database": DATABASE if DATABASE in selection else None,
+        # Where the entry was read: the shared DeviceDSPDatabase.plist (up to
+        # macOS 26) or AID<n>/DSP/DSPDatabase.plist (macOS 27). Optional;
+        # missing means the shared database.
+        "device_dsp_database_source": source,
+        # Files outside AID<n>/ that the speaker modes reference (Common/).
+        # Optional, kept apart from `files` so schema 2 readers still accept
+        # the bundle.
+        "shared_files": [record(path, shared[path]) for path in sorted(shared)],
+        # The loudness manager, only when it lists this AID. Optional.
+        "loudness_manager": None if loudness is None else record(LOUDNESS, loudness),
         "config": config_name(acoustic) if config_name(acoustic) in selection else None,
         "files": [{"path": f"{aid}/{rel}", "bytes": len(files[rel]),
                    "sha256": hashlib.sha256(files[rel]).hexdigest()}
@@ -231,10 +312,13 @@ def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None):
     }
 
 
-def tree(acoustic, files, spts, build, selection=None, source_count=None, speaker=None):
+def tree(acoustic, files, spts, build, selection=None, source_count=None, speaker=None,
+         shared=None, loudness=None, source=DATABASE):
     """Relative path -> bytes for one bundle: AID<n>/..., the selection
-    data, the record, the manifest. Only a complete set makes a bundle."""
+    data, the shared files the speaker graph references, the loudness
+    manager, the record, the manifest. Only a complete set makes a bundle."""
     selection = selection or {}
+    shared = shared or {}
     for name in selection:
         if name not in (DATABASE, config_name(acoustic)):
             raise ValueError(f"unexpected selection file {name!r}")
@@ -245,7 +329,17 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None, speake
         raise ValueError("empty or oversized tuning folder")
     if source_count is not None and source_count != len(files):
         raise ValueError("tuning folder read short")
-    if sum(map(len, files.values())) + sum(map(len, selection.values())) > MAX_BYTES:
+    if source not in (DATABASE, aid_database(acoustic)):
+        raise ValueError(f"unexpected DSP database source {source!r}")
+    for path in shared:
+        if not admitted(path) or path.split("/")[0] not in SHARED_ROOTS or "/" not in path:
+            raise ValueError(f"inadmissible shared tuning path {path!r}")
+    if len(files) + len(shared) > MAX_FILES:
+        raise ValueError("tuning folder over budget")
+    if loudness is not None and not 0 < len(loudness) <= MAX_CONFIG_BYTES:
+        raise ValueError("implausible loudness manager")
+    if sum(map(len, files.values())) + sum(map(len, selection.values())) \
+            + sum(map(len, shared.values())) + len(loudness or b"") > MAX_BYTES:
         raise ValueError("tuning folder over budget")
     if spts is not None and not 0 < len(spts) <= MAX_SPTS_BYTES:
         raise ValueError("implausible speaker-thiele-small")
@@ -258,11 +352,30 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None, speake
             raise ValueError(f"inadmissible tuning path {rel!r}")
         out[f"{aid}/{rel}"] = data
     out.update(selection)
+    out.update(shared)
+    if loudness is not None:
+        out[LOUDNESS] = loudness
+    check_references(out, acoustic)
     if spts is not None:
         out[SPTS] = spts
-    out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection, speaker),
+    out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection, speaker,
+                                        shared, loudness, source),
                                indent=2, sort_keys=True).encode("utf-8")
     return out
+
+
+def check_references(bundle, acoustic):
+    """Every file the speaker modes reference is in the bundle, and the
+    shared files are exactly those referenced."""
+    own, shared = speaker_references(bundle[DATABASE], acoustic)
+    aid = f"AID{acoustic}"
+    missing = sorted([f"{aid}/{p}" for p in own if f"{aid}/{p}" not in bundle]
+                     + [p for p in shared if p not in bundle])
+    if missing:
+        raise ValueError(f"speaker graph references missing files: {', '.join(missing[:4])}")
+    held = {p for p in bundle if p.split("/")[0] in SHARED_ROOTS}
+    if held != shared:
+        raise ValueError("shared tuning files differ from the speaker graph's references")
 
 
 def os_build(run=subprocess.run):
@@ -310,7 +423,12 @@ class AudioTuningFWCollection(object):
             return
         files, count = read_folder(folder)
         selection = {}
+        source = DATABASE
         db_path = os.path.join(tunings_root, DATABASE)
+        if os.path.lexists(os.path.join(folder, AID_DATABASE)):
+            # macOS 27: the per-machine entry in the folder wins.
+            source = aid_database(acoustic)
+            db_path = os.path.join(tunings_root, source)
         if os.path.lexists(db_path):
             entry = database_entry(read_bounded(db_path, MAX_DATABASE_BYTES), acoustic)
             if entry is not None:
@@ -318,9 +436,22 @@ class AudioTuningFWCollection(object):
         cfg_path = os.path.join(tunings_root, config_name(acoustic))
         if os.path.lexists(cfg_path):
             selection[config_name(acoustic)] = read_bounded(cfg_path, MAX_CONFIG_BYTES)
+        shared = {}
+        if DATABASE in selection:
+            for path in sorted(speaker_references(selection[DATABASE], acoustic)[1]):
+                shared[path] = read_shared(tunings_root, path)
+        loudness = None
+        lm_path = os.path.join(tunings_root, LOUDNESS)
+        if os.path.lexists(lm_path):
+            data = read_bounded(lm_path, MAX_CONFIG_BYTES)
+            if loudness_lists(data, acoustic):
+                loudness = data
         speaker = probe_speaker_id(run)
-        self._publish(tree(acoustic, files, props[1], os_build(run), selection, count, speaker))
-        log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files)")
+        self._publish(tree(acoustic, files, props[1], os_build(run), selection, count, speaker,
+                           shared, loudness, source))
+        log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files"
+                 + (f", {len(shared)} shared" if shared else "")
+                 + (", loudness manager" if loudness is not None else "") + ")")
 
     def update(self, path):
         """Re-verify an extracted fallback bundle against its manifest.
@@ -368,6 +499,26 @@ class AudioTuningFWCollection(object):
             raise ValueError("speaker tuning file count does not match its entries")
         if not all(name in paths for name in selection):
             raise ValueError("speaker tuning bundle lacks its selection data")
+        source = meta.get("device_dsp_database_source", DATABASE)
+        if source not in (None, DATABASE, aid_database(acoustic)):
+            raise ValueError("unknown DSP database source")
+        if source == aid_database(acoustic) and source not in paths:
+            raise ValueError("the DSP database source is not in the bundle")
+        shared = meta.get("shared_files") or []
+        if not isinstance(shared, list) or len(shared) + folder > MAX_FILES:
+            raise ValueError("malformed shared tuning file list")
+        for rec in shared:
+            rel = rec.get("path") if isinstance(rec, dict) else None
+            if not isinstance(rel, str) or not admitted(rel) or rel in paths \
+                    or rel.split("/")[0] not in SHARED_ROOTS or "/" not in rel:
+                raise ValueError(f"inadmissible shared tuning path {rel!r}")
+            paths.add(rel)
+        records = records + shared
+        loudness = meta.get("loudness_manager")
+        if loudness is not None:
+            if not isinstance(loudness, dict) or loudness.get("path") != LOUDNESS:
+                raise ValueError("malformed loudness manager record")
+            records = records + [loudness]
         spts = meta.get("speaker_thiele_small")
         if spts is not None:
             if not isinstance(spts, dict) or spts.get("path") != SPTS:
@@ -379,7 +530,8 @@ class AudioTuningFWCollection(object):
         for rec in records:
             rel = rec["path"]
             size = rec.get("bytes")
-            limit = MAX_SPTS_BYTES if rel == SPTS else MAX_BYTES - total
+            limit = MAX_SPTS_BYTES if rel == SPTS else \
+                min(MAX_CONFIG_BYTES, MAX_BYTES - total) if rel == LOUDNESS else MAX_BYTES - total
             if type(size) is not int or not 0 <= size <= limit:
                 raise ValueError(f"tuning file over budget: {rel}")
             full = os.path.join(root, rel)
@@ -391,6 +543,9 @@ class AudioTuningFWCollection(object):
             if rel != SPTS:
                 total += size
             bundle[rel] = data
+        if LOUDNESS in bundle and not loudness_lists(bundle[LOUDNESS], acoustic):
+            raise ValueError("the loudness manager does not list this AID")
+        check_references(bundle, acoustic)
         bundle[MANIFEST] = raw
         self._publish(bundle)
 

@@ -200,7 +200,7 @@
               selection: [
                 "DeviceDSPDatabase.plist": Data("synthetic database entry".utf8),
                 "Config/AID\(self.machine == "j314s" ? 8 : 1).plist": Data("synthetic config".utf8),
-              ])
+              ], maskLattice: SyntheticLattice.table)
           })
       }
       var recovery: NativeRecoveryInstallation {

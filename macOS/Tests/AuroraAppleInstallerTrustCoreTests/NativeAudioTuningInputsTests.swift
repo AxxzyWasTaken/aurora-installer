@@ -16,7 +16,7 @@
         selection: [
           "DeviceDSPDatabase.plist": Data("synthetic database entry".utf8),
           "Config/AID35.plist": Data("synthetic config".utf8),
-        ])
+        ], maskLattice: SyntheticLattice.table)
     }
 
     func testAcousticIDIsOneLittleEndianWord() {
@@ -48,6 +48,7 @@
           "apple/audio-tuning/manifest.json",
           "apple/audio-tuning/DeviceDSPDatabase.plist",
           "apple/audio-tuning/Config/AID35.plist",
+          "apple/audio-tuning/lsm2-mask-lattice.bin",
         ])
       let manifest = try JSONDecoder().decode(
         NativeAudioTuningInputs.Manifest.self,
@@ -75,6 +76,34 @@
         XCTAssertEqual(record.sha256, NativeStubFileStore.hash(data))
       }
       XCTAssertEqual(manifest.speakerThieleSmall?.bytes, 4)
+      XCTAssertEqual(files["apple/audio-tuning/lsm2-mask-lattice.bin"], SyntheticLattice.table)
+      XCTAssertEqual(
+        manifest.lsm2MaskLattice,
+        NativeAudioTuningInputs.Manifest.Lattice(
+          path: "lsm2-mask-lattice.bin", bytes: 800,
+          sha256: NativeStubFileStore.hash(SyntheticLattice.table), version: 1,
+          format: "u64le-exclusive-ends", entries: 100))
+    }
+
+    func testNoValidLatticeIsNoBundle() throws {
+      var damaged = SyntheticLattice.ends()
+      damaged[99] = 320
+      for lattice in [
+        nil, Data(), SyntheticLattice.table.prefix(792), SyntheticLattice.pack(damaged),
+      ] {
+        var partial = snapshot()
+        partial.maskLattice = lattice
+        XCTAssertThrowsError(try NativeAudioTuningInputs.files(partial, prefix: "x/"))
+        let source = partial
+        let collected = try NativeAudioTuningInputs.collect({ _ in source }, owner: 0)
+        XCTAssertTrue(collected.package.isEmpty && collected.fallback.isEmpty)
+      }
+    }
+
+    func testALatticeFailureFromTheSourceIsNoBundle() throws {
+      let collected = try NativeAudioTuningInputs.collect(
+        { _ in throw NativeLSM2Lattice.Failure.candidates(slice: 0, found: 2) }, owner: 0)
+      XCTAssertTrue(collected.package.isEmpty && collected.fallback.isEmpty)
     }
 
     func testDesktopWithoutCalibrationStillGetsItsTuning() throws {
@@ -118,7 +147,7 @@
         [
           "schema", "kind", "source_file_count", "complete", "acoustic_id", "aid",
           "macos_build", "speaker_thiele_small", "device_dsp_database", "config", "files",
-          "based_on", "device_dsp_database_source", "shared_files",
+          "based_on", "device_dsp_database_source", "shared_files", "lsm2_mask_lattice",
         ])
       XCTAssertEqual(object["device_dsp_database_source"] as? String, "DeviceDSPDatabase.plist")
       XCTAssertEqual((object["shared_files"] as? [Any])?.count, 0)

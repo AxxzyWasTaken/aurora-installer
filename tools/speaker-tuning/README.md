@@ -20,6 +20,12 @@ the number of tuning files, whether the per-unit calibration
 write it somewhere else. Copy the tarball to the Linux side of the same Mac,
 for example with a USB stick or `scp`.
 
+It also reads the lsm2 masker's bucket lattice from macOS's AudioDSP
+component (see
+[the lsm2 masker lattice](../../macOS/docs/speaker-tuning.md#the-lsm2-masker-lattice)).
+If it does not find exactly one valid table, it writes nothing and exits
+with an error.
+
 It reads both tuning layouts: the shared `DeviceDSPDatabase.plist` up to
 macOS 26, and the per-Mac `AID<n>/DSP/DSPDatabase.plist` of macOS 27, and
 prints which one it used.
@@ -82,6 +88,9 @@ since boot (it should be 0).
   does not collect speaker tuning yet. If it rebuilds `vendorfw/`, the bundle
   drops out of `vendorfw/` but stays in `all_firmware.tar.gz`. Running
   `install-linux.sh` again with the same tarball rebuilds `vendorfw/` only.
+- A bundle collected before the collector read the lsm2 masker lattice still
+  installs; the Neo's lsm2 protection then gives no masking credit. Collect
+  it again to add the lattice.
 - Collect again after a macOS update that changes the tuning. A newer bundle
   for the same AID replaces the old one.
 - The tarball and the backups hold this Mac's own calibration. Keep them on

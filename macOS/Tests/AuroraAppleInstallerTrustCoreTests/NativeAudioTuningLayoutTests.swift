@@ -96,7 +96,8 @@
       Inputs.Snapshot(
         acousticID: 35, thieleSmall: Data([2, 0, 22, 6]), files: files, build: "00A000",
         selection: selected.selection, databaseSource: selected.databaseSource,
-        sharedFiles: selected.sharedFiles, loudnessManager: selected.loudnessManager)
+        sharedFiles: selected.sharedFiles, loudnessManager: selected.loudnessManager,
+        maskLattice: SyntheticLattice.table)
     }
 
     private func manifestObject(_ files: [String: Data]) throws -> [String: Any] {

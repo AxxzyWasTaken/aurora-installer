@@ -15,9 +15,28 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from asahi_firmware import audio_tuning  # noqa: E402
 from asahi_firmware.audio_tuning import AudioTuningFWCollection  # noqa: E402
+from macho_fixtures import (CPU_X86_64, fat, other_lattice, padded,  # noqa: E402
+                            synthetic_lattice, thin)
+
+LATTICE = synthetic_lattice()
+_component = None
+
+
+def setUpModule():
+    """Every collection reads a synthetic AudioDSP component."""
+    global _component
+    _component = tempfile.TemporaryDirectory()
+    path = pathlib.Path(_component.name) / "AudioDSP"
+    path.write_bytes(fat(thin(padded(LATTICE), cpu=CPU_X86_64), thin(padded(LATTICE))))
+    audio_tuning.AUDIODSP_PATH = str(path)
+
+
+def tearDownModule():
+    _component.cleanup()
 
 
 def fake_run(nodes, build=b"00A000\n", speakers=None):
@@ -72,6 +91,7 @@ class AudioTuningTest(unittest.TestCase):
                 "apple/audio-tuning/AID35/DSP/Strips/aid35-aufx-spp3-appl.plist",
                 "apple/audio-tuning/Config/AID35.plist",
                 "apple/audio-tuning/DeviceDSPDatabase.plist",
+                "apple/audio-tuning/lsm2-mask-lattice.bin",
                 "apple/audio-tuning/manifest.json",
                 "apple/audio-tuning/speaker-thiele-small.bin",
             ])
@@ -236,7 +256,7 @@ class CompletenessTest(unittest.TestCase):
     def test_update_accepts_the_intact_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
             out, _ = fallback(tmp)
-            self.assertEqual(len(AudioTuningFWCollection(str(out)).files()), 5)
+            self.assertEqual(len(AudioTuningFWCollection(str(out)).files()), 6)
 
     def test_update_refuses_inconsistent_manifests(self):
         def drop_folder_record(meta):
@@ -340,7 +360,7 @@ class SpeakerIDTest(unittest.TestCase):
                 col, meta = self.collected(root, speakers)
                 self.assertIn("speaker_id", meta)
                 self.assertEqual(meta["speaker_id"], expected)
-                self.assertEqual(len(col.files()), 5)
+                self.assertEqual(len(col.files()), 6)
                 out = root / "fallback"
                 self.assertTrue(col.write_fallback(str(out)))
                 again = AudioTuningFWCollection(str(out))
@@ -358,7 +378,7 @@ class SpeakerIDTest(unittest.TestCase):
             with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
                 out, bundle = fallback(tmp)
                 rewrite(bundle, edit)
-                self.assertEqual(len(AudioTuningFWCollection(str(out)).files()), 5)
+                self.assertEqual(len(AudioTuningFWCollection(str(out)).files()), 6)
         for name, value in refused.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
                 out, bundle = fallback(tmp)
@@ -595,6 +615,109 @@ class LayoutTest(unittest.TestCase):
                                        ("device_dsp_database_source", "shared_files",
                                         "loudness_manager")])
             self.assertTrue(AudioTuningFWCollection(str(out)).bundle)
+
+
+class LatticeTest(unittest.TestCase):
+    """The lsm2 masker lattice: exactly one from the component, or no bundle."""
+
+    def collect_with(self, root, component):
+        path = root / "component"
+        path.write_bytes(component)
+        return AudioTuningFWCollection(tunings_root=str(root), run=fake_run(AID35),
+                                       audiodsp=str(path))
+
+    def test_the_bundle_carries_the_lattice_and_its_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            col = collect(root)
+            self.assertEqual(col.bundle["lsm2-mask-lattice.bin"], LATTICE)
+            meta = json.loads(col.bundle["manifest.json"])
+            self.assertEqual(meta["lsm2_mask_lattice"], {
+                "path": "lsm2-mask-lattice.bin", "bytes": 800,
+                "sha256": hashlib.sha256(LATTICE).hexdigest(),
+                "version": 1, "format": "u64le-exclusive-ends", "entries": 100})
+            # Not a tuning folder file: the count is the folder's alone.
+            self.assertEqual(meta["source_file_count"], 2)
+            self.assertNotIn("lsm2-mask-lattice.bin", [r["path"] for r in meta["files"]])
+
+    def test_missing_or_ambiguous_lattice_is_no_bundle_and_an_error(self):
+        cases = {
+            "missing": thin(b"\x11" * 2048),
+            "ambiguous": thin(padded(LATTICE) + padded(other_lattice())),
+            "slices disagree": fat(thin(padded(LATTICE), cpu=CPU_X86_64),
+                                   thin(padded(other_lattice()))),
+            "not a Mach-O file": b"not a component",
+        }
+        for name, component in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                tunings(root)
+                with self.assertLogs("asahi_firmware.audio_tuning", "ERROR") as logs:
+                    col = self.collect_with(root, component)
+                self.assertIn("lsm2 masker lattice", "\n".join(logs.output))
+                self.assertEqual(col.bundle, {})
+                self.assertEqual(col.files(), [])
+
+    def test_absent_component_is_no_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tunings(root)
+            with self.assertLogs("asahi_firmware.audio_tuning", "ERROR"):
+                col = AudioTuningFWCollection(tunings_root=str(root), run=fake_run(AID35),
+                                              audiodsp=str(root / "absent"))
+            self.assertEqual(col.bundle, {})
+
+    def test_the_writer_refuses_a_bundle_without_a_valid_lattice(self):
+        args = (35, {"a": b"x"}, None, "00A000",
+                {"DeviceDSPDatabase.plist": plistlib.dumps({"AID35": {}}),
+                 "Config/AID35.plist": b"c"})
+        self.assertTrue(audio_tuning.tree(*args, lattice=LATTICE))
+        for bad in (None, b"", LATTICE[:-8], b"\0" * 800):
+            with self.assertRaisesRegex(ValueError, "lattice"):
+                audio_tuning.tree(*args, lattice=bad)
+
+    def test_update_reverifies_the_lattice(self):
+        valid_but_other = other_lattice()
+
+        def replace(bundle, data):
+            (bundle / "lsm2-mask-lattice.bin").write_bytes(data)
+            rewrite(bundle, lambda m: m["lsm2_mask_lattice"].update(
+                bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+
+        damaged = bytearray(LATTICE)
+        damaged[-8:] = (320).to_bytes(8, "little")
+        edits = {
+            "changed bytes": lambda b: (b / "lsm2-mask-lattice.bin").write_bytes(valid_but_other),
+            "rehashed invalid table": lambda b: replace(b, bytes(damaged)),
+            "short table": lambda b: replace(b, LATTICE[:-8]),
+            "unknown version": lambda b: rewrite(b, lambda m: m["lsm2_mask_lattice"].update(version=2)),
+            "unknown format": lambda b: rewrite(b, lambda m: m["lsm2_mask_lattice"].update(format="x")),
+            "other path": lambda b: rewrite(b, lambda m: m["lsm2_mask_lattice"].update(path="AID35/x")),
+            "not a record": lambda b: rewrite(b, lambda m: m.update(lsm2_mask_lattice=[])),
+            "file missing": lambda b: (b / "lsm2-mask-lattice.bin").unlink(),
+        }
+        for name, edit in edits.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                out, bundle = fallback(tmp)
+                edit(bundle)
+                self.assertEqual(AudioTuningFWCollection(str(out)).bundle, {})
+        with tempfile.TemporaryDirectory() as tmp:
+            out, bundle = fallback(tmp)
+            replace(bundle, valid_but_other)
+            self.assertEqual(AudioTuningFWCollection(str(out)).bundle["lsm2-mask-lattice.bin"],
+                             valid_but_other)
+
+    def test_a_bundle_collected_before_the_lattice_still_verifies_with_a_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, bundle = fallback(tmp)
+            (bundle / "lsm2-mask-lattice.bin").unlink()
+            rewrite(bundle, lambda m: m.pop("lsm2_mask_lattice"))
+            with self.assertLogs("asahi_firmware.audio_tuning", "WARNING") as logs:
+                col = AudioTuningFWCollection(str(out))
+            self.assertIn("no lsm2 masker lattice", "\n".join(logs.output))
+            self.assertTrue(col.bundle)
+            self.assertNotIn("lsm2-mask-lattice.bin", col.bundle)
 
 
 if __name__ == "__main__":

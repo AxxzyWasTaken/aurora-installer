@@ -85,6 +85,10 @@
       var sharedFiles: [String: Data] = [:]
       /// `DRC/loudness-manager.plist`, only when it lists this AID.
       var loudnessManager: Data? = nil
+      /// The lsm2 masker's bucket lattice from this Mac's AudioDSP
+      /// component (`NativeLSM2Lattice`). Required: without it there is no
+      /// bundle.
+      var maskLattice: Data? = nil
     }
 
     /// The selection data read from the Tunings root for one Mac.
@@ -100,6 +104,15 @@
         let path: String
         let bytes: Int
         let sha256: String
+      }
+      /// The lsm2 masker lattice record: a file record plus its layout.
+      struct Lattice: Codable, Equatable {
+        let path: String
+        let bytes: Int
+        let sha256: String
+        let version: Int
+        let format: String
+        let entries: Int
       }
       let schema: Int
       let kind: String
@@ -128,6 +141,10 @@
       /// The loudness manager, only when it lists this AID; omitted
       /// otherwise.
       let loudnessManager: File?
+      /// The lsm2 masker's bucket lattice: 100 little-endian u64 exclusive
+      /// bucket ends (version 1). Optional for readers: bundles collected
+      /// before it have none.
+      let lsm2MaskLattice: Lattice?
       let files: [File]
       let basedOn: String
 
@@ -142,6 +159,7 @@
         case deviceDSPDatabaseSource = "device_dsp_database_source"
         case sharedFiles = "shared_files"
         case loudnessManager = "loudness_manager"
+        case lsm2MaskLattice = "lsm2_mask_lattice"
         case basedOn = "based_on"
       }
     }
@@ -348,11 +366,23 @@
       let (files, count) = try admittedFiles(snapshot)
       let selected = try selection(
         tree, prefix: tuningsPrefix, acousticID: acousticID, files: files, owner: owner)
+      // Exactly one valid lattice, or no bundle: never a guessed table.
+      let component: Data
+      do {
+        component = try NativeFirmwareInputFiles.read(
+          tree, path: NativeLSM2Lattice.componentPath,
+          maximum: NativeLSM2Lattice.maximumComponentBytes, owner: owner)
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        throw NativeLSM2Lattice.Failure.malformed("cannot read it: \(error)")
+      }
+      let lattice = try NativeLSM2Lattice.extract(component)
       return Snapshot(
         acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build(),
         selection: selected.selection, sourceFileCount: count, speakerID: liveSpeakerID(),
         databaseSource: selected.databaseSource, sharedFiles: selected.sharedFiles,
-        loudnessManager: selected.loudnessManager)
+        loudnessManager: selected.loudnessManager, maskLattice: lattice)
     }
 
     static let speakerServiceClass = "AppleEmbeddedAudioDevice"
@@ -560,6 +590,14 @@
         loudness = Manifest.File(
           path: loudnessName, bytes: data.count, sha256: NativeStubFileStore.hash(data))
       }
+      guard let lattice = snapshot.maskLattice, NativeLSM2Lattice.valid(lattice) else {
+        throw NativeLSM2Lattice.Failure.malformed("no valid lsm2 masker lattice")
+      }
+      result[prefix + NativeLSM2Lattice.bundleName] = lattice
+      let latticeRecord = Manifest.Lattice(
+        path: NativeLSM2Lattice.bundleName, bytes: lattice.count,
+        sha256: NativeStubFileStore.hash(lattice), version: NativeLSM2Lattice.version,
+        format: NativeLSM2Lattice.format, entries: NativeLSM2Lattice.entries)
       var thieleSmall: Manifest.File?
       if let spts = snapshot.thieleSmall {
         guard !spts.isEmpty, spts.count <= 4096 else {
@@ -577,6 +615,7 @@
         speakerID: snapshot.speakerID,
         deviceDSPDatabaseSource: snapshot.databaseSource, sharedFiles: shared,
         loudnessManager: loudness,
+        lsm2MaskLattice: latticeRecord,
         files: records,
         basedOn: "aurora-audio-dsp by saku (MIT)")
       let encoder = JSONEncoder()
@@ -586,7 +625,9 @@
     }
 
     /// Collection never stops an installation: Linux falls back to its
-    /// family profiles without it. A cancellation still ends the step.
+    /// family profiles without it. A cancellation still ends the step. A
+    /// failure is recorded in the Installer Log, as an error when the lsm2
+    /// masker lattice is what failed.
     static func collect(
       _ source: @Sendable (uid_t) throws -> Snapshot?, owner: uid_t
     ) throws -> (package: [String: Data], fallback: [String: Data]) {
@@ -597,7 +638,12 @@
         )
       } catch is CancellationError {
         throw CancellationError()
+      } catch let failure as NativeLSM2Lattice.Failure {
+        InstallerLog.record(
+          .error, "Speaker tuning not collected: the lsm2 masker lattice: \(failure)")
+        return ([:], [:])
       } catch {
+        InstallerLog.record(.progress, "Speaker tuning not collected: \(error)")
         return ([:], [:])
       }
     }

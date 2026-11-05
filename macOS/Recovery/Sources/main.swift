@@ -813,7 +813,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.expandedExecuteWindow.toggle()
     InstallerLog.shared.append(
       model.expandedExecuteWindow
-        ? "Expanded code window selected. It keeps about 1 GiB of memory from Linux."
+        ? "Expanded code window selected. It keeps about 128 MiB of memory from Linux."
         : "Expanded code window cleared.")
   }
 

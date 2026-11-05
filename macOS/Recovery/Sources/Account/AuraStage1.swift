@@ -168,7 +168,7 @@ public enum MachOBootObject {
 /// only way to grow the window is to enroll an object with a larger kcrz.
 public enum ExecuteWindow {
   /// The region CONFIG_ARM64_CTXR_EXECMEM confines kernel code to.
-  public static let size: UInt64 = 1 << 30
+  public static let size: UInt64 = 128 << 20
   /// An arm64 kernel image and that region start on this boundary. iBoot picks
   /// the load address, so the padding has to hold the region at any alignment.
   public static let alignment: UInt64 = 2 << 20
@@ -209,7 +209,7 @@ public struct ExpandedMachOBootObject {
 
   /// Atomically writes the object as a sparse file, which costs about what the
   /// original object does on APFS. Only `head` and `tail` are read back: a new
-  /// file's hole reads as zeros, and 1 GiB is too much to hold in Recovery.
+  /// file's hole reads as zeros, so the padding is never held in memory.
   public func write(to path: URL) throws {
     let directory = path.deletingLastPathComponent()
     let temporary = directory.appendingPathComponent(

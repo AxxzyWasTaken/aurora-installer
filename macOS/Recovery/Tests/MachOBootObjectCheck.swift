@@ -256,7 +256,7 @@ import Foundation
     refusesExpansion(file, "an object that is already expanded")
     refusesExpansion(object(valid), "not aura's object")
 
-    // The default window is what reaches disk: a hole, not a gibibyte.
+    // The default window is what reaches disk: a hole, not the whole window.
     let defaults = try MachOBootObject.expandExecuteWindow(original)
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "aura-execute-window-" + UUID().uuidString)
@@ -270,7 +270,7 @@ import Foundation
     var info = stat()
     precondition(stat(path.path, &info) == 0)
     precondition(UInt64(info.st_size) == defaults.size && info.st_mode & 0o777 == 0o600)
-    precondition(defaults.size > 1 << 30 && UInt64(info.st_blocks) * 512 < 16 << 20)
+    precondition(defaults.size > ExecuteWindow.size && UInt64(info.st_blocks) * 512 < 16 << 20)
     let handle = try FileHandle(forReadingFrom: path)
     defer { try? handle.close() }
     let readHead = try handle.read(upToCount: defaults.head.count)

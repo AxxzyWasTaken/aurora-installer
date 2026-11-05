@@ -36,10 +36,10 @@ struct RecoveryFailure: Error { let message: String }
     let plainResumed = try JSONDecoder().decode(RecoveryInstallationJournal.self, from: plainJSON)
     precondition(plainResumed.executeWindowSize == nil)
     var windowed = plain
-    windowed.executeWindowSize = 1 << 30
+    windowed.executeWindowSize = 128 << 20
     let windowedResumed = try JSONDecoder().decode(
       RecoveryInstallationJournal.self, from: JSONEncoder().encode(windowed))
-    precondition(windowedResumed.executeWindowSize == 1 << 30)
+    precondition(windowedResumed.executeWindowSize == 128 << 20)
     precondition(RecoveryInstallationPhase.bundleInstalled.mayRestoreFiles)
     precondition(!RecoveryInstallationPhase.enrollmentRequested.mayRestoreFiles)
     precondition(RecoveryInstallationPhase.enrollmentRequested.needsEnrollment)

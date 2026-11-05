@@ -99,7 +99,7 @@ The bundle is a superset of the one saku's collector writes (`audio-tuning-AID<n
 
 ## Implementations
 
-- Native installer (Swift): `NativeAudioTuningInputs`, called from `NativeVendorFirmware` as the `vendor_audio_tuning` phase. It still reads only the shared database, so on macOS 27 it leaves the tuning out until it gains the per-folder entry.
+- Native installer (Swift): `NativeAudioTuningInputs`, called from `NativeVendorFirmware` as the `vendor_audio_tuning` phase. It reads both layouts the same way as the Python collector: `AID<n>/DSP/DSPDatabase.plist` when the folder has it (kept byte for byte when it holds only `AID<n>`), the shared database otherwise, and it writes the same `device_dsp_database_source`, `shared_files` and `loudness_manager` records. It omits `loudness_manager` instead of writing null, as it does for `speaker_id`.
 - Python installer and firmware rebuild: `asahi_firmware/audio_tuning.py` (`AudioTuningFWCollection`), called from `stub.py` and `asahi_firmware/update.py`.
 - Linux reader and validator: `aurora-speaker-tuning` in aurora-silicon/speakerguardd (v2 branch). It loads the bundle from `/lib/firmware/vendor/apple/audio-tuning/`, from the ESP's `vendorfw/firmware.tar`, or from saku's collector bundle. It verifies the manifest, parses binary and XML property lists, and exposes the protection parameter sets and the speaker graph and strip definitions.
 

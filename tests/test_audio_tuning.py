@@ -39,8 +39,14 @@ def tearDownModule():
     _component.cleanup()
 
 
-def fake_run(nodes, build=b"00A000\n", speakers=None):
+def fake_run(nodes, build=b"00A000\n", speakers=None, root=None):
     def run(args, capture_output=True):
+        if args[0] == "ioreg" and "device-tree" in args:
+            # The device tree root: none unless the test gives one.
+            if isinstance(root, Exception):
+                raise root
+            return subprocess.CompletedProcess(args, 0, b"" if root is None else
+                                               plistlib.dumps([root], fmt=plistlib.FMT_XML), b"")
         if args[0] == "ioreg" and "AppleEmbeddedAudioDevice" in args:
             if speakers is None:
                 return subprocess.CompletedProcess(args, 0, b"", b"")
@@ -722,3 +728,72 @@ class LatticeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# A made-up serial number, as macOS pads it in the device tree root.
+SERIAL = b"SYNTHETIC0A".ljust(32, b"\0")
+ROOT = {"target-type": b"J616s\0", "serial-number": SERIAL, "IOPlatformSerialNumber": "SYNTHETIC0A"}
+
+
+class IdentityTest(unittest.TestCase):
+    def collect(self, root, nodes=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = pathlib.Path(tmp.name)
+        tunings(base)
+        nodes = nodes or [{"acoustic-id": b"\x23\0\0\0", "speaker-thiele-small": bytes(range(16))}]
+        col = AudioTuningFWCollection(tunings_root=str(base), run=fake_run(nodes, root=root))
+        self.assertTrue(col.bundle)
+        return col, base
+
+    def test_unit_id_rule(self):
+        want = hashlib.sha256(b"aurora-speaker-unit-v1\0SYNTHETIC0A").hexdigest()
+        self.assertEqual(audio_tuning.unit_id(SERIAL), want)
+        # The vector every implementation shares (Python, Rust, Swift).
+        self.assertEqual(want, "22fea1b624a25cb3e103ed668fc37e1ef5c0d445e195029caf273827923c793d")
+        # Linux's copy (one NUL) is the same unit.
+        self.assertEqual(audio_tuning.unit_id(b"SYNTHETIC0A\0"), want)
+        self.assertNotEqual(audio_tuning.unit_id(b"SYNTHETIC0A"), hashlib.sha256(b"SYNTHETIC0A").hexdigest())
+        for raw in (b"", b"\0" * 32, b"A B", b"A\0B", b"\xff", b"A" * 65, "SYNTHETIC0A", None):
+            self.assertIsNone(audio_tuning.unit_id(raw), raw)
+        self.assertEqual(audio_tuning.board_name(b"J616s\0"), "j616s")
+        self.assertEqual(audio_tuning.board_name("J413AP"), "j413")
+        for raw in (b"", b"AP", b"J 413", b"Mac14,2", b"J1234567890", None, 7):
+            self.assertIsNone(audio_tuning.board_name(raw), raw)
+
+    def test_the_manifest_names_the_board_and_unit_never_the_serial(self):
+        col, _ = self.collect(ROOT)
+        meta = json.loads(col.bundle["manifest.json"])
+        self.assertEqual(meta["board"], "j616s")
+        self.assertEqual(meta["unit_id"], audio_tuning.unit_id(SERIAL))
+        for data in col.bundle.values():
+            self.assertNotIn(b"SYNTHETIC0A", data)
+
+    def test_an_unreadable_identity_still_collects_without_it(self):
+        for root in (None, {}, {"serial-number": b"NOT ONE"}, OSError("ioreg")):
+            col, _ = self.collect(root)
+            meta = json.loads(col.bundle["manifest.json"])
+            self.assertIsNone(meta["unit_id"], root)
+        meta = json.loads(self.collect({"serial-number": SERIAL})[0].bundle["manifest.json"])
+        self.assertEqual((meta["board"], meta["unit_id"]), (None, audio_tuning.unit_id(SERIAL)))
+
+    def test_update_keeps_and_checks_the_identity(self):
+        col, base = self.collect(ROOT)
+        out = base / "fallback"
+        self.assertTrue(col.write_fallback(str(out)))
+        again = AudioTuningFWCollection(str(out))
+        self.assertEqual(again.bundle, col.bundle)
+        path = out / "audio-tuning" / "manifest.json"
+        good = json.loads(path.read_bytes())
+        for key, bad in (("board", "J616sAP"), ("board", ""), ("board", 616), ("unit_id", "ABC"),
+                         ("unit_id", good["unit_id"].upper()), ("unit_id", 7)):
+            meta = dict(good, **{key: bad})
+            path.write_text(json.dumps(meta))
+            self.assertEqual(AudioTuningFWCollection(str(out)).files(), [], (key, bad))
+        # A bundle collected before the identity still verifies, with a warning.
+        meta = {k: v for k, v in good.items() if k not in ("board", "unit_id")}
+        path.write_text(json.dumps(meta))
+        with self.assertLogs("asahi_firmware.audio_tuning", "WARNING") as logs:
+            self.assertTrue(AudioTuningFWCollection(str(out)).files())
+        self.assertTrue(any("does not name the Mac" in m for m in logs.output))
+

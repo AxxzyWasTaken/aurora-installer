@@ -291,6 +291,60 @@
       XCTAssertTrue(none.package.isEmpty && none.fallback.isEmpty)
     }
 
+    func testUnitIDsAndBoards() {
+      // A made-up serial number, NUL-padded as macOS pads it, and as aura
+      // copies it into the Linux device tree (one NUL): the same unit.
+      let serial = Data("SYNTHETIC0A".utf8)
+      let want = NativeStubFileStore.hash(NativeAudioTuningInputs.unitIDDomain + serial)
+      XCTAssertEqual(
+        NativeAudioTuningInputs.unitID(serial + Data(repeating: 0, count: 21)), want)
+      XCTAssertEqual(NativeAudioTuningInputs.unitID(serial + Data([0])), want)
+      XCTAssertNotEqual(want, NativeStubFileStore.hash(serial))
+      // The vector every implementation shares (Python, Rust, Swift).
+      XCTAssertEqual(want, "22fea1b624a25cb3e103ed668fc37e1ef5c0d445e195029caf273827923c793d")
+      for bad in [
+        Data(), Data([0, 0]), Data("A B".utf8), Data([0x41, 0, 0x42]), Data([0xff]),
+        Data(repeating: 0x41, count: 65),
+      ] {
+        XCTAssertNil(NativeAudioTuningInputs.unitID(bad))
+      }
+      XCTAssertEqual(NativeAudioTuningInputs.board(Data("J616s\u{0}".utf8)), "j616s")
+      XCTAssertEqual(NativeAudioTuningInputs.board(Data("J413AP".utf8)), "j413")
+      for bad in ["", "AP", "J 413", "Mac14,2", "J1234567890"] {
+        XCTAssertNil(NativeAudioTuningInputs.board(Data(bad.utf8)), bad)
+      }
+    }
+
+    func testTheManifestNamesTheBoardAndUnit() throws {
+      let unit = try XCTUnwrap(NativeAudioTuningInputs.unitID(Data("SYNTHETIC0A".utf8)))
+      var source = snapshot()
+      source.board = "j616s"
+      source.unitID = unit
+      let files = try NativeAudioTuningInputs.files(source, prefix: "")
+      let data = try XCTUnwrap(files["manifest.json"])
+      let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+      XCTAssertEqual(object["board"] as? String, "j616s")
+      XCTAssertEqual(object["unit_id"] as? String, unit)
+      for file in files.values {
+        XCTAssertNil(file.range(of: Data("SYNTHETIC0A".utf8)))
+      }
+      // Unknown: both keys omitted, and the collection still succeeds.
+      let plain = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: XCTUnwrap(
+            try NativeAudioTuningInputs.files(snapshot(), prefix: "")["manifest.json"]))
+          as? [String: Any])
+      XCTAssertNil(plain["board"])
+      XCTAssertNil(plain["unit_id"])
+      // Malformed values are no bundle.
+      for (board, unitID) in [("J616s", unit), ("j616s", unit.uppercased()), ("j616s", "abc")] {
+        var bad = snapshot()
+        bad.board = board
+        bad.unitID = unitID
+        XCTAssertThrowsError(try NativeAudioTuningInputs.files(bad, prefix: ""))
+      }
+    }
+
     func testNoSnapshotIsNoFiles() throws {
       XCTAssertTrue(try NativeAudioTuningInputs.files(nil, prefix: "x/").isEmpty)
     }

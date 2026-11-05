@@ -31,6 +31,7 @@ PACKAGE_FILES = ("firmware.tar", "firmware.cpio", "manifest.txt")
 MAX_INFO_BYTES = 64 << 10
 DT_ESP = "/proc/device-tree/chosen/asahi,efi-system-partition"
 DT_COMPATIBLE = "/proc/device-tree/compatible"
+DT_SERIAL = "/proc/device-tree/serial-number"
 RUNNING_BUNDLES = ("/lib/firmware/vendor/apple", "/run/aurora-firmware/vendorfw/apple")
 BACKUP_ROOT = "/var/lib/aurora-rollback"
 LOCK = "/run/aurora-speaker-tuning.lock"
@@ -528,10 +529,42 @@ def rebuild_default(source, dest):
     update_firmware(pathlib.Path(source), pathlib.Path(dest))
 
 
-def machine_check(bundle, info, current, compatible, any_mac):
+def bundle_unit(bundle):
+    meta = json.loads(bundle[audio_tuning.MANIFEST])
+    return meta.get("board"), meta.get("unit_id")
+
+
+def unit_check(bundle, unit):
+    """Refuse a bundle collected on another unit of this model: its speaker
+    calibration is that unit's, and speakerguardd would refuse it anyway
+    (the speakers would stay muted). --any-mac does not override this."""
+    _, want = bundle_unit(bundle)
+    if want is None:
+        if audio_tuning.SPTS in bundle:
+            log.warning("The bundle does not name the Mac it was collected on (collected before the "
+                        "installer recorded it): speakerguardd runs the speakers without its "
+                        "calibration (open loop). Collect it again with collect-macos.sh to use it.")
+        return
+    if unit is None:
+        log.warning("This Mac's device-tree serial-number is unreadable: speakerguardd cannot "
+                    "check the bundle's unit and runs the speakers without its calibration")
+        return
+    if want != unit:
+        raise Refused("this bundle was collected on another Mac (its unit ID is not this Mac's): "
+                      "its speaker calibration belongs to that Mac. Run collect-macos.sh on this "
+                      "Mac's own macOS")
+
+
+def machine_check(bundle, info, current, compatible, any_mac, unit=None):
     """Refuse a bundle that names another Mac, or replaces another AID."""
+    unit_check(bundle, unit)
     if any_mac:
         return
+    board, _ = bundle_unit(bundle)
+    if board and compatible is not None and f"apple,{board}" not in compatible:
+        here = ", ".join(c for c in compatible if c.startswith("apple,j")) or "another model"
+        raise Refused(f"this bundle was collected on a {board}, but this Mac is {here}; "
+                      f"pass --any-mac only if you are sure")
     aid = summary(bundle)["aid"]
     if info is not None:
         want = info.get("compatible")
@@ -547,6 +580,14 @@ def machine_check(bundle, info, current, compatible, any_mac):
                       f"pass --any-mac only if you are sure")
 
 
+def read_unit(path=DT_SERIAL):
+    """This Mac's unit ID, from the device tree aura passes, or None."""
+    try:
+        return audio_tuning.unit_id(pathlib.Path(path).read_bytes())
+    except OSError:
+        return None
+
+
 def read_compatible(path=DT_COMPATIBLE):
     try:
         return [c for c in pathlib.Path(path).read_bytes().decode("ascii", "replace").split("\0") if c]
@@ -555,7 +596,7 @@ def read_compatible(path=DT_COMPATIBLE):
 
 
 def install(source, esp, dry_run=False, backup_root=BACKUP_ROOT, any_mac=False,
-            compatible=None, out=print, swap=exchange, rebuild=None):
+            compatible=None, out=print, swap=exchange, rebuild=None, unit=None):
     """Returns "identical" (nothing to do), "dry-run" or "installed", or
     raises Refused. The ESP is left as it was on any failure."""
     if rebuild is None:
@@ -577,7 +618,7 @@ def install(source, esp, dry_run=False, backup_root=BACKUP_ROOT, any_mac=False,
         raw, extra = raw_tuning(all_fw)
         old = parse_manifest((vendorfw / "manifest.txt").read_text("ascii"))
         packaged = tuning_in_package(old)
-        machine_check(bundle, info, raw, compatible, any_mac)
+        machine_check(bundle, info, raw, compatible, any_mac, unit)
 
         raw_same = raw == bundle
         pkg_same = packaged == bundle_hashes(bundle)
@@ -785,7 +826,7 @@ def main(argv=None):
         with locked(), system_esp(args.esp) as esp:
             result = install(args.bundle, esp, dry_run=args.dry_run,
                              backup_root=args.backup_dir, any_mac=args.any_mac,
-                             compatible=read_compatible())
+                             compatible=read_compatible(), unit=read_unit())
         if result == "installed":
             print("Next: reboot, then check the unpacked bundle with")
             print("  sudo tools/speaker-tuning/install-linux.sh --verify")

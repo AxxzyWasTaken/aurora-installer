@@ -76,6 +76,23 @@
       /// device, which selects among speaker vendor variants. Nil when
       /// unknown; 65535 (an invalid strap) is kept as reported.
       var speakerID: UInt32? = nil
+      /// Where the database entry was read, relative to the Tunings root:
+      /// the shared `DeviceDSPDatabase.plist` (up to macOS 26) or
+      /// `AID<n>/DSP/DSPDatabase.plist` (macOS 27).
+      var databaseSource: String = NativeAudioTuningInputs.databaseName
+      /// Files outside `AID<n>/` that the speaker modes reference
+      /// (`Common/...`), by path relative to the Tunings root.
+      var sharedFiles: [String: Data] = [:]
+      /// `DRC/loudness-manager.plist`, only when it lists this AID.
+      var loudnessManager: Data? = nil
+    }
+
+    /// The selection data read from the Tunings root for one Mac.
+    struct Selection: Equatable {
+      var selection: [String: Data] = [:]
+      var databaseSource: String = NativeAudioTuningInputs.databaseName
+      var sharedFiles: [String: Data] = [:]
+      var loudnessManager: Data? = nil
     }
 
     struct Manifest: Codable, Equatable {
@@ -102,6 +119,15 @@
       let config: String?
       /// The speaker ID (`spid`); omitted when unknown.
       let speakerID: UInt32?
+      /// Where the entry was read (see `Snapshot.databaseSource`).
+      /// Optional for readers; missing means the shared database.
+      let deviceDSPDatabaseSource: String?
+      /// Files outside `AID<n>/` the speaker modes reference. Kept apart
+      /// from `files` so schema 2 readers still accept the bundle.
+      let sharedFiles: [File]?
+      /// The loudness manager, only when it lists this AID; omitted
+      /// otherwise.
+      let loudnessManager: File?
       let files: [File]
       let basedOn: String
 
@@ -113,6 +139,9 @@
         case speakerThieleSmall = "speaker_thiele_small"
         case deviceDSPDatabase = "device_dsp_database"
         case speakerID = "speaker_id"
+        case deviceDSPDatabaseSource = "device_dsp_database_source"
+        case sharedFiles = "shared_files"
+        case loudnessManager = "loudness_manager"
         case basedOn = "based_on"
       }
     }
@@ -133,6 +162,142 @@
       guard let entry = root[key] else { return nil }
       return try PropertyListSerialization.data(
         fromPropertyList: [key: entry], format: .xml, options: 0)
+    }
+
+    /// macOS 27 keeps each Mac's entry in its own folder, with the same
+    /// shape as the shared database: one top-level key, `AID<n>`.
+    static let folderDatabaseName = "DSP/DSPDatabase.plist"
+    static func folderDatabase(_ acousticID: UInt32) -> String {
+      folder(acousticID) + "/" + folderDatabaseName
+    }
+    /// Roots the speaker graph may reference outside `AID<n>/`.
+    static let sharedRoots: Set<String> = ["Common"]
+    static let speakerDevice = "Built-in Speaker"
+    /// The loudness manager's DRC applies to the AIDs it lists.
+    static let loudnessName = "DRC/loudness-manager.plist"
+    static let maximumConfigBytes = 1 << 20
+
+    /// Whether a database holds exactly one key, `AID<n>`, with a
+    /// dictionary. Such a per-folder entry is kept byte for byte.
+    static func onlyEntry(_ database: Data, acousticID: UInt32) throws -> Bool {
+      guard
+        let root = try PropertyListSerialization.propertyList(from: database, format: nil)
+          as? [String: Any]
+      else { throw NativePeripheralInputError.localInput }
+      return root.count == 1 && root[folder(acousticID)] is [String: Any]
+    }
+
+    private static func paths(_ node: Any, into out: inout [String]) {
+      if let dictionary = node as? [String: Any] {
+        for (key, value) in dictionary {
+          if key == "Path", let path = value as? String {
+            out.append(path)
+          } else {
+            paths(value, into: &out)
+          }
+        }
+      } else if let array = node as? [Any] {
+        for value in array { paths(value, into: &out) }
+      }
+    }
+
+    private static func isShared(_ path: String) -> Bool {
+      guard let first = path.split(separator: "/", omittingEmptySubsequences: false).first,
+        sharedRoots.contains(String(first))
+      else { return false }
+      return path.contains("/")
+    }
+
+    /// The paths below `AID<n>/` (relative to it) and the shared paths
+    /// (relative to the Tunings root) that the entry's built-in speaker
+    /// modes reference. Anything outside `AID<n>/` and `Common/` fails.
+    static func speakerReferences(_ entry: Data, acousticID: UInt32) throws
+      -> (own: Set<String>, shared: Set<String>)
+    {
+      let root = try PropertyListSerialization.propertyList(from: entry, format: nil)
+      let aid = folder(acousticID)
+      var found = [String]()
+      if let entries = root as? [String: Any], let machine = entries[aid] as? [String: Any],
+        let speaker = machine[speakerDevice]
+      {
+        paths(speaker, into: &found)
+      }
+      var own = Set<String>()
+      var shared = Set<String>()
+      for path in found {
+        guard admitted(path) else { throw NativePeripheralInputError.localInput }
+        if path.hasPrefix(aid + "/") {
+          own.insert(String(path.dropFirst(aid.count + 1)))
+        } else if isShared(path) {
+          shared.insert(path)
+        } else {
+          throw NativePeripheralInputError.localInput
+        }
+      }
+      return (own, shared)
+    }
+
+    /// Whether the loudness manager lists `AID<n>`.
+    static func loudnessLists(_ data: Data, acousticID: UInt32) throws -> Bool {
+      guard
+        let root = try PropertyListSerialization.propertyList(from: data, format: nil)
+          as? [String: Any],
+        let listed = root["Supported_Hardware"] as? [Any]
+      else { throw NativePeripheralInputError.localInput }
+      let names = listed.compactMap { $0 as? String }
+      guard names.count == listed.count else { throw NativePeripheralInputError.localInput }
+      return names.contains(folder(acousticID))
+    }
+
+    /// The selection data from the Tunings root, read through `tree` below
+    /// `prefix` (`System/Library/Audio/Tunings` on the system volume), as
+    /// the Python collector reads it: the folder's own
+    /// `AID<n>/DSP/DSPDatabase.plist` when it exists (macOS 27), else the
+    /// shared `DeviceDSPDatabase.plist`. A per-folder database that already
+    /// holds only this Mac's entry is kept byte for byte; anything else is
+    /// reduced to that entry. Every file the speaker modes reference must
+    /// be in the folder or under `Common/`.
+    static func selection(
+      _ tree: NativeHandoffFileTree, prefix: String, acousticID: UInt32,
+      files: [String: Data], owner: uid_t
+    ) throws -> Selection {
+      var result = Selection()
+      var database = prefix + "/" + databaseName
+      if try !tree.isAbsent(prefix + "/" + folderDatabase(acousticID)) {
+        result.databaseSource = folderDatabase(acousticID)
+        database = prefix + "/" + result.databaseSource
+      }
+      if try !tree.isAbsent(database) {
+        let data = try NativeFirmwareInputFiles.read(
+          tree, path: database, maximum: maximumBytes, owner: owner)
+        if result.databaseSource != databaseName, try onlyEntry(data, acousticID: acousticID) {
+          result.selection[databaseName] = data
+        } else if let entry = try databaseEntry(data, acousticID: acousticID) {
+          result.selection[databaseName] = entry
+        }
+      }
+      let config = prefix + "/" + configName(acousticID)
+      if try !tree.isAbsent(config) {
+        result.selection[configName(acousticID)] = try NativeFirmwareInputFiles.read(
+          tree, path: config, maximum: maximumConfigBytes, owner: owner)
+      }
+      if let entry = result.selection[databaseName] {
+        let (own, shared) = try speakerReferences(entry, acousticID: acousticID)
+        guard own.allSatisfy({ files[$0] != nil }) else {
+          throw NativePeripheralInputError.localInput
+        }
+        for path in shared.sorted() {
+          result.sharedFiles[path] = try NativeFirmwareInputFiles.read(
+            tree, path: prefix + "/" + path, maximum: maximumBytes, owner: owner)
+        }
+      }
+      let loudness = prefix + "/" + loudnessName
+      if try !tree.isAbsent(loudness) {
+        let data = try NativeFirmwareInputFiles.read(
+          tree, path: loudness, maximum: maximumConfigBytes, owner: owner)
+        if try loudnessLists(data, acousticID: acousticID) { result.loudnessManager = data }
+      }
+      return result
     }
 
     /// `AID<n>`, the folder name for an acoustic ID.
@@ -181,23 +346,13 @@
       let snapshot = try NativeFirmwareInputFiles.snapshot(
         root: root, prefix: prefix, tree: tree, owner: owner)
       let (files, count) = try admittedFiles(snapshot)
-      var selection = [String: Data]()
-      let database = tuningsPrefix + "/" + databaseName
-      if try !tree.isAbsent(database),
-        let entry = try databaseEntry(
-          NativeFirmwareInputFiles.read(tree, path: database, maximum: 64 << 20, owner: owner),
-          acousticID: acousticID)
-      {
-        selection[databaseName] = entry
-      }
-      let config = tuningsPrefix + "/" + configName(acousticID)
-      if try !tree.isAbsent(config) {
-        selection[configName(acousticID)] = try NativeFirmwareInputFiles.read(
-          tree, path: config, maximum: 1 << 20, owner: owner)
-      }
+      let selected = try selection(
+        tree, prefix: tuningsPrefix, acousticID: acousticID, files: files, owner: owner)
       return Snapshot(
         acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build(),
-        selection: selection, sourceFileCount: count, speakerID: liveSpeakerID())
+        selection: selected.selection, sourceFileCount: count, speakerID: liveSpeakerID(),
+        databaseSource: selected.databaseSource, sharedFiles: selected.sharedFiles,
+        loudnessManager: selected.loudnessManager)
     }
 
     static let speakerServiceClass = "AppleEmbeddedAudioDevice"
@@ -346,7 +501,8 @@
     /// file's size and SHA-256. Empty for no snapshot.
     static func files(_ snapshot: Snapshot?, prefix: String) throws -> [String: Data] {
       guard let snapshot else { return [:] }
-      guard !snapshot.files.isEmpty, snapshot.files.count <= maximumFiles,
+      guard !snapshot.files.isEmpty,
+        snapshot.files.count + snapshot.sharedFiles.count <= maximumFiles,
         (snapshot.sourceFileCount ?? snapshot.files.count) == snapshot.files.count
       else {
         throw NativePeripheralInputError.localInput
@@ -380,6 +536,30 @@
         records.append(
           Manifest.File(path: name, bytes: data.count, sha256: NativeStubFileStore.hash(data)))
       }
+      guard
+        snapshot.databaseSource == databaseName
+          || snapshot.databaseSource == folderDatabase(snapshot.acousticID)
+      else { throw NativePeripheralInputError.localInput }
+      var shared = [Manifest.File]()
+      for name in snapshot.sharedFiles.keys.sorted() {
+        let data = snapshot.sharedFiles[name]!
+        guard admitted(name), isShared(name), data.count <= maximumBytes - total else {
+          throw NativePeripheralInputError.localInput
+        }
+        total += data.count
+        result[prefix + name] = data
+        shared.append(
+          Manifest.File(path: name, bytes: data.count, sha256: NativeStubFileStore.hash(data)))
+      }
+      var loudness: Manifest.File?
+      if let data = snapshot.loudnessManager {
+        guard !data.isEmpty, data.count <= maximumConfigBytes, data.count <= maximumBytes - total
+        else { throw NativePeripheralInputError.localInput }
+        total += data.count
+        result[prefix + loudnessName] = data
+        loudness = Manifest.File(
+          path: loudnessName, bytes: data.count, sha256: NativeStubFileStore.hash(data))
+      }
       var thieleSmall: Manifest.File?
       if let spts = snapshot.thieleSmall {
         guard !spts.isEmpty, spts.count <= 4096 else {
@@ -395,6 +575,8 @@
         macOSBuild: snapshot.build, speakerThieleSmall: thieleSmall,
         deviceDSPDatabase: databaseName, config: configName(snapshot.acousticID),
         speakerID: snapshot.speakerID,
+        deviceDSPDatabaseSource: snapshot.databaseSource, sharedFiles: shared,
+        loudnessManager: loudness,
         files: records,
         basedOn: "aurora-audio-dsp by saku (MIT)")
       let encoder = JSONEncoder()

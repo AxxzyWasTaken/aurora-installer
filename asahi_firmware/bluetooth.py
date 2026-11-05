@@ -17,7 +17,11 @@ INCOMPLETE_CHIPS = set([
 ])
 
 class BluetoothFWCollection(object):
+    # The module vendor is the OTP value brcm,bt names the firmware by. M4
+    # Pro and M4 Max (BCM4388C2) modules come from AMKOR or USI; the native
+    # collector (BroadcomFirmware.bluetooth) maps the same names.
     VENDORMAP = {
+        "AMKOR": "a",
         "MUR": "m",
         "USI": "u",
         "GEN": None,

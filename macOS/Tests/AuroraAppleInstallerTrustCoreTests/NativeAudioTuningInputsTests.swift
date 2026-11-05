@@ -118,8 +118,10 @@
         [
           "schema", "kind", "source_file_count", "complete", "acoustic_id", "aid",
           "macos_build", "speaker_thiele_small", "device_dsp_database", "config", "files",
-          "based_on",
+          "based_on", "device_dsp_database_source", "shared_files",
         ])
+      XCTAssertEqual(object["device_dsp_database_source"] as? String, "DeviceDSPDatabase.plist")
+      XCTAssertEqual((object["shared_files"] as? [Any])?.count, 0)
       XCTAssertEqual(object["complete"] as? Bool, true)
       XCTAssertEqual(object["source_file_count"] as? Int, 2)
     }

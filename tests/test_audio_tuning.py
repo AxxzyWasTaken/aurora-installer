@@ -453,6 +453,34 @@ class LayoutTest(unittest.TestCase):
             self.assertFalse(any(p.startswith(("Common/", "DRC/", "Generic")) for p in col.bundle))
             self.roundtrip(col, tmp)
 
+    def test_macos27_entry_is_kept_byte_for_byte(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            layout27(root)
+            # Apple's irregular mode names must survive unchanged.
+            entry = {"AID35": {"Built-in Speaker": {
+                "48k - Movie- SSI": {"UnderlyingDeviceProperties": [{"Selector": "spid", "Value": 0}]},
+                "48k - Dictation": {},
+                "48k - Dictation ": {"UnderlyingDeviceProperties": [{"Selector": "spid", "Value": 65535}]},
+            }}}
+            data = plistlib.dumps(entry, fmt=plistlib.FMT_BINARY)
+            (root / "AID35" / "DSP" / "DSPDatabase.plist").write_bytes(data)
+            col = collect(root)
+            self.assertEqual(col.bundle["DeviceDSPDatabase.plist"], data)
+            self.assertEqual(col.bundle["AID35/DSP/DSPDatabase.plist"], data)
+            self.assertEqual(sorted(plistlib.loads(col.bundle["DeviceDSPDatabase.plist"])
+                                    ["AID35"]["Built-in Speaker"]),
+                             ["48k - Dictation", "48k - Dictation ", "48k - Movie- SSI"])
+            self.roundtrip(col, tmp)
+
+    def test_folder_database_with_other_keys_is_reduced_to_the_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            entry = layout27(root)
+            both = dict(entry, AID99={"Built-in Speaker": {}})
+            (root / "AID35" / "DSP" / "DSPDatabase.plist").write_bytes(plistlib.dumps(both))
+            self.assertEqual(plistlib.loads(collect(root).bundle["DeviceDSPDatabase.plist"]), entry)
+
     def test_folder_entry_wins_over_the_shared_database(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

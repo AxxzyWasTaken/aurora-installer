@@ -82,6 +82,13 @@ def _paths(node):
             yield from _paths(value)
 
 
+def only_entry(data, acoustic):
+    """Whether a database holds exactly one key, AID<n>, with a dictionary."""
+    root = plistlib.loads(data)
+    key = f"AID{acoustic}"
+    return isinstance(root, dict) and list(root) == [key] and isinstance(root[key], dict)
+
+
 def speaker_references(entry, acoustic):
     """(paths under AID<n>/ relative to it, shared paths) that the database
     entry's built-in speaker modes reference. Paths are relative to the
@@ -430,7 +437,12 @@ class AudioTuningFWCollection(object):
             source = aid_database(acoustic)
             db_path = os.path.join(tunings_root, source)
         if os.path.lexists(db_path):
-            entry = database_entry(read_bounded(db_path, MAX_DATABASE_BYTES), acoustic)
+            data = read_bounded(db_path, MAX_DATABASE_BYTES)
+            if source != DATABASE and only_entry(data, acoustic):
+                # Already this Mac's entry alone: kept byte for byte.
+                entry = data
+            else:
+                entry = database_entry(data, acoustic)
             if entry is not None:
                 selection[DATABASE] = entry
         cfg_path = os.path.join(tunings_root, config_name(acoustic))

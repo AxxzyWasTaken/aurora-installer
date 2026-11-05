@@ -72,6 +72,34 @@ enum RecoveryActions {
     }
     try check(size == 0, "kmutil would start SPTM for this startup software (kcbz \(size)).")
   }
+  /// Pads the Stage 1 and checks what kmutil derives from the file it will enroll.
+  static func stageExpandedStage1(_ stage1: Data, window: UInt64, at path: URL) throws {
+    let usage = try run("/usr/bin/kmutil", ["configure-boot", "--help"])
+    try check(
+      String(decoding: usage, as: UTF8.self).contains("--compress"),
+      "This Recovery's kmutil cannot compress startup software, which this option needs.")
+    let expanded = try MachOBootObject.expandExecuteWindow(stage1, window: window)
+    try expanded.write(to: path)
+    guard
+      let output = try? run(
+        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
+    else {
+      InstallerLog.shared.append("kmutil inspect is unavailable; the Mach-O layout check stands.")
+      return
+    }
+    let text = String(decoding: output, as: UTF8.self)
+    guard let size = MachOBootObject.bootExecSize(fromInspection: text),
+      let readOnly = MachOBootObject.readOnlySize(fromInspection: text)
+    else {
+      throw RecoveryFailure(message: "kmutil did not report the startup software's layout.")
+    }
+    try check(size == 0, "kmutil would start SPTM for this startup software (kcbz \(size)).")
+    try check(
+      readOnly == expanded.readOnlySize,
+      "kmutil derives a read-only region of \(readOnly) bytes, not \(expanded.readOnlySize).")
+    InstallerLog.shared.append(
+      "Startup software padded to a read-only region of \(readOnly >> 20) MiB.")
+  }
   static var inRecovery: Bool {
     #if AURORA_STEP2_RECOVERY
       return FileManager.default.fileExists(atPath: "/System/Installation/CDIS")
@@ -426,6 +454,9 @@ enum RecoveryActions {
       try journal.validate(
         system: systemUUID, group: groupUUID, esp: espUUID,
         stage1: hash(stage1), stage2: hash(stage2))
+      if journal.phase.needsEnrollment {
+        journal.executeWindowSize = selection.expandedExecuteWindow ? ExecuteWindow.size : nil
+      }
       operation = state.appendingPathComponent(journal.operation)
       transaction = try RecoveryFileTransaction.resume(
         directory: operation.appendingPathComponent("files"), files: files,
@@ -448,8 +479,13 @@ enum RecoveryActions {
         espUUID: espUUID, stage1SHA256: hash(stage1), stage2SHA256: hash(stage2),
         originalFiles: files.map(\.path),
         replacedISC: fm.fileExists(atPath: isc.appendingPathComponent("boot").path),
-        iscVarWasPresent: fm.fileExists(atPath: iscVar.path), phase: .prepared)
+        iscVarWasPresent: fm.fileExists(atPath: iscVar.path), phase: .prepared,
+        executeWindowSize: selection.expandedExecuteWindow ? ExecuteWindow.size : nil)
     }
+    let executeWindow = journal.executeWindowSize
+    try check(
+      executeWindow == nil || selection.mode == .macho,
+      "An expanded execute window needs the Mach-O startup software (M4 and later).")
     func record(_ phase: RecoveryInstallationPhase) throws {
       journal.phase = phase
       try RecoveryFileTransaction.write(try JSONEncoder().encode(journal), to: pendingInstallation)
@@ -457,8 +493,12 @@ enum RecoveryActions {
     try record(journal.phase)
     InstallerLog.shared.persist(to: operation.appendingPathComponent("installer.log"))
     let stage1Path = operation.appendingPathComponent("stage1")
-    try RecoveryFileTransaction.write(stage1, to: stage1Path)
+    if executeWindow == nil { try RecoveryFileTransaction.write(stage1, to: stage1Path) }
     do {
+      // Inside this block so that a refusal restores the files and clears the journal.
+      if let executeWindow {
+        try stageExpandedStage1(stage1, window: executeWindow, at: stage1Path)
+      }
       try RecoveryInstallationCoordinator.run(
         phase: journal.phase, persist: record,
         authorizePolicy: {
@@ -495,7 +535,8 @@ enum RecoveryActions {
           progress(0.55, "Installing the startup software")
           try authorized(
             "/usr/bin/kmutil",
-            selection.mode.enrollmentArguments(stage1: stage1Path.path, volume: volume.path),
+            selection.mode.enrollmentArguments(
+              stage1: stage1Path.path, volume: volume.path, compress: executeWindow != nil),
             owner: owner, password: password)
         },
         finalize: {
@@ -503,14 +544,16 @@ enum RecoveryActions {
           // Keep autolaunch until both version metadata and receipt are durable.
           try RecoveryVersionMetadata.showForStartupDisk(system: volume)
           try RecoveryFileTransaction.flushDirectory(core)
+          var installation: [String: Any] = [
+            "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
+            "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
+            "nestedVirtualization": selection.nestedVirtualization, "status": "installed",
+            "recoveryAccountRequired": true, "operation": operation.path,
+          ]
+          if let executeWindow { installation["executeWindowSize"] = executeWindow }
           try RecoveryFileTransaction.write(
             try JSONSerialization.data(
-              withJSONObject: [
-                "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
-                "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
-                "nestedVirtualization": selection.nestedVirtualization, "status": "installed",
-                "recoveryAccountRequired": true, "operation": operation.path,
-              ], options: [.prettyPrinted, .sortedKeys]), to: receipt)
+              withJSONObject: installation, options: [.prettyPrinted, .sortedKeys]), to: receipt)
           if fm.fileExists(atPath: marker.path) {
             try RecoveryFileTransaction.write(Data(contentsOf: marker), to: disabledMarker)
             try fm.removeItem(at: marker)

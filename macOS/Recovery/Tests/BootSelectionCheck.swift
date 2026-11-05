@@ -36,6 +36,20 @@ import Foundation
             && restored.nestedVirtualization == selection.nestedVirtualization)
       }
     }
+    // Only an expanded Mach-O enrollment is compressed, and raw never is.
+    let expanded = BootSelection(machoEnabled: true, expandedExecuteWindow: true)
+    precondition(
+      expanded.expandedExecuteWindow && !BootSelection(machoEnabled: true).expandedExecuteWindow)
+    precondition(!BootSelection(expandedExecuteWindow: true).expandedExecuteWindow)
+    precondition(
+      AuraBootMode.macho.enrollmentArguments(stage1: "s", volume: "v", compress: true)
+        == ["configure-boot", "-c", "s", "-v", "v", "--compress"])
+    precondition(
+      AuraBootMode.raw.enrollmentArguments(stage1: "s", volume: "v", compress: true)
+        == AuraBootMode.raw.enrollmentArguments(stage1: "s", volume: "v"))
+    let restoredWindow = try JSONDecoder().decode(
+      BootSelection.self, from: JSONEncoder().encode(expanded))
+    precondition(restoredWindow.expandedExecuteWindow)
     // Recovery's NV2 switch appends a Stage 2 configuration line and replaces
     // only one it appended; whatever came before it is kept byte for byte.
     let gzipEnd = Data([0x1F, 0x8B, 0x08, 0x00, 0x42, 0x0A, 0x00, 0x00])
@@ -57,7 +71,7 @@ import Foundation
       NestedVirtualizationSetting.stage2(configured, enabled: false)
         == configured + Data("chosen.aura,nv2=0\n".utf8))
     print(
-      "PASS default raw; all four option combinations; exact raw/Mach-O argument separation; shared Stage 2; paths with spaces; JSON round trip; NV2 Stage 2 line"
+      "PASS default raw; all four option combinations; exact raw/Mach-O argument separation; shared Stage 2; paths with spaces; JSON round trip; NV2 Stage 2 line; compression only for an expanded Mach-O enrollment"
     )
   }
 }

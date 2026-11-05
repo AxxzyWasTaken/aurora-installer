@@ -46,6 +46,23 @@ NV2 (nested virtualization, Linux at virtual EL2) is off by default: nothing set
 - In Linux, add `chosen.aura,nv2=1` (or `=0`) to `/etc/m1n1.conf`, run `update-m1n1` to rewrite the ESP Stage 2, and reboot. Kernel and aura updates rewrite Stage 2 from that file, so this setting persists.
 - In paired Recovery, run `aura nv on` or `aura nv off`. This appends `chosen.aura,nv2=1|0` to the ESP Stage 2, after keeping a copy of the previous Stage 2 in `Aurora/Recovery/State`. aura's Stage 2 applies the last such line. The next `update-m1n1` in Linux and `aura recover` both replace Stage 2, which drops this setting.
 
+## Expanded code window
+
+On T8140 and later, iBoot confines each secondary core's EL2 execution to a locked window, CTXR_D, which nothing at runtime can move. Across 161 recorded boots of one J700 Stage 1, the window started at the device tree's physical address and was exactly the device tree, the static trust cache and kmutil's `kcrz` long. `kcrz` runs from the object's load address to the end of `__TEXT_EXEC`, so the way to a larger window is a larger `kcrz`. That the window follows `kcrz` for other sizes has not been measured yet.
+
+`kmutil` derives `kcrz` from file offsets. A `__TEXT_EXEC` grown only in vmsize leaves it unchanged, so the padding has to be in the file. `MachOBootObject.expandExecuteWindow` pads `__TEXT_EXEC` with zeros to hold aura's 16 MiB slot and a 2 MiB-aligned 1 GiB region at any load address, and moves the later segments up in both file and memory. aura's code keeps its bytes and addresses. The object is about 1.02 GiB long but is written as a sparse file that takes what the original object takes on APFS, and `kmutil configure-boot --compress` stores it in Preboot with LZFSE (about 1.2 MB for a J700 Stage 1).
+
+On a Mach-O installation, select **Utilities → Expanded Code Window** before Continue. Recovery checks the original object as usual, then requires that its own `kmutil` offers `--compress` and that its `kmutil inspect` reports `kcbz : 0` and the expected `kcrz` for the padded file, then enrolls that file with `--compress`. The journal and receipt record `executeWindowSize`. Until an enrollment has finished, a resumed setup follows the menu's current state, so clearing the option returns to the plain object if `kmutil` keeps refusing the padded one. `stage1SHA256` stays the hash of the unpadded payload, so `aura recover` is unaffected.
+
+This option is off by default and is not yet useful on its own. aura reserves everything up to `top_of_kernel_data` on T8140, so the padding keeps about 1 GiB of memory from Linux until aura hands the region to a kernel built with `CONFIG_ARM64_CTXR_EXECMEM`. Whether iBoot accepts a payload this large, and arms the window it implies, still has to be confirmed on hardware.
+
+`Tools/ExecuteWindowTool.swift` is the same padding as a command, for inspecting the result or enrolling by hand. It writes to a temporary file unless given `-o`:
+
+```sh
+xcrun swiftc Sources/Account/AuraStage1.swift Tools/ExecuteWindowTool.swift -o aura-execute-window
+./aura-execute-window macho/aura-boot.macho
+```
+
 ## Validation and limits
 
 The strict configuration fixture, original enrollment/owner/boot-selection fixtures, native prompt fixture, Python staging/checksum/target-identity fixtures and source formatting are tested. `swift test` runs window-level state tests against the preview build's simulated flow: waiting buttons, the password prompt with a passing, failing or owner-changing repeated check, tool-preparation failures and the Installer Log window. The Recovery CI workflow runs these, the builds and strict lint on pull requests and pushes to main that touch Recovery. Both real and preview builds compile and pass signing and localized-name checks. The normal-macOS CLI rejection is tested. These are build and fixture results, not a completed fresh-install or Recovery boot qualification.

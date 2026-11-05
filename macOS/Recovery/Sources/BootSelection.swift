@@ -12,10 +12,14 @@ enum AuraBootMode: String, Codable {
   /// the same Stage 2 from the startup partition.
   var stage2Path: String { "raw/boot.bin" }
 
-  func enrollmentArguments(stage1: String, volume: String) -> [String] {
+  /// `compress` stores a Mach-O payload with LZFSE in Preboot, as the stock
+  /// kernelcache is stored, and has no meaning for a raw image.
+  func enrollmentArguments(stage1: String, volume: String, compress: Bool = false) -> [String] {
     var arguments = ["configure-boot", "-c", stage1, "-v", volume]
     if self == .raw {
       arguments += ["--raw", "--entry-point", "2048", "--lowest-virtual-address", "0"]
+    } else if compress {
+      arguments.append("--compress")
     }
     return arguments
   }
@@ -24,10 +28,16 @@ enum AuraBootMode: String, Codable {
 struct BootSelection: Codable {
   let mode: AuraBootMode
   let nestedVirtualization: Bool
+  /// Enroll the Mach-O object padded for a larger code-execute window.
+  let expandedExecuteWindow: Bool
 
-  init(machoEnabled: Bool = false, nestedVirtualization: Bool = false) {
+  init(
+    machoEnabled: Bool = false, nestedVirtualization: Bool = false,
+    expandedExecuteWindow: Bool = false
+  ) {
     mode = machoEnabled ? .macho : .raw
     self.nestedVirtualization = machoEnabled && nestedVirtualization
+    self.expandedExecuteWindow = machoEnabled && expandedExecuteWindow
   }
 }
 

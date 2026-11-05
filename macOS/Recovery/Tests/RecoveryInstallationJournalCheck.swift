@@ -26,6 +26,20 @@ struct RecoveryFailure: Error { let message: String }
         preconditionFailure("Changed bundle accepted")
       } catch {}
     }
+    // A resumed setup keeps the window it started with; an earlier journal has none.
+    let plain = RecoveryInstallationJournal(
+      operation: "operation-" + UUID().uuidString, systemUUID: "system", groupUUID: "group",
+      espUUID: "esp", stage1SHA256: "first", stage2SHA256: "second", originalFiles: [],
+      replacedISC: false, iscVarWasPresent: false, phase: .prepared)
+    let plainJSON = try JSONEncoder().encode(plain)
+    precondition(!String(decoding: plainJSON, as: UTF8.self).contains("executeWindowSize"))
+    let plainResumed = try JSONDecoder().decode(RecoveryInstallationJournal.self, from: plainJSON)
+    precondition(plainResumed.executeWindowSize == nil)
+    var windowed = plain
+    windowed.executeWindowSize = 1 << 30
+    let windowedResumed = try JSONDecoder().decode(
+      RecoveryInstallationJournal.self, from: JSONEncoder().encode(windowed))
+    precondition(windowedResumed.executeWindowSize == 1 << 30)
     precondition(RecoveryInstallationPhase.bundleInstalled.mayRestoreFiles)
     precondition(!RecoveryInstallationPhase.enrollmentRequested.mayRestoreFiles)
     precondition(RecoveryInstallationPhase.enrollmentRequested.needsEnrollment)

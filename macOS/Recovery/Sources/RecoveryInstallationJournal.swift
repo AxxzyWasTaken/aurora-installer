@@ -25,6 +25,12 @@ struct RecoveryInstallationJournal: Codable {
   let replacedISC: Bool
   let iscVarWasPresent: Bool
   var phase: RecoveryInstallationPhase
+  /// The execute window this setup enrolls or has enrolled. Until enrollment has
+  /// finished, a resumed setup takes this from the current selection: padded and
+  /// plain objects carry the same code and Stage 2, and clearing the option is the
+  /// way back from an object that kmutil keeps refusing. Earlier journals have no
+  /// such field, and asked for none.
+  var executeWindowSize: UInt64? = nil
 
   func validate(system: String, group: String, esp: String, stage1: String, stage2: String) throws {
     guard operation.hasPrefix("operation-"),

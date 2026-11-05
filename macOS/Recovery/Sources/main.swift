@@ -37,6 +37,8 @@ final class InstallerModel {
   var preparingTools = false { didSet { changed() } }
   var debugEnabled = false { didSet { changed() } }
   var proxyEnabled = false { didSet { changed() } }
+  /// Utilities → Expanded Code Window: the next enrollment pads the Mach-O object.
+  var expandedExecuteWindow = false { didSet { changed() } }
   var accountUsername = "" { didSet { changed() } }
   var accountPassword = "" { didSet { changed() } }
   var accountConfirmation = "" { didSet { changed() } }
@@ -334,7 +336,13 @@ final class InstallerModel {
 
   private var installationTask: Task<Void, Never>?
   var bootSelection: BootSelection {
-    BootSelection(machoEnabled: RecoveryActions.configuredBootMode == .macho)
+    BootSelection(
+      machoEnabled: RecoveryActions.configuredBootMode == .macho,
+      expandedExecuteWindow: expandedExecuteWindow)
+  }
+  /// Enrollment is what reads the option, so it can change only before that starts.
+  var canChooseExecuteWindow: Bool {
+    !recoveryInterface && stage == .welcome && RecoveryActions.configuredBootMode == .macho
   }
 
   var steps: [String] {
@@ -718,6 +726,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       withTitle: "Create Recovery Account…", action: #selector(createRecoveryAccount(_:)),
       keyEquivalent: "")
     account.target = self
+    let executeWindow = utilities.addItem(
+      withTitle: "Expanded Code Window", action: #selector(toggleExecuteWindow(_:)),
+      keyEquivalent: "")
+    executeWindow.target = self
+    executeWindow.isHidden = RecoveryActions.configuredBootMode != .macho
 
     let windows = submenu("Window")
     windows.addItem(
@@ -795,7 +808,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func createRecoveryAccount(_ sender: Any?) { model.showRecoveryAccountSetup() }
 
+  @objc private func toggleExecuteWindow(_ sender: Any?) {
+    guard model.canChooseExecuteWindow else { return }
+    model.expandedExecuteWindow.toggle()
+    InstallerLog.shared.append(
+      model.expandedExecuteWindow
+        ? "Expanded code window selected. It keeps about 1 GiB of memory from Linux."
+        : "Expanded code window cleared.")
+  }
+
   @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    if item.action == #selector(toggleExecuteWindow(_:)) {
+      item.state = model.expandedExecuteWindow ? .on : .off
+      return model.canChooseExecuteWindow
+    }
     guard item.action == #selector(createRecoveryAccount(_:)) else { return true }
     return model.accountOptional && model.stage == .complete
   }

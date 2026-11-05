@@ -281,7 +281,8 @@
       unknown.speakerID = nil
       let source = unknown
       let collected = try NativeAudioTuningInputs.collect({ _ in source }, owner: 0)
-      XCTAssertEqual(collected.package.count, 6)
+      // Two folder files, two selection files, the record, the lattice, the manifest.
+      XCTAssertEqual(collected.package.count, 7)
       var failing = snapshot()
       failing.speakerID = 3
       failing.selection["Config/AID35.plist"] = nil
@@ -315,8 +316,8 @@
         try NativeAudioTuningInputs.collect({ _ in throw CancellationError() }, owner: 0))
       let good = snapshot()
       let collected = try NativeAudioTuningInputs.collect({ _ in good }, owner: 0)
-      XCTAssertEqual(collected.package.count, 6)
-      XCTAssertEqual(collected.fallback.count, 6)
+      XCTAssertEqual(collected.package.count, 7)
+      XCTAssertEqual(collected.fallback.count, 7)
     }
   }
 #endif

@@ -87,6 +87,10 @@ The bundle is a superset of the one saku's collector writes (`audio-tuning-AID<n
 - Python installer and firmware rebuild: `asahi_firmware/audio_tuning.py` (`AudioTuningFWCollection`), called from `stub.py` and `asahi_firmware/update.py`.
 - Linux reader and validator: `aurora-speaker-tuning` in aurora-silicon/speakerguardd (v2 branch). It loads the bundle from `/lib/firmware/vendor/apple/audio-tuning/`, from the ESP's `vendorfw/firmware.tar`, or from saku's collector bundle. It verifies the manifest, parses binary and XML property lists, and exposes the protection parameter sets and the speaker graph and strip definitions.
 
+## Existing installs
+
+A system installed before the installer collected speaker tuning can get it without reinstalling. `tools/speaker-tuning/collect-macos.sh` runs on the Mac's own macOS with the system Python and writes the bundle to a tarball. `tools/speaker-tuning/install-linux.sh` runs on the installed Linux system, re-verifies the bundle, adds it to `asahi/all_firmware.tar.gz`, rebuilds `vendorfw/` with `asahi_firmware.update`, refuses unless the rebuild keeps every other file of the old package by path and hash, backs both up and swaps them in atomically. See [tools/speaker-tuning/README.md](../../tools/speaker-tuning/README.md).
+
 ## Privacy
 
 The installer reads only `acoustic-id` and `speaker-thiele-small` from the device tree, and only the selected tuning folder. It reads no serial numbers or other identifiers. The calibration record is factory measurement data (driver resistance and calibration temperature per speaker). It stays on the user's machine, like the other factory calibration the installer already stores.

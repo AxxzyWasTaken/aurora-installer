@@ -19,6 +19,8 @@ compile_run owner Sources/RecoveryOwner.swift Tests/RecoveryOwnerCheck.swift
 compile_run bootstrap-owner Sources/RecoveryOwner.swift Tests/BootstrapOwnerCheck.swift
 compile_run boot-selection Sources/BootSelection.swift Tests/BootSelectionCheck.swift
 compile_run macho-boot-object Sources/Account/AuraStage1.swift Tests/MachOBootObjectCheck.swift
+xcrun swiftc Sources/Account/AuraStage1.swift Tools/ExecuteWindowTool.swift -o "$out/aura-execute-window"
+"$out/aura-execute-window" --help >/dev/null
 compile_run installer-log Sources/InstallerLog.swift Tests/InstallerLogCheck.swift
 compile_run command-log Sources/InstallerLog.swift Tests/CommandLogCheck.swift
 compile_run log-view Sources/InstallerTheme.swift Sources/LogTextView.swift Tests/LogTextViewCheck.swift

@@ -39,10 +39,17 @@ The bundle also carries the lsm2 masker's bucket lattice, read from this
 Mac's own AudioDSP component (see lsm2_lattice). A collection without it is
 no bundle.
 
+The manifest names the Mac the bundle was collected on: its board (the
+device tree root's `target-type`, `J616s` -> `j616s`) and its unit, as the
+domain-separated SHA-256 of the root `serial-number` (unit_id). The SpTS
+record is that unit's factory calibration; Linux reads the same property from
+its device tree (aura copies it from the ADT) and refuses a bundle collected
+on another unit. No serial number is stored.
+
 Collection never stops an installation; Linux falls back to its family
 profiles without it.
 """
-import hashlib, json, logging, os, plistlib, shutil, stat, subprocess
+import hashlib, json, logging, os, plistlib, re, shutil, stat, subprocess
 
 from . import lsm2_lattice
 from .core import FWFile
@@ -202,6 +209,55 @@ def probe(run=subprocess.run):
     return found[0]
 
 
+# The unit ID: SHA-256 over this tag and the root serial-number without its
+# NUL padding. The same rule as aurora-speaker-tuning's machine::unit_id.
+UNIT_ID_DOMAIN = b"aurora-speaker-unit-v1\0"
+UNIT_ID = re.compile(r"\A[0-9a-f]{64}\Z")
+# A board as the Linux device tree's first compatible names it (j616s).
+BOARD = re.compile(r"\A[a-z0-9]{1,8}\Z")
+
+
+def unit_id(raw):
+    """The unit ID of a raw `serial-number` property, or None unless it is
+    1 to 64 printable, non-space ASCII bytes after its NUL padding."""
+    if not isinstance(raw, bytes):
+        return None
+    serial = raw.rstrip(b"\0")
+    if not 0 < len(serial) <= 64 or not all(0x21 <= b <= 0x7E for b in serial):
+        return None
+    return hashlib.sha256(UNIT_ID_DOMAIN + serial).hexdigest()
+
+
+def board_name(raw):
+    """The board of a `target-type` property (J616s, or J616sAP): j616s."""
+    if isinstance(raw, bytes):
+        raw = raw.rstrip(b"\0").decode("ascii", "replace")
+    if not isinstance(raw, str):
+        return None
+    raw = raw[:-2] if raw.endswith("AP") else raw
+    board = raw.lower()
+    return board if BOARD.match(board) else None
+
+
+def probe_identity(run=subprocess.run):
+    """(board, unit ID) of this Mac from the device tree root, read only;
+    either is None when unknown. Never fails the collection: a bundle
+    without them still installs, and Linux then runs its speakers without
+    the per-unit calibration until it is collected again."""
+    try:
+        p = run(["ioreg", "-a", "-r", "-d", "1", "-p", "IODeviceTree", "-n", "device-tree"],
+                capture_output=True)
+        if p.returncode != 0 or not p.stdout.strip():
+            return None, None
+        roots = [n for n in plistlib.loads(p.stdout) if isinstance(n, dict)]
+        if len(roots) != 1:
+            return None, None
+        return board_name(roots[0].get("target-type")), unit_id(roots[0].get("serial-number"))
+    except Exception as e:
+        log.info(f"Mac identity unknown: {e}")
+        return None, None
+
+
 SPEAKER_SERVICE = "AppleEmbeddedAudioDevice"
 MAX_SPEAKER_ID = 0xFFFFFFFF
 
@@ -294,10 +350,14 @@ def lattice_record(data):
 
 
 def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None,
-             shared=None, loudness=None, source=DATABASE, lattice=None):
+             shared=None, loudness=None, source=DATABASE, lattice=None, board=None, unit=None):
     selection = selection or {}
     shared = shared or {}
     return {
+        # The Mac the bundle was collected on: its board and the unit ID of
+        # its serial number (never the serial). null when unknown.
+        "board": board,
+        "unit_id": unit,
         # The HAL's `spid` (IORegistry `speakerID`), or null when unknown.
         "speaker_id": speaker,
         "schema": SCHEMA,
@@ -340,7 +400,7 @@ def manifest(aid, acoustic, files, spts, build, selection=None, speaker=None,
 
 
 def tree(acoustic, files, spts, build, selection=None, source_count=None, speaker=None,
-         shared=None, loudness=None, source=DATABASE, lattice=None):
+         shared=None, loudness=None, source=DATABASE, lattice=None, board=None, unit=None):
     """Relative path -> bytes for one bundle: AID<n>/..., the selection
     data, the shared files the speaker graph references, the loudness
     manager, the record, the manifest. Only a complete set makes a bundle."""
@@ -374,6 +434,10 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None, speake
         raise ValueError("implausible speaker ID")
     if not lsm2_lattice.valid(lattice):
         raise ValueError("incomplete speaker tuning: no valid lsm2 masker lattice")
+    if board is not None and not (isinstance(board, str) and BOARD.match(board)):
+        raise ValueError("implausible board")
+    if unit is not None and not (isinstance(unit, str) and UNIT_ID.match(unit)):
+        raise ValueError("implausible unit ID")
     aid = f"AID{acoustic}"
     out = {}
     for rel, data in files.items():
@@ -389,7 +453,7 @@ def tree(acoustic, files, spts, build, selection=None, source_count=None, speake
         out[SPTS] = spts
     out[LATTICE] = bytes(lattice)
     out[MANIFEST] = json.dumps(manifest(aid, acoustic, files, spts, build, selection, speaker,
-                                        shared, loudness, source, bytes(lattice)),
+                                        shared, loudness, source, bytes(lattice), board, unit),
                                indent=2, sort_keys=True).encode("utf-8")
     return out
 
@@ -486,10 +550,14 @@ class AudioTuningFWCollection(object):
             if loudness_lists(data, acoustic):
                 loudness = data
         speaker = probe_speaker_id(run)
+        board, unit = probe_identity(run)
+        if unit is None and props[1] is not None:
+            log.warning("This Mac's serial-number is unreadable: the speaker tuning is collected "
+                        "without its unit, and Linux will not use its speaker calibration")
         # Exactly one valid lattice, or no bundle: never a guessed table.
         lattice = lsm2_lattice.read(audiodsp)
         self._publish(tree(acoustic, files, props[1], os_build(run), selection, count, speaker,
-                           shared, loudness, source, lattice))
+                           shared, loudness, source, lattice, board, unit))
         log.info(f"  Collected speaker tuning AID{acoustic} ({len(files)} files"
                  + (f", {len(shared)} shared" if shared else "")
                  + (", loudness manager" if loudness is not None else "")
@@ -517,6 +585,12 @@ class AudioTuningFWCollection(object):
         if speaker is not None and (type(speaker) is not int
                                     or not 0 <= speaker <= MAX_SPEAKER_ID):
             raise ValueError("malformed speaker_id")
+        board = meta.get("board")
+        if board is not None and not (isinstance(board, str) and BOARD.match(board)):
+            raise ValueError("malformed board")
+        unit = meta.get("unit_id")
+        if unit is not None and not (isinstance(unit, str) and UNIT_ID.match(unit)):
+            raise ValueError("malformed unit_id")
         if meta.get("complete") is not True:
             raise ValueError("incomplete speaker tuning bundle")
         if meta.get("device_dsp_database") != DATABASE \
@@ -578,6 +652,10 @@ class AudioTuningFWCollection(object):
         else:
             log.warning("This speaker tuning bundle has no lsm2 masker lattice (collected "
                         "before the installer read it); collect it again on macOS")
+        if unit is None and spts is not None:
+            log.warning("This speaker tuning bundle does not name the Mac it was collected on "
+                        "(collected before the installer recorded it): Linux runs the speakers "
+                        "without its calibration (open loop); collect it again on macOS")
         root = os.path.realpath(path)
         bundle = {}
         total = 0

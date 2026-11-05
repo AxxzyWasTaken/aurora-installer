@@ -32,7 +32,10 @@ prints which one it used.
 
 The tarball holds `audio-tuning/` exactly as the installer writes it, plus
 `aurora-speaker-tuning.json` with the Mac's model (`hw.target`, such as
-J413AP) so the Linux side can refuse a bundle from another model.
+J413AP) so the Linux side can refuse a bundle from another model. The
+bundle's `manifest.json` also names the board and the unit it was collected
+on (`board`, and `unit_id`, a hash of the serial number; the serial itself
+is not stored), because its speaker calibration belongs to that one Mac.
 
 ## 2. On Linux (Fedora, Arch Linux ARM or NixOS)
 
@@ -50,7 +53,11 @@ overrides that. Then it
 1. re-verifies the bundle against its `manifest.json` with
    `AudioTuningFWCollection(path=...)`, and checks that it came from this
    model and, if the ESP already has a bundle, that the AID is the same
-   (`--any-mac` skips both),
+   (`--any-mac` skips both). A bundle whose `unit_id` is not this Mac's
+   (`/proc/device-tree/serial-number`) is refused even with `--any-mac`:
+   speakerguardd would refuse it too. A bundle collected before `unit_id`
+   installs with a warning, and speakerguardd then runs the speakers without
+   its calibration (open loop) until it is collected again,
 2. stops with "already present, identical" if both `asahi/all_firmware.tar.gz`
    and `vendorfw/` already hold this bundle,
 3. writes a copy of `all_firmware.tar.gz` with its `audio-tuning/` replaced by

@@ -50,7 +50,7 @@ def synthetic_kernelcache():
                + der(0x04, payload))
 
 
-def fake_run(acoustic=35, spts=bytes(range(16)), target=b"J999AP\n", model=b"Mac99,1\n"):
+def fake_run(acoustic=35, spts=bytes(range(16)), target=b"J999AP\n", model=b"Mac99,1\n", root=None):
     node = {"acoustic-id": acoustic.to_bytes(4, "little")}
     if spts is not None:
         node["speaker-thiele-small"] = spts
@@ -58,6 +58,8 @@ def fake_run(acoustic=35, spts=bytes(range(16)), target=b"J999AP\n", model=b"Mac
     def run(args, capture_output=True):
         if args[0] == "ioreg" and "AppleEmbeddedAudioDevice" in args:
             return subprocess.CompletedProcess(args, 0, b"", b"")
+        if args[0] == "ioreg" and "device-tree" in args:
+            return subprocess.CompletedProcess(args, 0, b"" if root is None else plistlib.dumps([root]), b"")
         if args[0] == "ioreg":
             return subprocess.CompletedProcess(args, 0, plistlib.dumps([node]), b"")
         if args[:2] == ["sysctl", "-n"]:
@@ -80,11 +82,11 @@ def tunings(root, acoustic=35, salt=b""):
     (root / "DeviceDSPDatabase.plist").write_bytes(plistlib.dumps(db))
 
 
-def bundle_dir(base, acoustic=35, salt=b"", spts=bytes(range(16))):
+def bundle_dir(base, acoustic=35, salt=b"", spts=bytes(range(16)), root=None):
     """A verified audio-tuning/ under base; returns base."""
     src = base / "tunings"
     tunings(src, acoustic, salt)
-    col = AudioTuningFWCollection(tunings_root=str(src), run=fake_run(acoustic, spts))
+    col = AudioTuningFWCollection(tunings_root=str(src), run=fake_run(acoustic, spts, root=root))
     assert col.bundle
     out = base / "bundle"
     out.mkdir()
@@ -489,6 +491,39 @@ class InstallTest(unittest.TestCase):
         again.mkdir()
         result, _ = self.install(bundle_dir(again, acoustic=36), any_mac=True, dry_run=True)
         self.assertEqual(result, "dry-run")
+
+    def test_another_unit_is_refused(self):
+        # Made-up serial numbers: the bundle's unit and two Linux sides.
+        unit_a = audio_tuning.unit_id(b"SYNTHETIC0A")
+        unit_b = audio_tuning.unit_id(b"SYNTHETIC0B")
+        root = {"target-type": b"J413\0", "serial-number": b"SYNTHETIC0A".ljust(32, b"\0")}
+        src = bundle_dir(self.tmp, root=root)
+        here = ["apple,j413", "apple,t8112"]
+        result, _ = self.install(src, compatible=here, unit=unit_a, dry_run=True)
+        self.assertEqual(result, "dry-run")
+        for any_mac in (False, True):
+            with self.assertRaisesRegex(st.Refused, "collected on another Mac"):
+                self.install(src, compatible=here, unit=unit_b, any_mac=any_mac, dry_run=True)
+        # This Mac's serial-number unreadable: installed, speakerguardd runs open loop.
+        result, _ = self.install(src, compatible=here, unit=None, dry_run=True)
+        self.assertEqual(result, "dry-run")
+        # The bundle's own board, when no collection info says otherwise.
+        with self.assertRaisesRegex(st.Refused, "collected on a j413"):
+            self.install(src, compatible=["apple,j616s", "apple,t6040"], unit=unit_a, dry_run=True)
+        # The Linux side reads the unit from the device tree.
+        dt = self.tmp / "serial-number"
+        dt.write_bytes(b"SYNTHETIC0A\0")
+        self.assertEqual(st.read_unit(dt), unit_a)
+        self.assertIsNone(st.read_unit(self.tmp / "absent"))
+
+    def test_a_bundle_without_a_unit_installs_with_a_warning(self):
+        src = bundle_dir(self.tmp)
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.WARNING)
+        with self.assertLogs(st.log, "WARNING") as logs:
+            result, _ = self.install(src, unit=audio_tuning.unit_id(b"SYNTHETIC0A"), dry_run=True)
+        self.assertEqual(result, "dry-run")
+        self.assertTrue(any("does not name the Mac" in m for m in logs.output))
 
     def test_newer_bundle_replaces_the_old_one(self):
         self.install(bundle_dir(self.tmp))

@@ -20,6 +20,8 @@ The installer copies both, read-only, from the user's own running macOS into the
 | loudness manager | `/System/Library/Audio/Tunings/DRC/loudness-manager.plist`, unchanged | only when its `Supported_Hardware` lists `AID<acoustic-id>` |
 | volume configuration | `/System/Library/Audio/Tunings/Config/AID<acoustic-id>.plist`, unchanged | required |
 | lsm2 masker lattice | `/System/Library/Components/AudioDSP.component/Contents/MacOS/AudioDSP`: the one table that passes the rule in [The lsm2 masker lattice](#the-lsm2-masker-lattice), 800 bytes | required |
+| board | device tree root `target-type` (`J616s`, or `J616sAP`), lowercased without `AP`: `j616s`, the name the Linux device tree's first compatible carries | every Mac; optional |
+| unit ID | device tree root `serial-number`, hashed (see [The unit](#the-unit)); the serial number itself is never stored | every Mac; optional |
 | speaker ID (`spid`) | IORegistry service plane: `speakerID` of the one `AppleEmbeddedAudioDevice` whose `device UID` is `Speaker` | Macs whose speaker driver publishes it (the J616s does); optional |
 
 The DSP database entry is the selection table. macOS 27 removed the shared `DeviceDSPDatabase.plist` and keeps each Mac's entry in its own folder as `AID<n>/DSP/DSPDatabase.plist`, with the same shape (one top-level key, `AID<n>`). The collector reads that file when it exists and the shared database otherwise, and writes the entry as `DeviceDSPDatabase.plist` in the bundle either way, so readers see one layout. A per-folder file that holds only the `AID<n>` key is copied byte for byte (macOS writes it as a binary property list); anything else is reduced to that key and re-encoded as XML, as for the shared database. Readers must accept both encodings. Apple's mode names are irregular (`48k - Movie- SSI` next to `48k - General - SSI`, and both `48k - Dictation` and `48k - Dictation ` with a trailing space), so readers must match keys exactly and never normalise them. The `GenericDSPDatabase.plist` (key `Generic`) is the fallback for devices without an entry and is not collected.
@@ -39,6 +41,18 @@ The speaker ID selects among the speaker vendor variants in the DSP database ent
 - Collection never stops an installation. A failure, an ambiguous device tree (two audio nodes with an `acoustic-id`) or an implausible input leaves the tuning out entirely, never partly. Linux then uses its family fallback profiles. Cancellation still ends the step.
 - Every Mac with a protection unit is covered the same way, because the whole folder is copied. On the MacBook Neo (`AID44`), the protection parameters (lsm2) live in the speaker strip's preset, not in a separate plist, so the strip is the parameter source. On the V/I MacBooks, spp3 also has a sidecar plist. No unit-specific selection happens at collection time.
 - Bounds: at most 1024 files and 64 MiB for the folder, the shared files and the selection data together, 64 MiB for the DSP database read, 1 MiB each for the volume configuration and the loudness manager, and 4 KiB for the calibration record. The largest folder seen so far is 34 files and 2.4 MB.
+
+## The unit
+
+The `speaker-thiele-small` record is the factory calibration of one unit, not of the model. A bundle copied from another Mac of the same model passes every other check, and its resistances would seed the Linux closed loop of the wrong speakers: about 8 K of coil temperature error per 3 % of resistance error. So the manifest names the Mac the bundle was collected on, and Linux refuses the bundle on any other.
+
+- `board` is the device tree root's `target-type` lowercased, with a trailing `AP` dropped: `J616s` gives `j616s`. It matches the first `compatible` of the Linux device tree (`apple,j616s`).
+- `unit_id` is the SHA-256, as 64 lowercase hex digits, over the 23 bytes `aurora-speaker-unit-v1` and a NUL, followed by the device tree root's `serial-number` without its trailing NUL bytes. macOS has the property in the `IODeviceTree` root, padded to 32 bytes. aura copies the same ADT property into the Linux device tree root, with one NUL, where it reads as `/proc/device-tree/serial-number`. Both sides therefore hash the same bytes. A serial number that is empty, longer than 64 bytes, or holds anything but printable non-space ASCII gives no unit ID.
+- Both are read only. An unreadable identity never fails the collection: the keys are then omitted (Swift) or `null` (Python), and Linux runs the speakers without the per-unit calibration until the tuning is collected again.
+- On Linux, speakerguardd (`aurora-speaker-tuning compile`) refuses a bundle whose `board` is not this Mac's or whose `unit_id` is not that of this Mac's `serial-number`. No blob is compiled, and the speakers stay at the kernel's floor. A bundle without `unit_id` (collected before this field) compiles without its calibration, so every channel runs open loop at its base limit. The journal says to collect it again. `install-linux.sh` refuses another unit's bundle before touching the ESP, even with `--any-mac`.
+- Domain separation keeps the hash from being a plain SHA-256 of a serial number. It is integrity binding, not a secret or a signature.
+
+Test vector: the made-up serial `SYNTHETIC0A` gives `22fea1b624a25cb3e103ed668fc37e1ef5c0d445e195029caf273827923c793d`.
 
 ## The lsm2 masker lattice
 
@@ -95,6 +109,8 @@ On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is
   "shared_files": [{"path": "Common/Strips/example.austrip", "bytes": 512, "sha256": "…"}],
   "loudness_manager": null,
   "speaker_id": 3,
+  "board": "j616s",
+  "unit_id": "…",
   "lsm2_mask_lattice": {"path": "lsm2-mask-lattice.bin", "bytes": 800, "sha256": "…",
                         "version": 1, "format": "u64le-exclusive-ends", "entries": 100},
   "files": [{"path": "AID35/ADM/config.plist", "bytes": 1234, "sha256": "…"}],
@@ -111,6 +127,7 @@ On Linux the package is unpacked under `/lib/firmware/vendor/`, so the bundle is
 - These three keys are optional and do not change the schema version. A bundle written before them verifies as before. Readers that know them must refuse the bundle when `device_dsp_database_source` is any other value, when a `shared_files` path is not under `Common/`, repeats or collides with `files`, when `loudness_manager` names another path or does not list this AID, or when the speaker modes in `DeviceDSPDatabase.plist` reference a file that is not in the bundle or `shared_files` differs from their `Common/` references.
 - `speaker_id` is the speaker ID (`spid`) as an integer from 0 to 4294967295, kept exactly as macOS reports it (65535 means an invalid strap). It is omitted or `null` when unknown. Readers accept it missing, `null`, or such an integer, and refuse the bundle for any other value (boolean, fraction, negative, string). It does not change the schema version.
 - `lsm2_mask_lattice` is the record of the lsm2 masker lattice: path `lsm2-mask-lattice.bin`, 800 bytes, `version` 1, `format` `u64le-exclusive-ends` (100 little-endian unsigned 64-bit exclusive bucket ends), `entries` 100. It is kept out of `files`. Every bundle the collector writes has it; it is optional for readers, so bundles collected before it still verify (the firmware rebuild logs a warning, and lsm2 then gives no masking credit). Readers that know it must refuse the bundle when the record has any other path, size, version, format or entry count, and must refuse the table when it fails the rule above.
+- `board` and `unit_id` name the Mac the bundle was collected on ([The unit](#the-unit)). Both are optional and do not change the schema version. They are omitted or `null` when unknown. Readers that know them must refuse the bundle when `board` is not 1 to 8 lowercase letters and digits, or `unit_id` is not 64 lowercase hex digits.
 - `macos_build` is the running macOS build the folder was read from. A later macOS update can change the tuning, and re-running the firmware step collects the new set.
 - Paths are relative to the manifest's directory. Readers must reject absolute paths, `.` or `..` components, and any file whose size or SHA-256 differs from the manifest.
 - Readers must also refuse the bundle unless: `schema` is 2; `complete` is `true`; `aid` is `"AID"` followed by `acoustic_id`; `device_dsp_database` and `config` hold the names above and both are listed in `files`; every `files` path is under `AID<n>/` or is one of those two names, with no duplicates; `source_file_count` equals the number of `AID<n>/` records; each file is a regular file reached without links; and the file and byte bounds above hold. Schema 1 bundles cannot show completeness and are refused.
@@ -129,7 +146,7 @@ A system installed before the installer collected speaker tuning can get it with
 
 ## Privacy
 
-The installer reads only `acoustic-id` and `speaker-thiele-small` from the device tree, and only the selected tuning folder. It reads no serial numbers or other identifiers. The calibration record is factory measurement data (driver resistance and calibration temperature per speaker). It stays on the user's machine, like the other factory calibration the installer already stores.
+The installer reads `acoustic-id` and `speaker-thiele-small` from the device tree's audio node, `target-type` and `serial-number` from its root, and only the selected tuning folder. The serial number is reduced to the unit ID at once: it is never written, logged or stored, in the bundle or anywhere else. The calibration record is factory measurement data (driver resistance and calibration temperature per speaker). It stays on the user's machine, like the other factory calibration the installer already stores.
 
 ## Attribution
 

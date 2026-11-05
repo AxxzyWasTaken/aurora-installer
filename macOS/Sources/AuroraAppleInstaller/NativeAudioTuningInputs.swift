@@ -89,6 +89,13 @@
       /// component (`NativeLSM2Lattice`). Required: without it there is no
       /// bundle.
       var maskLattice: Data? = nil
+      /// The board this Mac is (`j616s`, from the device tree root's
+      /// `target-type`). Nil when unknown.
+      var board: String? = nil
+      /// `unitID(_:)` of the device tree root's `serial-number`: the unit
+      /// whose speaker calibration this is. Never the serial itself. Nil
+      /// when unknown; Linux then does not use the calibration.
+      var unitID: String? = nil
     }
 
     /// The selection data read from the Tunings root for one Mac.
@@ -145,6 +152,10 @@
       /// bucket ends (version 1). Optional for readers: bundles collected
       /// before it have none.
       let lsm2MaskLattice: Lattice?
+      /// The Mac the bundle was collected on: its board and unit ID.
+      /// Omitted when unknown.
+      let board: String?
+      let unitID: String?
       let files: [File]
       let basedOn: String
 
@@ -160,6 +171,8 @@
         case sharedFiles = "shared_files"
         case loudnessManager = "loudness_manager"
         case lsm2MaskLattice = "lsm2_mask_lattice"
+        case board
+        case unitID = "unit_id"
         case basedOn = "based_on"
       }
     }
@@ -321,6 +334,50 @@
     /// `AID<n>`, the folder name for an acoustic ID.
     static func folder(_ acousticID: UInt32) -> String { "AID\(acousticID)" }
 
+    /// The unit ID: SHA-256, as lowercase hex, over this tag and the
+    /// `serial-number` without its NUL padding. The same rule as the Python
+    /// collector and aurora-speaker-tuning's `machine::unit_id` on Linux,
+    /// which reads the same property from the device tree aura passes.
+    static let unitIDDomain = Data("aurora-speaker-unit-v1".utf8) + Data([0])
+
+    /// The unit ID of a raw `serial-number`, or nil unless it is 1 to 64
+    /// printable, non-space ASCII bytes after its NUL padding.
+    static func unitID(_ raw: Data) -> String? {
+      var serial = raw
+      while serial.last == 0 { serial.removeLast() }
+      guard !serial.isEmpty, serial.count <= 64, serial.allSatisfy({ (0x21...0x7e).contains($0) })
+      else { return nil }
+      return NativeStubFileStore.hash(unitIDDomain + serial)
+    }
+
+    /// The board of a `target-type` (`J616s`, or `J616sAP`): `j616s`.
+    static func board(_ raw: Data) -> String? {
+      var bytes = raw
+      while bytes.last == 0 { bytes.removeLast() }
+      guard var name = String(data: bytes, encoding: .ascii) else { return nil }
+      if name.hasSuffix("AP") { name.removeLast(2) }
+      let board = name.lowercased()
+      return board.range(of: #"\A[a-z0-9]{1,8}\z"#, options: .regularExpression) == nil
+        ? nil : board
+    }
+
+    static func validUnitID(_ value: String) -> Bool {
+      value.range(of: #"\A[0-9a-f]{64}\z"#, options: .regularExpression) != nil
+    }
+
+    /// `(board, unit ID)` from the device tree root, read only; either is
+    /// nil when unknown, which never fails the collection.
+    static func identity() -> (String?, String?) {
+      let root = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/")
+      guard root != 0 else { return (nil, nil) }
+      defer { IOObjectRelease(root) }
+      func data(_ key: String) -> Data? {
+        IORegistryEntryCreateCFProperty(root, key as CFString, kCFAllocatorDefault, 0)?
+          .takeRetainedValue() as? Data
+      }
+      return (data("target-type").flatMap(board), data("serial-number").flatMap(unitID))
+    }
+
     /// The device tree stores `acoustic-id` as one little-endian 32-bit word.
     static func acousticID(_ bytes: Data) -> UInt32? {
       guard bytes.count == 4 else { return nil }
@@ -378,11 +435,19 @@
         throw NativeLSM2Lattice.Failure.malformed("cannot read it: \(error)")
       }
       let lattice = try NativeLSM2Lattice.extract(component)
+      let (board, unit) = identity()
+      if unit == nil, thieleSmall != nil {
+        InstallerLog.record(
+          .progress,
+          "This Mac's serial-number is unreadable: the speaker tuning is collected without its "
+            + "unit, and Linux will not use its speaker calibration")
+      }
       return Snapshot(
         acousticID: acousticID, thieleSmall: thieleSmall, files: files, build: build(),
         selection: selected.selection, sourceFileCount: count, speakerID: liveSpeakerID(),
         databaseSource: selected.databaseSource, sharedFiles: selected.sharedFiles,
-        loudnessManager: selected.loudnessManager, maskLattice: lattice)
+        loudnessManager: selected.loudnessManager, maskLattice: lattice, board: board,
+        unitID: unit)
     }
 
     static let speakerServiceClass = "AppleEmbeddedAudioDevice"
@@ -598,6 +663,12 @@
         path: NativeLSM2Lattice.bundleName, bytes: lattice.count,
         sha256: NativeStubFileStore.hash(lattice), version: NativeLSM2Lattice.version,
         format: NativeLSM2Lattice.format, entries: NativeLSM2Lattice.entries)
+      if let board = snapshot.board, Self.board(Data(board.utf8)) != board {
+        throw NativePeripheralInputError.localInput
+      }
+      if let unit = snapshot.unitID, !validUnitID(unit) {
+        throw NativePeripheralInputError.localInput
+      }
       var thieleSmall: Manifest.File?
       if let spts = snapshot.thieleSmall {
         guard !spts.isEmpty, spts.count <= 4096 else {
@@ -616,6 +687,7 @@
         deviceDSPDatabaseSource: snapshot.databaseSource, sharedFiles: shared,
         loudnessManager: loudness,
         lsm2MaskLattice: latticeRecord,
+        board: snapshot.board, unitID: snapshot.unitID,
         files: records,
         basedOn: "aurora-audio-dsp by saku (MIT)")
       let encoder = JSONEncoder()

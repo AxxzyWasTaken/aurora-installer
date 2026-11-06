@@ -74,6 +74,28 @@
       }
     }
 
+    func testOnlyAMachOConfigurationMayNameTheConfinedStage2() async throws {
+      for (mode, accepted) in [("macho", true), ("raw", false)] {
+        let fixture = try NativeRecoveryHandoffFixture()
+        defer { fixture.remove() }
+        let url = fixture.system.appendingPathComponent(
+          "Aurora/Recovery/InstallData/install-config.json")
+        var config = fixture.vector["config"] as! [String: Any]
+        config["bootMode"] = mode
+        config["stage2Path"] = AuraStage1Format.confinedStage2Path
+        try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]).write(to: url)
+        do {
+          _ = try await fixture.executor().execute(
+            package: fixture.package, journal: fixture.journalURL,
+            authorization: fixture.authorization(), requirement: "fixture", fullReadback: false)
+          XCTAssertTrue(accepted, "A raw configuration selected the confined Stage 2")
+        } catch {
+          XCTAssertFalse(accepted, String(describing: error))
+          XCTAssertEqual(error as? NativeHandoffValidationError, .invalidTarget)
+        }
+      }
+    }
+
     func testUnknownMissingOrNonStringBootModeNeverSelectsRecovery() async throws {
       for mode: Any in ["unknown", "MachO", "", 1, NSNull()] {
         let fixture = try NativeRecoveryHandoffFixture()

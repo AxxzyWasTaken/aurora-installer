@@ -10,7 +10,7 @@
       let path: String
     }
     let archive: IPSWArchive
-    let entries: [Entry]
+    var entries: [Entry]
     let icon: IPSWArchiveMember
     let stage1: Data
     /// aura's Mach-O boot object for `stage1`, enrolled instead of it.
@@ -18,6 +18,17 @@
     let windowMilliseconds: UInt32
     let firmware: String
     let usesLegacyStage1: Bool
+
+    /// The ESP file the Stage 1 this plan installs chainloads.
+    var stage2Path: String { AuraStage1Format.stage2Path(machO: stage1MachO != nil) }
+
+    /// A reset on a Mach-O chip leaves `m1n1/boot.bin` alone, as package updates
+    /// do, because an unpadded Stage 1 that is still enrolled loads it.
+    func keepingInstalledStandardStage2() -> Self {
+      var plan = self
+      plan.entries.removeAll { $0.path == AuraStage1Format.standardStage2Path }
+      return plan
+    }
 
     static func make(
       metadata: Data, archive: IPSWArchive, device: String, firmware: String,
@@ -114,19 +125,29 @@
       guard !installed.isEmpty, installed.count <= 64 << 20,
         UUID(uuidString: espUUID) != nil
       else { throw NativeBootChainError.invalidStage1 }
-      let expected =
+      // An installation on a Mach-O chip made before padding names the standard path.
+      let paths =
+        stage1MachO == nil
+        ? [AuraStage1Format.standardStage2Path]
+        : [AuraStage1Format.confinedStage2Path, AuraStage1Format.standardStage2Path]
+      let expected = try paths.map { path in
         usesLegacyStage1
-        ? try NativeLegacyStage1.fill(
-          stage1, uuid: espUUID.lowercased(), path: "m1n1/boot.bin")
-        : try NativeBootChain.fillStage1(
-          stage1, uuid: espUUID.lowercased(), path: "m1n1/boot.bin",
-          windowMilliseconds: windowMilliseconds)
-      if installed != expected {
+          ? try NativeLegacyStage1.fill(stage1, uuid: espUUID.lowercased(), path: path)
+          : try NativeBootChain.fillStage1(
+            stage1, uuid: espUUID.lowercased(), path: path,
+            windowMilliseconds: windowMilliseconds)
+      }
+      if !expected.contains(installed) {
         guard allowDifferentStage1Code, !usesLegacyStage1 else {
           throw NativeBootChainError.invalidStage1
         }
-        try NativeBootChain.validateInstalledStage1(
-          installed, uuid: espUUID.lowercased(), path: "m1n1/boot.bin")
+        var valid = false
+        for path in paths where !valid {
+          valid =
+            (try? NativeBootChain.validateInstalledStage1(
+              installed, uuid: espUUID.lowercased(), path: path)) != nil
+        }
+        guard valid else { throw NativeBootChainError.invalidStage1 }
       }
       return NativeStubFileIdentity(
         bytes: installed.count, sha256: NativeStubFileStore.hash(installed))
@@ -317,7 +338,7 @@
       } else {
         stage1 = try NativeBootChain.fillStage1(
           plan.stage1, uuid: esp.uuid.lowercased(),
-          path: "m1n1/boot.bin", windowMilliseconds: plan.windowMilliseconds)
+          path: plan.stage2Path, windowMilliseconds: plan.windowMilliseconds)
         legacy = nil
       }
       let stage1Identity = try await systemStore.data(stage1, at: Self.stage1Path)

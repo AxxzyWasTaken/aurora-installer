@@ -23,7 +23,8 @@
     static func check(
       approved: ValidatedEnginePlan, metadata: Data, archive: IPSWArchive,
       disk: NativeCollectedDisk, stubBytes: UInt64, firmwareVersion: String,
-      installedStage1: Data, legacyStage1: (@Sendable () throws -> Data)? = nil
+      installedStage1: Data, machOStage1: Bool = false,
+      legacyStage1: (@Sendable () throws -> Data)? = nil
     ) async throws -> Prepared {
       guard approved.candidateKind == "reinstall",
         SHA256Digest(hashing: metadata).rawValue == approved.metadataDigest,
@@ -65,10 +66,11 @@
         bootImageBytes: UInt64(members[0].sizeBytes),
         rootImageBytes: UInt64(members[1].sizeBytes))
       guard
-        let esp = try await NativeESPPayloadPlan.make(
+        let planned = try await NativeESPPayloadPlan.make(
           metadata: metadata, archive: archive, device: approved.deviceIdentifier,
-          firmware: firmwareVersion, legacyStage1: legacyStage1)
+          firmware: firmwareVersion, machOStage1: machOStage1, legacyStage1: legacyStage1)
       else { throw NativePreservedInstallError.unavailable }
+      let esp = machOStage1 ? planned.keepingInstalledStandardStage2() : planned
       let configurationPath = InstallConf.relativePath.precomposedStringWithCanonicalMapping
         .lowercased()
       let signedPaths = Set(

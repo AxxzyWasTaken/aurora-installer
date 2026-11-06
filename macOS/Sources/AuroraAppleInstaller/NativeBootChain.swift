@@ -10,6 +10,10 @@
     case missingStage1
     case missingStage2
     case invalidStage1
+    /// A Mach-O chip has no raw or unpadded Stage 1 to fall back to.
+    case missingMachOStage1
+    /// The payload has no Stage 2 for a padded Stage 1 to load.
+    case missingConfinedStage2
   }
 
   struct NativeBootChainAdmission: Equatable, Sendable {
@@ -18,17 +22,22 @@
     var stage1MachOMember: String? = nil
     let windowMilliseconds: UInt32
     let espLayout: [String: String]
+
+    /// The ESP file the enrolled Stage 1 chainloads.
+    var stage2Path: String { AuraStage1Format.stage2Path(machO: stage1MachOMember != nil) }
   }
 
   enum NativeBootChain {
     static let commonStage1 = "esp/aurora/stage1.bin"
     static let commonStage1MachO = "esp/aurora/stage1.macho"
 
-    /// `machOStage1` asks for the Mach-O Stage 1 (AuraStage1Format.usesMachO).
-    /// A payload without one for the common Stage 1 keeps the raw image.
+    /// `machOStage1` asks for the padded Mach-O Stage 1 (AuraStage1Format.usesMachO).
+    /// Such a Mac needs the object and its Stage 2, or nothing it can start from is
+    /// installed. Only the dry run lifts `requireConfinedStage2`, to report the rest
+    /// of the chain for a payload published before that file existed.
     static func admit(
       metadata: Data, archive: IPSWArchive, deviceIdentifier: String, firmware: String,
-      machOStage1: Bool = false
+      machOStage1: Bool = false, requireConfinedStage2: Bool = true
     ) async throws -> NativeBootChainAdmission {
       let template = try NativePayloadPreflight.target(metadata)
       let board = String(deviceIdentifier.dropFirst(6)) + "ap"
@@ -55,6 +64,9 @@
       var stage1: String?
       var stage1MachO: String?
       var window: UInt32 = 0
+      if machOStage1, !common || members[commonStage1MachO] == nil {
+        throw NativeBootChainError.missingMachOStage1
+      }
       if common {
         stage1 = commonStage1
       } else if board == "j700ap" {
@@ -68,8 +80,11 @@
         let bytes = try await archive.read(member, maximumBytes: 64 << 20)
         let filled = try fillStage1(
           bytes, uuid: "00000000-0000-0000-0000-000000000000",
-          path: template["next_object"] as? String ?? "m1n1/boot.bin", windowMilliseconds: window)
-        if machOStage1, common, let object = members[commonStage1MachO] {
+          path: machOStage1
+            ? AuraStage1Format.confinedStage2Path
+            : template["next_object"] as? String ?? AuraStage1Format.standardStage2Path,
+          windowMilliseconds: window)
+        if machOStage1, let object = members[commonStage1MachO] {
           do {
             _ = try MachOBootObject.fill(
               try await archive.read(object, maximumBytes: 64 << 20), raw: bytes, filled: filled)
@@ -84,10 +99,18 @@
       let layout = try NativeESPLayout.map(
         deviceIdentifier: deviceIdentifier, members: esp, commonAllowed: common,
         stage2: stage2.member,
-        stage2Variants: stage2.variants)
+        stage2Variants: stage2.variants, machOStage1: machOStage1)
       guard let selected = layout.first(where: { $0.value == "m1n1/boot.bin" })?.key,
         let member = members[selected], member.sizeBytes > 0
       else { throw NativeBootChainError.missingStage2 }
+      if machOStage1, requireConfinedStage2 {
+        guard
+          let confined = layout.first(where: {
+            $0.value == AuraStage1Format.confinedStage2Path
+          })?.key,
+          let file = members[confined], file.sizeBytes > 0
+        else { throw NativeBootChainError.missingConfinedStage2 }
+      }
       return NativeBootChainAdmission(
         stage1Member: stage1, stage1MachOMember: stage1MachO, windowMilliseconds: window,
         espLayout: layout)
@@ -208,15 +231,21 @@
   }
 
   enum NativeESPLayout {
+    /// On a Mach-O chip a board's own confined Stage 2 wins over the shared one,
+    /// and either goes beside `m1n1/boot.bin`. Other chips never receive one.
     static func map(
       deviceIdentifier: String, members: Set<String>, commonAllowed: Bool, stage2: String?,
-      stage2Variants: Set<String>
+      stage2Variants: Set<String>, machOStage1: Bool = false
     ) throws -> [String: String] {
       let standard = "esp/m1n1/boot.bin"
       let board = String(deviceIdentifier.dropFirst(6))
       let conventional = "esp/m1n1/boot-\(board).bin"
       let selected = stage2 ?? (members.contains(conventional) ? conventional : standard)
       let common = members.contains("esp/aurora/stage1.bin") && commonAllowed
+      let confined =
+        machOStage1
+        ? ["esp/m1n1/boot-ctxr-\(board).bin", "esp/m1n1/boot-ctxr.bin"].first(
+          where: members.contains) : nil
       guard members.contains(selected)
       else { throw NativeHandoffValidationError.changedContent }
       var layout = [String: String]()
@@ -226,6 +255,8 @@
         }
         if member == selected {
           layout[member] = "m1n1/boot.bin"
+        } else if member == confined {
+          layout[member] = AuraStage1Format.confinedStage2Path
         } else if (!common
           && [NativeBootChain.commonStage1, NativeBootChain.commonStage1MachO].contains(member))
           || stage2Variants.contains(member)

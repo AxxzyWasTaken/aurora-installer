@@ -232,7 +232,10 @@
           == evidence.installed.efiPartition.lowercased(),
         let bootMode = config["bootMode"] as? String,
         NativeRecoveryBootMode(rawValue: bootMode) != nil,
-        config["stage2Path"] as? String == "m1n1/boot.bin",
+        let stage2Path = config["stage2Path"] as? String,
+        stage2Path == AuraStage1Format.standardStage2Path
+          || (bootMode == NativeRecoveryBootMode.macho.rawValue
+            && stage2Path == AuraStage1Format.confinedStage2Path),
         let name = config["volumeName"] as? String
       else {
         throw NativeHandoffValidationError.invalidTarget

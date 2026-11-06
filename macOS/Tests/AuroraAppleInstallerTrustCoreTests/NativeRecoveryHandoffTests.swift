@@ -96,6 +96,28 @@
       }
     }
 
+    func testHandoffLayoutKeepsTheConfinedStage2OfAPaddedMachOStage1() throws {
+      // The handoff re-derives the ESP layout the installer wrote. For a padded
+      // Mach-O Stage 1 that layout has m1n1/boot-ctxr.bin; without it, the file
+      // the installer wrote looks foreign and the handoff refuses.
+      let fixture = try NativeRecoveryHandoffFixture()
+      defer { fixture.remove() }
+      let evidence = try NativeHandoffEvidence(
+        snapshot: fixture.journalSnapshot(),
+        metadata: Data((fixture.vector["metadata"] as! String).utf8))
+      let members = Set(
+        (fixture.vector["espFiles"] as! [String: String]).keys.map { "esp/" + $0 }
+          + ["esp/m1n1/boot-ctxr.bin"])
+      let firmware = evidence.qualifiedCommonFirmware.first ?? "26.6.2"
+      let padded = try evidence.espLayout(
+        members: members, firmware: firmware, machOStage1: true)
+      XCTAssertEqual(padded["esp/m1n1/boot-ctxr.bin"], AuraStage1Format.confinedStage2Path)
+      XCTAssertEqual(padded["esp/m1n1/boot.bin"], AuraStage1Format.standardStage2Path)
+      let raw = try evidence.espLayout(members: members, firmware: firmware, machOStage1: false)
+      XCTAssertNil(raw["esp/m1n1/boot-ctxr.bin"])
+      XCTAssertFalse(raw.values.contains(AuraStage1Format.confinedStage2Path))
+    }
+
     func testUnknownMissingOrNonStringBootModeNeverSelectsRecovery() async throws {
       for mode: Any in ["unknown", "MachO", "", 1, NSNull()] {
         let fixture = try NativeRecoveryHandoffFixture()

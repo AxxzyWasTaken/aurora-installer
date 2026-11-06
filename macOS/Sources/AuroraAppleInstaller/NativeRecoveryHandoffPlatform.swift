@@ -279,7 +279,11 @@
       let espMembers = archive.members.filter {
         $0.name.hasPrefix("esp/") && !$0.name.hasSuffix("/")
       }
-      let layout = try evidence.espLayout(members: Set(espMembers.map(\.name)), firmware: firmware)
+      // The configuration names the confined Stage 2 only for a padded Mach-O
+      // Stage 1 (checked above), which is when the ESP holds it.
+      let layout = try evidence.espLayout(
+        members: Set(espMembers.map(\.name)), firmware: firmware,
+        machOStage1: stage2Path == AuraStage1Format.confinedStage2Path)
       var treeHash = SHA256()
       var installedBytes: UInt64 = 0
       for member in espMembers.sorted(by: { $0.name.utf8.lexicographicallyPrecedes($1.name.utf8) })

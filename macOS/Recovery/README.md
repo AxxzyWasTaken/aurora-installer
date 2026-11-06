@@ -45,13 +45,12 @@ Macs with an M4-generation chip or later (T8132, T6040/T6041, T8140, T8142, T605
 | --- | --- | --- |
 | Raw image, on M1 to M3 | `m1n1/boot.bin` | not a Mach-O chip |
 | Mach-O, padded | `m1n1/boot-ctxr.bin` | yes |
-| Mach-O, unpadded, enrolled by an earlier installer | `m1n1/boot.bin` | no |
 
-An unpadded Stage 1 therefore never loads a Stage 2 that needs the larger window. A fresh installation on a Mach-O chip gets both files on its ESP. The payload supplies `m1n1/boot-ctxr.bin` from `esp/m1n1/boot-ctxr-<board>.bin` if it has one, otherwise from `esp/m1n1/boot-ctxr.bin`; other chips never receive it. A reset on a Mach-O chip writes `m1n1/boot-ctxr.bin` and leaves the existing `m1n1/boot.bin` alone, because the Stage 1 still enrolled may be an older one.
+A fresh installation on a Mach-O chip gets both files on its ESP. The payload supplies `m1n1/boot-ctxr.bin` from `esp/m1n1/boot-ctxr-<board>.bin` if it has one, otherwise from `esp/m1n1/boot-ctxr.bin`; other chips never receive it. A reset on a Mach-O chip writes the same files as a fresh installation.
 
 `install-config.json` and the manifest's `modes` name the path, `stage2Path` and `espPath`. The Recovery payload keeps that one Stage 2 as `raw/boot.bin` in either mode, beside `macho/aura-boot.macho` and `raw/aura-raw.bin`. `defaultMode` and `bootMode` name the chip's mode.
 
-Before any change, Recovery checks the object's layout, rejecting any non-empty `__TEXT_BOOT_EXEC`, checks that this Mac's chip uses Mach-O, and checks that the object chainloads the configured path. An older configuration that names `m1n1/boot.bin` is refused here; it remains valid for `aura recover`.
+Before any change, Recovery checks the object's layout, rejecting any non-empty `__TEXT_BOOT_EXEC`, checks that this Mac's chip uses Mach-O, and checks that the object chainloads the configured path. A Mach-O configuration that names `m1n1/boot.bin` is refused when Recovery reads it.
 
 ## Code window
 

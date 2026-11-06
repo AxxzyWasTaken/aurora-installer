@@ -29,10 +29,9 @@ struct InstallConfiguration: Decodable {
         && (object["allowCustomBootArguments"] == nil || object["allowCustomBootArguments"] is Bool)
     else { throw InstallConfigurationError.invalid }
     let config = try JSONDecoder().decode(Self.self, from: data)
-    // A Mach-O installation made before padding still names the standard path.
+    // A raw Stage 1 loads the standard Stage 2, and a padded Mach-O one the confined one.
     guard config.schema == 2, let mode = AuraBootMode(rawValue: config.bootMode),
-      config.stage2Path == AuraStage1Format.standardStage2Path
-        || (mode == .macho && config.stage2Path == AuraStage1Format.confinedStage2Path),
+      config.stage2Path == AuraStage1Format.stage2Path(machO: mode == .macho),
       !config.volumeName.isEmpty, config.volumeName.count <= 80,
       !config.volumeName.contains("/"),
       config.volumeName.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })

@@ -55,6 +55,7 @@
             "Aurora/Recovery/InstallData/install-config.json")
           var config = fixture.vector["config"] as! [String: Any]
           config["bootMode"] = mode
+          config["stage2Path"] = AuraStage1Format.stage2Path(machO: mode == "macho")
           try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]).write(to: url)
           if retry {
             let journal = try NativeRecoveryJournal(
@@ -74,21 +75,25 @@
       }
     }
 
-    func testOnlyAMachOConfigurationMayNameTheConfinedStage2() async throws {
-      for (mode, accepted) in [("macho", true), ("raw", false)] {
+    func testEachBootModeNamesOnlyItsOwnStage2() async throws {
+      for (mode, path, accepted) in [
+        ("macho", AuraStage1Format.confinedStage2Path, true),
+        ("raw", AuraStage1Format.confinedStage2Path, false),
+        ("macho", AuraStage1Format.standardStage2Path, false),
+      ] {
         let fixture = try NativeRecoveryHandoffFixture()
         defer { fixture.remove() }
         let url = fixture.system.appendingPathComponent(
           "Aurora/Recovery/InstallData/install-config.json")
         var config = fixture.vector["config"] as! [String: Any]
         config["bootMode"] = mode
-        config["stage2Path"] = AuraStage1Format.confinedStage2Path
+        config["stage2Path"] = path
         try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]).write(to: url)
         do {
           _ = try await fixture.executor().execute(
             package: fixture.package, journal: fixture.journalURL,
             authorization: fixture.authorization(), requirement: "fixture", fullReadback: false)
-          XCTAssertTrue(accepted, "A raw configuration selected the confined Stage 2")
+          XCTAssertTrue(accepted, "\(mode) accepted \(path)")
         } catch {
           XCTAssertFalse(accepted, String(describing: error))
           XCTAssertEqual(error as? NativeHandoffValidationError, .invalidTarget)

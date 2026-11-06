@@ -66,11 +66,10 @@
         bootImageBytes: UInt64(members[0].sizeBytes),
         rootImageBytes: UInt64(members[1].sizeBytes))
       guard
-        let planned = try await NativeESPPayloadPlan.make(
+        let esp = try await NativeESPPayloadPlan.make(
           metadata: metadata, archive: archive, device: approved.deviceIdentifier,
           firmware: firmwareVersion, machOStage1: machOStage1, legacyStage1: legacyStage1)
       else { throw NativePreservedInstallError.unavailable }
-      let esp = machOStage1 ? planned.keepingInstalledStandardStage2() : planned
       let configurationPath = InstallConf.relativePath.precomposedStringWithCanonicalMapping
         .lowercased()
       let signedPaths = Set(

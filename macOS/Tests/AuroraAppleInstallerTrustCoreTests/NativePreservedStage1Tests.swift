@@ -28,7 +28,7 @@
       }
     }
 
-    func testAMachOChipsResetAdmitsEitherStage2PathAndARawChipsOnlyItsOwn() async throws {
+    func testAResetAdmitsOnlyTheStage2PathOfItsMode() async throws {
       var plan = try await NativeESPFileTests.plan(deviceIdentifier: "apple,j700")
       let uuid = UUID().uuidString.lowercased()
       func filled(_ path: String) throws -> Data {
@@ -37,34 +37,23 @@
       }
       let standard = try filled(AuraStage1Format.standardStage2Path)
       let confined = try filled(AuraStage1Format.confinedStage2Path)
-      _ = try plan.admitPreservedStage1(standard, espUUID: uuid)
-      XCTAssertThrowsError(try plan.admitPreservedStage1(confined, espUUID: uuid))
-      XCTAssertThrowsError(
-        try plan.admitPreservedStage1(confined, espUUID: uuid, allowDifferentStage1Code: true))
-      plan.stage1MachO = Data()
-      for installed in [standard, confined] {
-        let admitted = try plan.admitPreservedStage1(installed, espUUID: uuid)
-        XCTAssertEqual(admitted.sha256, NativeStubFileStore.hash(installed))
-        var rebuilt = installed
+      let other = try filled("m1n1/other.bin")
+      // A raw Stage 1 loads m1n1/boot.bin; a Mach-O one is always padded and
+      // loads m1n1/boot-ctxr.bin.
+      for (machO, own, foreign) in [(false, standard, confined), (true, confined, standard)] {
+        plan.stage1MachO = machO ? Data() : nil
+        let admitted = try plan.admitPreservedStage1(own, espUUID: uuid)
+        XCTAssertEqual(admitted.sha256, NativeStubFileStore.hash(own))
+        var rebuilt = own
         rebuilt[0] ^= 1
         XCTAssertThrowsError(try plan.admitPreservedStage1(rebuilt, espUUID: uuid))
         _ = try plan.admitPreservedStage1(rebuilt, espUUID: uuid, allowDifferentStage1Code: true)
+        for refused in [foreign, other] {
+          XCTAssertThrowsError(try plan.admitPreservedStage1(refused, espUUID: uuid))
+          XCTAssertThrowsError(
+            try plan.admitPreservedStage1(refused, espUUID: uuid, allowDifferentStage1Code: true))
+        }
       }
-      let other = try NativeBootChain.fillStage1(
-        plan.stage1, uuid: uuid, path: "m1n1/other.bin",
-        windowMilliseconds: plan.windowMilliseconds)
-      XCTAssertThrowsError(try plan.admitPreservedStage1(other, espUUID: uuid))
-      XCTAssertThrowsError(
-        try plan.admitPreservedStage1(other, espUUID: uuid, allowDifferentStage1Code: true))
-    }
-
-    func testAMachOChipsResetLeavesTheStandardStage2Alone() async throws {
-      let plan = try await NativeESPFileTests.plan(deviceIdentifier: "apple,j700")
-      XCTAssertTrue(plan.entries.contains { $0.path == AuraStage1Format.standardStage2Path })
-      let kept = plan.keepingInstalledStandardStage2()
-      XCTAssertEqual(
-        kept.entries.map(\.path),
-        plan.entries.map(\.path).filter { $0 != AuraStage1Format.standardStage2Path })
     }
 
     func testCrossDistroResetKeepsAValidEnrolledModernStageOne() async throws {

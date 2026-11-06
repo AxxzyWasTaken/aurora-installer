@@ -24,14 +24,6 @@
     /// The ESP file the Stage 1 this plan installs chainloads.
     var stage2Path: String { AuraStage1Format.stage2Path(machO: stage1MachO != nil) }
 
-    /// A reset on a Mach-O chip leaves `m1n1/boot.bin` alone, as package updates
-    /// do, because an unpadded Stage 1 that is still enrolled loads it.
-    func keepingInstalledStandardStage2() -> Self {
-      var plan = self
-      plan.entries.removeAll { $0.path == AuraStage1Format.standardStage2Path }
-      return plan
-    }
-
     static func make(
       metadata: Data, archive: IPSWArchive, device: String, firmware: String,
       machOStage1: Bool = false, legacyStage1: (@Sendable () throws -> Data)? = nil
@@ -128,29 +120,18 @@
       guard !installed.isEmpty, installed.count <= 64 << 20,
         UUID(uuidString: espUUID) != nil
       else { throw NativeBootChainError.invalidStage1 }
-      // An installation on a Mach-O chip made before padding names the standard path.
-      let paths =
-        stage1MachO == nil
-        ? [AuraStage1Format.standardStage2Path]
-        : [AuraStage1Format.confinedStage2Path, AuraStage1Format.standardStage2Path]
-      let expected = try paths.map { path in
+      let expected =
         usesLegacyStage1
-          ? try NativeLegacyStage1.fill(stage1, uuid: espUUID.lowercased(), path: path)
-          : try NativeBootChain.fillStage1(
-            stage1, uuid: espUUID.lowercased(), path: path,
-            windowMilliseconds: windowMilliseconds)
-      }
-      if !expected.contains(installed) {
+        ? try NativeLegacyStage1.fill(stage1, uuid: espUUID.lowercased(), path: stage2Path)
+        : try NativeBootChain.fillStage1(
+          stage1, uuid: espUUID.lowercased(), path: stage2Path,
+          windowMilliseconds: windowMilliseconds)
+      if installed != expected {
         guard allowDifferentStage1Code, !usesLegacyStage1 else {
           throw NativeBootChainError.invalidStage1
         }
-        var valid = false
-        for path in paths where !valid {
-          valid =
-            (try? NativeBootChain.validateInstalledStage1(
-              installed, uuid: espUUID.lowercased(), path: path)) != nil
-        }
-        guard valid else { throw NativeBootChainError.invalidStage1 }
+        try NativeBootChain.validateInstalledStage1(
+          installed, uuid: espUUID.lowercased(), path: stage2Path)
       }
       return NativeStubFileIdentity(
         bytes: installed.count, sha256: NativeStubFileStore.hash(installed))

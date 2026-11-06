@@ -233,9 +233,8 @@
         let bootMode = config["bootMode"] as? String,
         NativeRecoveryBootMode(rawValue: bootMode) != nil,
         let stage2Path = config["stage2Path"] as? String,
-        stage2Path == AuraStage1Format.standardStage2Path
-          || (bootMode == NativeRecoveryBootMode.macho.rawValue
-            && stage2Path == AuraStage1Format.confinedStage2Path),
+        stage2Path
+          == AuraStage1Format.stage2Path(machO: bootMode == NativeRecoveryBootMode.macho.rawValue),
         let name = config["volumeName"] as? String
       else {
         throw NativeHandoffValidationError.invalidTarget
@@ -279,8 +278,7 @@
       let espMembers = archive.members.filter {
         $0.name.hasPrefix("esp/") && !$0.name.hasSuffix("/")
       }
-      // The configuration names the confined Stage 2 only for a padded Mach-O
-      // Stage 1 (checked above), which is when the ESP holds it.
+      // Only a Mach-O configuration names the confined Stage 2 (checked above).
       let layout = try evidence.espLayout(
         members: Set(espMembers.map(\.name)), firmware: firmware,
         machOStage1: stage2Path == AuraStage1Format.confinedStage2Path)

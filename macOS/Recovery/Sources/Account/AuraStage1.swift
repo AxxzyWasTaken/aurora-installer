@@ -11,11 +11,10 @@ public enum AuraStage1Format {
     (0x8130...0x8FFF).contains(chipID) || (0x6040...0x6FFF).contains(chipID)
   }
 
-  /// The ESP file a raw Stage 1, or a Mach-O Stage 1 enrolled without padding, loads.
+  /// The ESP file a raw Stage 1 loads.
   public static let standardStage2Path = "m1n1/boot.bin"
-  /// The ESP file a padded Stage 1 loads. Package updates on Mach-O chips write
-  /// this one and leave `standardStage2Path` alone, so an unpadded Stage 1 can
-  /// never load a Stage 2 that needs the larger window.
+  /// The ESP file a Mach-O Stage 1, always padded, loads. Package updates on
+  /// Mach-O chips write this one.
   public static let confinedStage2Path = "m1n1/boot-ctxr.bin"
 
   public static func stage2Path(machO: Bool) -> String {

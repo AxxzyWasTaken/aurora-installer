@@ -412,11 +412,10 @@ enum RecoveryActions {
     let stage2 = try asset(selection.mode.stage2Path, manifest: m)
     if selection.mode == .macho {
       try verifyMachOStage1(stage1)
-      // Files staged for the older path came from an earlier installer.
       try check(
-        config.stage2Path == AuraStage1Format.confinedStage2Path
-          && (try? Stage1Configuration.read(stage1).stage2Path) == config.stage2Path,
-        "An earlier Aurora installer prepared these files. Run the Aurora installer again.")
+        (try? Stage1Configuration.read(stage1).stage2Path) == config.stage2Path,
+        "The startup software in these files doesn't load this installation's Stage 2. Run the Aurora installer again."
+      )
     }
     // A successful setup must retain a usable per-device repair baseline.
     _ = try RecoveryBaseline.firmware(

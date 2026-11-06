@@ -90,12 +90,16 @@ static void output_snapshot(const char *raw, size_t length, const char *secret,
     free(clean);
 }
 
-/* kmutil --compress works through the whole padded object with nothing to
- * answer, which takes minutes on some Recovery versions. */
-static int authorization_timeout(char *const arguments[], bool confirm_boot_object)
+/* kmutil configure-boot --compress works through the whole padded object with
+ * nothing to answer, which takes minutes on some Recovery versions. Every other
+ * command keeps the short limit. */
+static const char *authorization_kmutil="/usr/bin/kmutil";
+
+static int authorization_timeout(const char *executable, char *const arguments[])
 {
-    if(confirm_boot_object)
-        for(size_t i=1;arguments[i];i++)
+    if(!strcmp(executable,authorization_kmutil) && arguments[1] &&
+       !strcmp(arguments[1],"configure-boot"))
+        for(size_t i=2;arguments[i];i++)
             if(!strcmp(arguments[i],"--compress"))return AUTHORIZATION_COMPRESS_TIMEOUT_SECONDS;
     return AUTHORIZATION_TIMEOUT_SECONDS;
 }
@@ -137,7 +141,7 @@ static int authorization_run_logged(const char *executable, char *const argument
     unsigned user_sent=0,password_sent=0,confirmation_sent=0;
     char pending[4096]={0}, line[4096]={0}, raw[LOG_LIMIT];
     size_t used=0,raw_used=0;
-    time_t deadline=time(NULL)+authorization_timeout(arguments,confirm_boot_object);
+    time_t deadline=time(NULL)+authorization_timeout(executable,arguments);
     for(;;) {
         if(!exited) {
             pid_t done=waitpid(child,&status,WNOHANG);

@@ -497,12 +497,14 @@ enum RecoveryActions {
     let stage1Path = operation.appendingPathComponent("stage1")
     if executeWindow == nil { try RecoveryFileTransaction.write(stage1, to: stage1Path) }
     do {
-      // Inside this block so that a refusal restores the files and clears the journal.
-      if let executeWindow {
-        try stageExpandedStage1(stage1, window: executeWindow, at: stage1Path)
-      }
       try RecoveryInstallationCoordinator.run(
         phase: journal.phase, persist: record,
+        stage: {
+          // Inside this block so that a refusal restores the files and clears the journal.
+          if let executeWindow {
+            try stageExpandedStage1(stage1, window: executeWindow, at: stage1Path)
+          }
+        },
         authorizePolicy: {
           try transaction.clearImmutableFlags()
           progress(0.3, "Authorizing the boot environment")

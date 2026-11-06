@@ -51,10 +51,13 @@ enum RecoveryInstallationCoordinator {
   static func run(
     phase: RecoveryInstallationPhase,
     persist: (RecoveryInstallationPhase) throws -> Void,
+    stage: () throws -> Void = {},
     authorizePolicy: () throws -> Void, installBundle: () throws -> Void,
     verifyBundle: () throws -> Void, enroll: () throws -> Void,
     finalize: () throws -> Void, commit: () throws -> Void
   ) throws {
+    // Past enrollment nothing reads the staged object, so it can't stop a resume.
+    if phase.needsEnrollment { try stage() }
     if phase.mayRestoreFiles {
       try persist(.policyRequested)
       try authorizePolicy()

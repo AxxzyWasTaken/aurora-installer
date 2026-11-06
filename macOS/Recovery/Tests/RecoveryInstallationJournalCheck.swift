@@ -87,6 +87,33 @@ struct RecoveryFailure: Error { let message: String }
       precondition(invoked.contains("enroll") == (phase == .enrollmentRequested))
       precondition(invoked.contains("finalize") == (phase != .committed))
     }
+    // A setup past enrollment finishes without staging the object again.
+    for phase in RecoveryInstallationPhase.allCases {
+      var staged = false
+      let run = {
+        try RecoveryInstallationCoordinator.run(
+          phase: phase, persist: { _ in },
+          stage: {
+            staged = true
+            if !phase.needsEnrollment { throw Injected.stop }
+          },
+          authorizePolicy: {}, installBundle: {}, verifyBundle: {}, enroll: {}, finalize: {},
+          commit: {})
+      }
+      try run()
+      precondition(staged == phase.needsEnrollment, phase.rawValue)
+    }
+    // A refusal to stage stops before the policy changes.
+    var authorized = false
+    do {
+      try RecoveryInstallationCoordinator.run(
+        phase: .prepared, persist: { _ in }, stage: { throw Injected.stop },
+        authorizePolicy: { authorized = true }, installBundle: {}, verifyBundle: {}, enroll: {},
+        finalize: {}, commit: {})
+      preconditionFailure("A staging refusal was ignored")
+    } catch Injected.stop {
+      precondition(!authorized)
+    }
     print("PASS installation interruption phases, target/build binding and ambiguous enrollment")
   }
 }

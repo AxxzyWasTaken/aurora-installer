@@ -608,7 +608,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
         : " Use your Aurora installation’s credentials to adjust its security settings. The security of your macOS installations is unaffected."
     case .codeWindow:
       explanation +=
-        " Aurora enrolls this volume’s startup software again with the expanded code window. Nothing else changes."
+        " Aurora enrolls this volume’s startup software again with the expanded code window and updates its recovery records. This changes the volume’s boot policy. Touch ID has not been tested after this step and may need setting up again."
     case .repair: break
     }
     let field = NSSecureTextField()
@@ -638,7 +638,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       title: purpose == .repair
         ? "Authorize startup disk"
         : purpose == .codeWindow ? "Authorize startup software" : "Authorize installation",
-      message: explanation, width: 430, height: 230, body: field, bodyHeight: 28,
+      message: explanation, width: 430, height: purpose == .codeWindow ? 270 : 230, body: field,
+      bodyHeight: 28,
       buttons: [cancel, proceed], accessory: spinner)
     present(panel, focus: field)
   }

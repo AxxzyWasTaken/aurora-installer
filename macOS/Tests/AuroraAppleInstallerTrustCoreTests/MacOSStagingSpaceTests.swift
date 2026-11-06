@@ -558,17 +558,32 @@
         (declaring(false, ["esp/m1n1/boot-ctxr.bin"]), true),
         (qualified, false), (declaring(true, ["esp/m1n1/boot-ctxr-j700.bin"]), false),
       ] as [([String: Any], Bool)] {
-        do {
-          _ = try await estimator.requiredFreeBytes(
-            deviceIdentifier: "apple,j700", metadata: staged(extra))
-          XCTFail("The estimate finished without a restore image")
-        } catch is Opened {
-          XCTAssertFalse(refused, "\(extra)")
-        } catch {
-          XCTAssertTrue(refused, "\(extra): \(error)")
-          XCTAssertEqual(error as? InstallerPlanPreparationError, .releaseLacksMachOStartup)
+        // Before anything downloads: the restore image is never opened for this.
+        let metadata = try staged(extra)
+        func check() throws {
+          try estimator.refuseUnstartableMachO(deviceIdentifier: "apple,j700", metadata: metadata)
+        }
+        if refused {
+          XCTAssertThrowsError(try check()) {
+            let error = $0 as? InstallerPlanPreparationError
+            XCTAssertEqual(error, .releaseLacksMachOStartup, "\(extra)")
+          }
+        } else {
+          XCTAssertNoThrow(try check(), "\(extra)")
         }
       }
+      // An M3 Mac starts from the raw Stage 1, so nothing here concerns it.
+      let m3 = NativeStubStagingEstimator(
+        facts: {
+          .init(
+            deviceIdentifier: "apple,j613",
+            hardware: NativeInspectionHardware(
+              chipID: 0x8122, bootVersion: "mBoot-18000.161.10", macOSVersion: "26.6.2",
+              recoveryVersion: "25.7.83.0.0,0"))
+        }, boardID: { 0x30 }, open: { _ in throw Opened() })
+      let plain = try staged([:])
+      XCTAssertNoThrow(
+        try m3.refuseUnstartableMachO(deviceIdentifier: "apple,j613", metadata: plain))
     }
 
     private func inventory(_ candidates: [ValidatedEngineCandidate]) -> ValidatedEngineInventory {

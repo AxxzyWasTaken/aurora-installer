@@ -45,8 +45,9 @@ FDT_MAGIC = b'\xd0\x0d\xfe\xed'
 
 
 def uses_macho(chip):
-    """The native installer's AuraStage1Format.usesMachO: M4 and later."""
-    return 0x8130 <= chip <= 0x8FFF or 0x6040 <= chip <= 0x6FFF
+    """The native installer's AuraStage1Format.usesMachO: M4 and later. A board
+    whose tree names no Apple silicon Mac chip (an A7 iPhone's s5l8960x) is not."""
+    return chip is not None and (0x8130 <= chip <= 0x8FFF or 0x6040 <= chip <= 0x6FFF)
 
 
 def fdt_root_compatible(blob):
@@ -83,7 +84,8 @@ def fdt_root_compatible(blob):
 
 
 def board_chip(path, board):
-    """The chip that a board Stage 2's own device tree names."""
+    """The chip that a board Stage 2's own device tree names as apple,tNNNN, or
+    None for a tree that names none (an A7 board names apple,s5l8960x)."""
     data = regular(path).read_bytes()
     cursor = data.find(FDT_MAGIC)
     while cursor >= 0:
@@ -96,7 +98,7 @@ def board_chip(path, board):
                 found = re.fullmatch(r'apple,t([0-9a-f]{4})', entry)
                 if found:
                     return int(found[1], 16)
-            raise ValueError(path.name + ' names no chip for ' + board)
+            return None
         cursor = data.find(FDT_MAGIC, cursor + 1)
     raise ValueError(path.name + ' has no device tree for ' + board)
 
@@ -106,8 +108,10 @@ def check_confined_stage2(bundle, stage2_members):
 
     One payload serves every Mac, so a payload without these files still
     assembles, and the native installer refuses M4 and later Macs on it. Where
-    they are present, each M4 or later board must find one the way the native
-    installer looks: its own boot-ctxr-<board>.bin, else boot-ctxr.bin.
+    they are present, each supported M4 or later board (scripts/supported-models.json,
+    which the signed catalogs enable models from) must find one the way the native
+    installer looks: its own boot-ctxr-<board>.bin, else boot-ctxr.bin. A board
+    the release doesn't support may have a file or not.
     Returns the members, for the metadata to declare.
     """
     esp = bundle / 'esp'
@@ -136,8 +140,10 @@ def check_confined_stage2(bundle, stage2_members):
         else:
             raise ValueError(path.name + ' is for a board without an M4 or later Stage 2 here')
     if not shared:
+        import supported_models
+        supported = {identifier.removeprefix('apple,') for identifier in supported_models.load()[0]}
         missing = sorted(board for board, path in boards.items()
-                         if board not in own and uses_macho(board_chip(path, board)))
+                         if board in supported and board not in own and uses_macho(board_chip(path, board)))
         if missing:
             raise ValueError('no boot-ctxr file for the M4 or later boards ' + ', '.join(missing))
     return ['esp/m1n1/' + path.name for path in confined]
@@ -277,7 +283,7 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     if stage2_members:
         template['aurora_stage2'] = {'kind': 'board-file-v1', 'board_members': stage2_members}
     # What M4 and later Macs start from, so the installer can refuse one before
-    # it downloads anything large. It checks the payload against this later.
+    # the payload and the restore image download. It checks the payload against this later.
     template['aurora_macho_boot'] = {
         'kind': 'padded-ctxr-v1',
         'stage1_member': 'esp/aurora/stage1.macho' if (bundle / 'esp/aurora/stage1.macho').exists() else None,

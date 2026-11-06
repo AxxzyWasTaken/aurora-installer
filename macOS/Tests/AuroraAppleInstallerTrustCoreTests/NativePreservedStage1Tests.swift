@@ -74,7 +74,10 @@
       let summary = try XCTUnwrap(
         PinnedAsahiEngineExecutor.preservedSummary(for: NativePreservedInstallError.earlierStage1))
       XCTAssertTrue(summary.contains("Erase Linux, then install Aurora again"), summary)
-      XCTAssertTrue(summary.contains("Nothing on the disk changed"), summary)
+      // Its screen offers Erase Linux rather than Check again.
+      XCTAssertEqual(
+        PinnedAsahiEngineExecutor.preservedReason(for: NativePreservedInstallError.earlierStage1),
+        .reinstallRequired)
       // A raw chip's Stage 1 on that path is its own, and is admitted.
       plan.stage1MachO = nil
       _ = try plan.admitPreservedStage1(unpadded, espUUID: uuid)

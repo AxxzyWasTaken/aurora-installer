@@ -168,7 +168,7 @@
         } catch {
           let update = Self.macOSUpdateSummary(for: error)
           throw preparationFailure(
-            error, reason: update == nil ? .unclassified : .macOSUpdateRequired,
+            error, reason: update == nil ? Self.preservedReason(for: error) : .macOSUpdateRequired,
             operation: operation, journal: journal, package: package,
             password: authorization.password,
             summary: update ?? Self.preservedSummary(for: error)
@@ -591,13 +591,24 @@
       return EngineFailureReason.macOSUpdateSummary(version: version)
     }
 
+    /// Why a reset stopped, so its screen offers what helps: an unsupported Mac
+    /// gets the unsupported-Mac screen, and an installation only erasing fixes
+    /// gets Erase Linux rather than Check again.
+    static func preservedReason(for error: any Error) -> EngineFailureReason {
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return .deviceUnsupported
+      }
+      if case NativePreservedInstallError.earlierStage1 = error { return .reinstallRequired }
+      return .unclassified
+    }
+
     static func preservedSummary(for error: any Error) -> String? {
       if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
         return NativeBootChainError.releaseLacksMachOSummary
       }
       if case NativePreservedInstallError.earlierStage1 = error {
         return "This installation was set up by an earlier Aurora installer, and this one can't "
-          + "reset it. Nothing on the disk changed. Erase Linux, then install Aurora again."
+          + "reset it. Erase Linux, then install Aurora again."
       }
       guard
         case NativePreservedInstallError.espFull(let required, let available) = error

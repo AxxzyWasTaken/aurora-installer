@@ -25,7 +25,7 @@
 
     static let releaseLacksMachOSummary =
       "This release doesn't support this Mac yet. Macs with an M4-generation chip or later need "
-      + "startup software that this release's images don't include. Nothing on the disk changed."
+      + "startup software that this release's images don't include."
   }
 
   struct NativeBootChainAdmission: Equatable, Sendable {
@@ -76,8 +76,8 @@
     }
 
     /// Why this release can't start a Mach-O Mac, read from its signed metadata
-    /// before anything large downloads. Nil when the metadata doesn't say; the
-    /// payload is checked again once it is here.
+    /// before the payload and the restore image download. Nil when the metadata
+    /// doesn't say; the payload is checked again once it is here.
     static func machORefusal(metadata: Data, deviceIdentifier: String, firmware: String) throws
       -> NativeBootChainError?
     {

@@ -297,6 +297,30 @@
       self.open = open
     }
 
+    /// Refuses an M4-or-later Mac whose signed metadata says this release can't
+    /// start it. It needs only this Mac's facts, the metadata and the firmware
+    /// choice, so it runs before the payload and the restore image download.
+    /// A firmware that can't be chosen is reported by the stub estimate instead.
+    public func refuseUnstartableMachO(deviceIdentifier: String, metadata: StagedInstallerArtifact)
+      throws
+    {
+      let facts = try facts()
+      guard AuraStage1Format.usesMachO(chipID: facts.hardware.chipID) else { return }
+      let data = try NativeInstallationMetadata.authenticatedData(metadata)
+      guard
+        let firmware = try? NativeFirmwareSelection.choose(
+          deviceIdentifier: deviceIdentifier, facts: facts,
+          metadata: NativeInstallationMetadata(data: data),
+          policy: NativeInspectionPolicy.sealed())
+      else { return }
+      if try NativeBootChain.machORefusal(
+        metadata: data, deviceIdentifier: deviceIdentifier,
+        firmware: firmware.version.components(separatedBy: " ")[0]) != nil
+      {
+        throw InstallerPlanPreparationError.releaseLacksMachOStartup
+      }
+    }
+
     /// The free bytes macOS needs for the stub stage, counted from this
     /// Mac's own restore plan with nothing cached yet, plus the margin.
     public func requiredFreeBytes(deviceIdentifier: String, metadata: StagedInstallerArtifact)
@@ -318,15 +342,6 @@
       }
       guard NativeRestoreSourceLayout(sourceURL: firmware.sourceURL) != nil else {
         throw InstallerPlanPreparationError.firmwareUnavailable
-      }
-      // Refused now rather than after the restore image downloads.
-      if AuraStage1Format.usesMachO(chipID: facts.hardware.chipID),
-        try NativeBootChain.machORefusal(
-          metadata: NativeInstallationMetadata.authenticatedData(metadata),
-          deviceIdentifier: deviceIdentifier,
-          firmware: firmware.version.components(separatedBy: " ")[0]) != nil
-      {
-        throw InstallerPlanPreparationError.releaseLacksMachOStartup
       }
       let requirement: NativeStubStagingRequirement
       do {

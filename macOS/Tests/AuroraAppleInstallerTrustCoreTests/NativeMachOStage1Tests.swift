@@ -421,6 +421,8 @@
         XCTAssertEqual(
           PinnedAsahiEngineExecutor.preservedSummary(for: error),
           NativeBootChainError.releaseLacksMachOSummary)
+        // A reset shows the same unsupported-Mac screen.
+        XCTAssertEqual(PinnedAsahiEngineExecutor.preservedReason(for: error), .deviceUnsupported)
       }
       XCTAssertTrue(
         NativeBootChainError.releaseLacksMachOSummary.contains("doesn't support this Mac yet"))

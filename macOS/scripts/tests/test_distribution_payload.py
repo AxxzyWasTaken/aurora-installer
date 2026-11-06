@@ -17,7 +17,11 @@ payload = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(payload)
 import supported_models  # noqa: E402  (on the path the payload module adds)
 
-CHIPS = {'j700': 't8140', 'j616s': 't6040', 'j614s': 't6040', 'j274': 't8103'}
+# Root compatibles. A published payload also carries A7 boards, whose tree names no
+# apple,tNNNN, and M4 or later boards the release doesn't support, such as the J713.
+COMPATIBLES = {board: ['apple,' + board, 'apple,' + chip, 'apple,arm-platform'] for board, chip in (
+    ('j700', 't8140'), ('j616s', 't6040'), ('j614s', 't6040'), ('j274', 't8103'), ('j713', 't8132'))}
+COMPATIBLES['j71'] = ['apple,j71', 'apple,s5l8960x', 'apple,arm-platform']
 
 
 def device_tree(compatibles):
@@ -63,12 +67,12 @@ class DistributionPayloadTests(unittest.TestCase):
         header[12:16] = (12).to_bytes(4, 'little')
         (self.bundle / 'esp/aurora/stage1.macho').write_bytes(bytes(header) + raw + bytes(0x4000 - len(raw)))
 
-    def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s', 'j614s')):
+    def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s', 'j614s', 'j71', 'j713')):
         records = {}
         for board in boards:
             dedicated = self.bundle / ('esp/m1n1/boot-%s.bin' % board)
             dedicated.write_bytes(b'dedicated-stage-two-fixture-' + board.encode()
-                                  + device_tree(['apple,' + board, 'apple,' + CHIPS[board], 'apple,arm-platform']))
+                                  + device_tree(COMPATIBLES[board]))
             records[board + 'ap'] = {'member': 'esp/m1n1/boot-%s.bin' % board,
                                      'bytes': dedicated.stat().st_size,
                                      'sha256': (sha256 if board == 'j700' else None) or payload.digest(dedicated)}
@@ -128,8 +132,9 @@ class DistributionPayloadTests(unittest.TestCase):
         shared = self.bundle / 'esp/m1n1/boot-ctxr.bin'
         shared.unlink()
         (self.bundle / 'esp/m1n1/boot-ctxr-j700.bin').write_bytes(b'board file')
-        # The native installer would refuse a J614s or J616s on this payload.
-        with self.assertRaisesRegex(ValueError, 'j614s, j616s'):
+        # The native installer would refuse a J614s or J616s on this payload. The
+        # unsupported J713 and the A7 J71 need nothing.
+        with self.assertRaisesRegex(ValueError, r'boards j614s, j616s$'):
             self.assembled('neo-only')
         for board in ('j616s', 'j614s'):
             (self.bundle / ('esp/m1n1/boot-ctxr-%s.bin' % board)).write_bytes(b'board file')
@@ -138,6 +143,9 @@ class DistributionPayloadTests(unittest.TestCase):
             'esp/m1n1/boot-ctxr-j614s.bin', 'esp/m1n1/boot-ctxr-j616s.bin', 'esp/m1n1/boot-ctxr-j700.bin'])
         with zipfile.ZipFile(output / metadata['package']) as archive:
             self.assertEqual(archive.read('esp/m1n1/boot-ctxr-j700.bin'), b'board file')
+        # A board the release doesn't support may carry its own file too.
+        (self.bundle / 'esp/m1n1/boot-ctxr-j713.bin').write_bytes(b'board file')
+        self.assembled('unsupported-board-file')
         # The shared file covers a board without its own.
         (self.bundle / 'esp/m1n1/boot-ctxr-j614s.bin').unlink()
         shared.write_bytes(b'shared')
@@ -149,6 +157,10 @@ class DistributionPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'boot-ctxr-j274.bin'):
             self.assembled('m1-board')
         (self.bundle / 'esp/m1n1/boot-ctxr-j274.bin').unlink()
+        (self.bundle / 'esp/m1n1/boot-ctxr-j71.bin').write_bytes(b'board file')
+        with self.assertRaisesRegex(ValueError, 'boot-ctxr-j71.bin'):
+            self.assembled('a7-board')
+        (self.bundle / 'esp/m1n1/boot-ctxr-j71.bin').unlink()
         (self.bundle / 'esp/m1n1/boot-ctxr-j999.bin').write_bytes(b'board file')
         with self.assertRaisesRegex(ValueError, 'boot-ctxr-j999.bin'):
             self.assembled('unknown-board')
@@ -156,6 +168,12 @@ class DistributionPayloadTests(unittest.TestCase):
         (self.bundle / 'esp/m1n1/boot-ctxr-other.bin').write_bytes(b'board file')
         with self.assertRaisesRegex(ValueError, 'unexpected'):
             self.assembled('odd-name')
+
+    def test_an_a7_board_names_no_mac_chip(self):
+        path = self.bundle / 'esp/m1n1/boot-j71.bin'
+        self.assertIsNone(payload.board_chip(path, 'j71'))
+        self.assertFalse(payload.uses_macho(None))
+        self.assertEqual(payload.board_chip(self.bundle / 'esp/m1n1/boot-j713.bin', 'j713'), 0x8132)
 
     def test_the_chip_rule_matches_the_installer(self):
         for chip in (0x8132, 0x6040, 0x6041, 0x8140, 0x8142, 0x6050, 0x8150):

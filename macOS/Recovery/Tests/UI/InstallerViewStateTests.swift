@@ -112,68 +112,6 @@ final class InstallerViewStateTests: XCTestCase {
     return (prompt, field)
   }
 
-  func testCodeWindowEnrollmentIsOfferedOnCompletedMachOInstallationsOnly() {
-    let saved = CommandLine.arguments
-    defer { CommandLine.arguments = saved }
-    CommandLine.arguments = saved + ["--recovery-preview"]
-    let raw = InstallerModel()
-    XCTAssertTrue(raw.recoveryInterface)
-    XCTAssertFalse(raw.offersWindowEnrollment)
-    XCTAssertFalse(raw.canEnrollWindow)
-
-    CommandLine.arguments = saved + ["--preview-macho"]
-    let setup = InstallerModel()
-    XCTAssertFalse(setup.recoveryInterface)
-    XCTAssertFalse(setup.offersWindowEnrollment, "A new setup enrolls padded on its own")
-
-    CommandLine.arguments = saved + ["--recovery-preview", "--preview-macho"]
-    let installed = InstallerModel()
-    XCTAssertTrue(installed.offersWindowEnrollment)
-    XCTAssertTrue(installed.canEnrollWindow)
-    var asked = false
-    installed.prepareWindowEnrollment { asked = true }
-    XCTAssertTrue(asked, "A password comes before anything changes")
-    installed.password = "preview"
-    installed.enrollWindow()
-    XCTAssertEqual(installed.notice?.title, "Enrollment simulated")
-    XCTAssertTrue(installed.password.isEmpty)
-    installed.notice = nil
-    installed.stage = .installing
-    XCTAssertFalse(installed.canEnrollWindow, "Not while another step runs")
-    installed.prepareWindowEnrollment { XCTFail("Started during another step") }
-  }
-
-  func testCodeWindowEnrollmentSaysWhatItChanges() throws {
-    let saved = CommandLine.arguments
-    defer { CommandLine.arguments = saved }
-    CommandLine.arguments = saved + ["--recovery-preview", "--preview-macho"]
-    let (window, controller) = show(InstallerModel())
-    controller.enrollExpandedWindow(nil)
-    let sheet = try XCTUnwrap(window.attachedSheet)
-    sheet.contentView?.layoutSubtreeIfNeeded()
-    let shown = views(NSTextField.self, in: sheet.contentView)
-    let text = shown.map(\.stringValue).joined(separator: " ")
-    XCTAssertTrue(text.contains("boot policy"), text)
-    XCTAssertTrue(text.contains("Touch ID"), text)
-    XCTAssertTrue(text.contains("recovery records"), text)
-    XCTAssertFalse(text.contains("Nothing else"), text)
-    let content = try XCTUnwrap(sheet.contentView)
-    for label in shown where !label.stringValue.isEmpty {
-      let frame = label.convert(label.bounds, to: content)
-      XCTAssertTrue(content.bounds.contains(frame), "\(label.stringValue) is cut off")
-      XCTAssertGreaterThanOrEqual(
-        ceil(label.bounds.height), ceil(label.intrinsicContentSize.height),
-        "\(label.stringValue) is cut off")
-    }
-    if let path = ProcessInfo.processInfo.environment["AURORA_RECOVERY_SHEET_SNAPSHOT"],
-      let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds)
-    {
-      content.cacheDisplay(in: content.bounds, to: bitmap)
-      try bitmap.representation(using: .png, properties: [:])?.write(
-        to: URL(fileURLWithPath: path))
-    }
-  }
-
   func testLaunchCheckSpinsLeftOfACentredDisabledContinue() throws {
     let model = InstallerModel()
     let (window, controller) = show(model)
@@ -495,7 +433,7 @@ final class InstallerViewStateTests: XCTestCase {
     XCTAssertTrue(found.allSatisfy { $0.contains("listUsers") }, logs.viewer.displayedText)
 
     // Another sheet does not hide or block the log.
-    model.notice = ("Restart simulated", "This preview does not restart your Mac.")
+    model.previewNotice = ("Restart simulated", "This preview does not restart your Mac.")
     let notice = try XCTUnwrap(window.attachedSheet)
     XCTAssertTrue(validated() == (.on, true))
     XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))

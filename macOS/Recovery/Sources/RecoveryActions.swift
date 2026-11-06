@@ -9,29 +9,13 @@ struct RecoveryFailure: Error, LocalizedError {
 }
 
 enum RecoveryActions {
-  private static let configurationLock = NSLock()
-  private static var loadedConfiguration: Result<InstallConfiguration, Error>?
   // The engine writes this only after the new System volume and ESP exist.
   // Keep loading independent of diskutil so Recovery can show the window first.
-  static var configuration: Result<InstallConfiguration, Error> {
-    configurationLock.lock()
-    defer { configurationLock.unlock() }
-    if let loadedConfiguration { return loadedConfiguration }
-    let loaded = Result {
-      try InstallConfiguration.decode(
-        RecoveryAccountInstaller.protectedRead(
-          RecoveryInstallData.directory(system: volume).appendingPathComponent(
-            "install-config.json"),
-          limit: 65536))
-    }
-    loadedConfiguration = loaded
-    return loaded
-  }
-  /// After enrolling the expanded window moves the records.
-  private static func reloadConfiguration() {
-    configurationLock.lock()
-    defer { configurationLock.unlock() }
-    loadedConfiguration = nil
+  static let configuration: Result<InstallConfiguration, Error> = Result {
+    return try InstallConfiguration.decode(
+      RecoveryAccountInstaller.protectedRead(
+        RecoveryInstallData.directory(system: volume).appendingPathComponent("install-config.json"),
+        limit: 65536))
   }
   static var volume: URL {
     #if AURORA_STEP2_PREVIEW
@@ -52,10 +36,7 @@ enum RecoveryActions {
   }
   /// The boot mode the installer recorded for this Mac (AuraStage1Format).
   static var configuredBootMode: AuraBootMode {
-    #if AURORA_STEP2_PREVIEW
-      if CommandLine.arguments.contains("--preview-macho") { return .macho }
-    #endif
-    return (try? configuration.get()).flatMap { AuraBootMode(rawValue: $0.bootMode) } ?? .raw
+    (try? configuration.get()).flatMap { AuraBootMode(rawValue: $0.bootMode) } ?? .raw
   }
   /// This Mac's chip, as the boot firmware reports it.
   static func chipID() -> UInt64? {
@@ -621,145 +602,6 @@ enum RecoveryActions {
   static let slowEnrollment =
     "Installing the startup software. This can take several minutes."
 
-  /// Refuses before a password is asked for, and again before anything changes.
-  static func admitWindowEnrollment() throws {
-    let config = try configuration.get()
-    let saved = (try? manifest())?["files"] as? [String: Any]
-    let root = try? esp()
-    let name = AuraStage1Format.confinedStage2Path
-    let stage2 = root.flatMap {
-      try? RecoveryBaseline.read(
-        RecoveryBaseline.path(name, beneath: $0), maximum: RecoveryBaseline.limit(name))
-    }
-    try RecoveryWindowEnrollment.check(
-      chipID: chipID(), bootMode: AuraBootMode(rawValue: config.bootMode) ?? .raw,
-      installed: (try? installed()) != nil,
-      hasMachOStage1: saved?[AuraBootMode.macho.stage1Path] != nil,
-      hasStartupPartition: root != nil, confinedStage2Bytes: stage2.map { UInt64($0.count) })
-  }
-
-  private static var windowJournal: URL {
-    state.appendingPathComponent("window-enrollment.pending.json")
-  }
-
-  /// An interrupted enrollment, if there is one for this installation.
-  static func pendingWindowEnrollment() throws -> RecoveryWindowEnrollment.Journal? {
-    guard FileManager.default.fileExists(atPath: windowJournal.path) else { return nil }
-    let journal = try JSONDecoder().decode(
-      RecoveryWindowEnrollment.Journal.self,
-      from: RecoveryAccountInstaller.protectedRead(windowJournal, limit: 65536))
-    try journal.validate(system: systemUUID, group: groupUUID, esp: espUUID)
-    return journal
-  }
-
-  /// Moves the records of an enrollment kmutil has finished, and needs no password.
-  static func finishWindowEnrollmentRecords() throws {
-    guard let journal = try pendingWindowEnrollment(), journal.phase == .enrolled else { return }
-    try run("/sbin/mount", ["-u", "-w", volume.path])
-    let work = state.appendingPathComponent(journal.operation)
-    let stage1 = try Data(contentsOf: work.appendingPathComponent("stage1.saved"))
-    let stage2 = try Data(contentsOf: work.appendingPathComponent("stage2.saved"))
-    try check(
-      hash(stage1) == journal.stage1SHA256 && hash(stage2) == journal.stage2SHA256,
-      "The saved startup files of the last enrollment changed.")
-    let payloads = try payloadRoot()
-    try RecoveryWindowEnrollment.commit(
-      RecoveryWindowEnrollment.Records(
-        configuration: try RecoveryInstallData.directory(system: volume)
-          .appendingPathComponent("install-config.json"),
-        manifest: payloads.appendingPathComponent("manifest.json"),
-        savedStage1: payloads.appendingPathComponent(AuraBootMode.macho.stage1Path),
-        savedStage2: payloads.appendingPathComponent(AuraBootMode.macho.stage2Path),
-        receipt: receipt),
-      stage1: stage1, stage2: stage2, rollback: work.appendingPathComponent("records"))
-    let fm = FileManager.default
-    try fm.removeItem(at: windowJournal)
-    try RecoveryFileTransaction.flushDirectory(state)
-    try? fm.removeItem(at: work)
-    reloadConfiguration()
-    InstallerLog.shared.append("Code window enrollment recorded.")
-  }
-
-  static func enrollExpandedWindow(
-    owner: RecoveryOwner, password: String, progress: @escaping (Double, String) -> Void
-  ) throws {
-    try requireEnrollmentEnvironment()
-    try RecoveryOwnerResolver.verify(owner, current: resolveOwner())
-    try admitWindowEnrollment()
-    try run("/sbin/mount", ["-u", "-w", volume.path])
-    let fm = FileManager.default
-    var journal =
-      try pendingWindowEnrollment()
-      ?? RecoveryWindowEnrollment.Journal(
-        operation: "window-" + UUID().uuidString, systemUUID: systemUUID, groupUUID: groupUUID,
-        espUUID: espUUID, stage1SHA256: "", stage2SHA256: "", phase: .prepared)
-    let work = state.appendingPathComponent(journal.operation)
-    let path = work.appendingPathComponent("stage1")
-    func save() throws {
-      try RecoveryFileTransaction.write(try JSONEncoder().encode(journal), to: windowJournal)
-    }
-    func persist(_ phase: RecoveryWindowEnrollment.Phase) throws {
-      journal.phase = phase
-      try save()
-      InstallerLog.shared.append("Code window enrollment: \(phase.rawValue).")
-    }
-    try fm.createDirectory(
-      at: work, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    InstallerLog.shared.persist(to: state.appendingPathComponent(journal.operation + ".log"))
-    try save()
-    do {
-      try RecoveryWindowEnrollment.run(
-        phase: journal.phase, persist: persist,
-        stage: {
-          progress(0.15, "Checking the startup software")
-          let m = try manifest()
-          let saved = try asset(AuraBootMode.macho.stage1Path, manifest: m)
-          try check(
-            hash(saved) == (try installed())["stage1SHA256"] as? String,
-            "The recovery baseline does not match the enrolled stage 1.")
-          let stage1 = try RecoveryWindowEnrollment.stage1(saved, espUUID: espUUID)
-          try MachOBootObject.check(stage1)
-          let name = AuraStage1Format.confinedStage2Path
-          let stage2 = try RecoveryBaseline.read(
-            RecoveryBaseline.path(name, beneath: try esp()), maximum: RecoveryBaseline.limit(name))
-          try stageExpandedStage1(stage1, window: ExecuteWindow.size, at: path)
-          try RecoveryFileTransaction.write(
-            stage1, to: work.appendingPathComponent("stage1.saved"))
-          try RecoveryFileTransaction.write(
-            stage2, to: work.appendingPathComponent("stage2.saved"))
-          journal.stage1SHA256 = hash(stage1)
-          journal.stage2SHA256 = hash(stage2)
-        },
-        enroll: {
-          progress(0.55, slowEnrollment)
-          do {
-            try authorized(
-              "/usr/bin/kmutil",
-              AuraBootMode.macho.enrollmentArguments(stage1: path.path, volume: volume.path),
-              owner: owner, password: password)
-          } catch {
-            throw RecoveryFailure(
-              message: error.localizedDescription
-                + " The enrollment may not have finished, so try Enroll Expanded Code Window again before restarting."
-            )
-          }
-        },
-        record: {
-          progress(0.85, "Updating the recovery records")
-          try finishWindowEnrollmentRecords()
-        },
-        finish: {})
-    } catch {
-      // A refusal while staging has changed nothing, so nothing needs finishing.
-      if journal.phase == .prepared {
-        try? fm.removeItem(at: windowJournal)
-        try? fm.removeItem(at: work)
-      }
-      throw error
-    }
-    progress(1, "Expanded code window enrolled")
-  }
-
   private static func replaceISC(
     _ journal: RecoveryInstallationJournal, source: URL, at target: URL
   ) throws {
@@ -995,7 +837,6 @@ extension RecoveryActions {
     try run("/sbin/mount", ["-u", "-w", volume.path])
     switch arguments {
     case ["recover"]:
-      try finishWindowEnrollmentRecords()
       let record = try installed()
       guard let name = record["mode"] as? String, let mode = AuraBootMode(rawValue: name),
         let path = record["stage2Path"] as? String,

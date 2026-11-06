@@ -51,7 +51,7 @@ An unpadded Stage 1 therefore never loads a Stage 2 that needs the larger window
 
 `install-config.json` and the manifest's `modes` name the path, `stage2Path` and `espPath`. The Recovery payload keeps that one Stage 2 as `raw/boot.bin` in either mode, beside `macho/aura-boot.macho` and `raw/aura-raw.bin`. `defaultMode` and `bootMode` name the chip's mode.
 
-Before any change, Recovery checks the object's layout, rejecting any non-empty `__TEXT_BOOT_EXEC`, checks that this Mac's chip uses Mach-O, and checks that the object chainloads the configured path. An older configuration that names `m1n1/boot.bin` is refused here; it remains valid for `aura recover` and the utility below.
+Before any change, Recovery checks the object's layout, rejecting any non-empty `__TEXT_BOOT_EXEC`, checks that this Mac's chip uses Mach-O, and checks that the object chainloads the configured path. An older configuration that names `m1n1/boot.bin` is refused here; it remains valid for `aura recover`.
 
 ## Code window
 
@@ -61,7 +61,7 @@ On T8140 and later, iBoot confines each secondary core's EL2 execution to a lock
 
 The main installer refuses, before partitioning, a Mach-O plan whose object can't be padded or whose restored stub, Recovery data and padded object wouldn't fit the startup container. For Apple's 26.6.2 restore image that comes to about 2.1 GB on a J700 and 1.9 GB on a J616s, in a 6 GB container. Recovery then requires free space for the object's whole 146 MiB on the target's volume, because `kmutil` reads all of it and where it works isn't documented. It requires that its own `kmutil` offers `--compress` and that `kmutil inspect` reports `kcbz : 0` and exactly the expected `kcrz` for the padded file, and enrolls that file with `--compress`. If `kmutil inspect` fails, or reports no such region, Recovery refuses and nothing changes. macOS 26.6.2 (25G83) and 27.2 both print `kcrz`. If a `kmutil` prints none, an exact `kcwf`, the first writable offset, is accepted instead and logged. No Recovery `kmutil` has been sampled on a padded object yet.
 
-The journal and receipt record `executeWindowSize`, and `stage1SHA256` stays the hash of the unpadded payload, so `aura recover` is unaffected. A resumed setup that is past enrollment doesn't pad the object again. Compression can take minutes on an older Recovery, so the progress text says so, and `kmutil configure-boot --compress` alone may run for 30 minutes where other authorized commands stop at 5. A command that reaches its limit is killed, which leaves the enrollment ambiguous: setup and the utility below both keep their journal and enroll again on the next attempt.
+The journal and receipt record `executeWindowSize`, and `stage1SHA256` stays the hash of the unpadded payload, so `aura recover` is unaffected. A resumed setup that is past enrollment doesn't pad the object again. Compression can take minutes on an older Recovery, so the progress text says so, and `kmutil configure-boot --compress` alone may run for 30 minutes where other authorized commands stop at 5. A command that reaches its limit is killed, which leaves the enrollment ambiguous: setup keeps its journal and enrolls again on the next attempt.
 
 The kernel reserves the window, so its 128 MiB isn't available to the rest of Linux. A 256 MiB object enrolled with `--compress` has booted on a J700. This 128 MiB size has not been booted yet.
 
@@ -71,22 +71,6 @@ The kernel reserves the window, so its 128 MiB isn't available to the rest of Li
 xcrun swiftc Sources/Account/AuraStage1.swift Tools/ExecuteWindowTool.swift -o aura-execute-window
 ./aura-execute-window macho/aura-boot.macho
 ```
-
-## Enroll Expanded Code Window
-
-**Utilities → Enroll Expanded Code Window…** re-enrolls an installed Mach-O system's Stage 1 as padded, chainloading `m1n1/boot-ctxr.bin`. It appears on completed Mach-O installations, in paired Recovery.
-
-It takes the saved `macho/aura-boot.macho`, checks that its hash matches the receipt and that it names this installation's startup partition, changes only the block's Stage 2 path, and applies the same checks as a new installation. Before asking for a password, and again before enrolling, it refuses if `m1n1/boot-ctxr.bin` isn't on this installation's startup partition, with a message to start Linux and install updates first, or if that file is larger than the 16 MiB aura keeps for it.
-
-Once `kmutil` succeeds, the installation's records move in one step: `install-config.json` and the manifest name `m1n1/boot-ctxr.bin`, the saved Stage 1 and Stage 2 become the enrolled Stage 1 and a baseline copy of that file, and the receipt records them. `aura recover` then restores the file this Mac loads. A failure rolls the records back.
-
-`window-enrollment.pending.json` in `Aurora/Recovery/State` records progress. If `kmutil` is interrupted, the next attempt enrolls again, and Recovery says so when it opens. If only the records are left, Recovery finishes them when it opens, with no password. The temporary files are removed afterwards. The startup partition, firmware and boot arguments stay as they are. Enrolling changes the volume's boot policy, as any enrollment does.
-
-**Not tested on hardware:** Touch ID relies on one automatic rewrite when the boot policy changes, and it hasn't been run through this utility. The dialog says so. This combination, an installation's original Stage 1 padded and loading a monitor-free Stage 2, has never booted.
-
-The utility is part of the Recovery app on the target's System volume. Only a fresh installation or an unfinished handoff publishes that app today; a completed installation doesn't get it from the main installer. Until there is a way to deliver it, an existing installation is re-enrolled by hand: `aura-execute-window --stage2 m1n1/boot-ctxr.bin -o padded.macho <its saved aura-boot.macho>`, then `kmutil configure-boot -c padded.macho -v <volume> --compress </dev/tty` in its paired Recovery, once `m1n1/boot-ctxr.bin` is on its ESP.
-
-Preview builds accept `--preview-macho` to show the item.
 
 ## Validation and limits
 

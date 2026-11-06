@@ -37,8 +37,6 @@ final class InstallerModel {
   var preparingTools = false { didSet { changed() } }
   var debugEnabled = false { didSet { changed() } }
   var proxyEnabled = false { didSet { changed() } }
-  /// Utilities → Enroll Expanded Code Window is running.
-  var enrollingWindow = false { didSet { changed() } }
   var accountUsername = "" { didSet { changed() } }
   var accountPassword = "" { didSet { changed() } }
   var accountConfirmation = "" { didSet { changed() } }
@@ -51,7 +49,7 @@ final class InstallerModel {
   /// yet. It stays out of the way: Restart defers it, and holding Shift on
   /// Restart or Utilities → Create Recovery Account… opens its setup.
   var accountOptional = false { didSet { changed() } }
-  var notice: (title: String, message: String)? { didSet { changed() } }
+  var previewNotice: (title: String, message: String)? { didSet { changed() } }
   private var checkingAccount = false
   private var awaitingStartupDiskReturn = false
   private var previewChecks = 0
@@ -168,7 +166,7 @@ final class InstallerModel {
     accountPassword = ""
     accountConfirmation = ""
     if RecoveryActions.isPreview {
-      notice = (
+      previewNotice = (
         "Restart simulated",
         "Recovery account setup is deferred. This preview does not restart your Mac."
       )
@@ -338,13 +336,6 @@ final class InstallerModel {
   var bootSelection: BootSelection {
     BootSelection(mode: RecoveryActions.configuredBootMode)
   }
-  /// A completed Mach-O installation can re-enroll its Stage 1 padded.
-  var offersWindowEnrollment: Bool {
-    recoveryInterface && RecoveryActions.configuredBootMode == .macho
-  }
-  var canEnrollWindow: Bool {
-    offersWindowEnrollment && stage == .welcome && !checkingEnvironment
-  }
 
   var steps: [String] {
     recoveryInterface
@@ -385,119 +376,6 @@ final class InstallerModel {
       } catch {
         DispatchQueue.main.async {
           self.failure = error.localizedDescription
-          self.stage = .welcome
-        }
-      }
-    }
-  }
-
-  /// Refuses before asking for a password: wrong environment or chip, or no
-  /// Stage 2 for a padded Stage 1 to load.
-  func prepareWindowEnrollment(needsPassword: @escaping () -> Void) {
-    guard canEnrollWindow else { return }
-    if RecoveryActions.isPreview {
-      needsPassword()
-      return
-    }
-    guard RecoveryActions.inRecovery else {
-      environmentIssue = .notRecovery
-      return
-    }
-    checkEnrollmentEnvironment { passed in
-      guard passed else { return }
-      DispatchQueue.global(qos: .userInitiated).async {
-        do {
-          if try RecoveryActions.pendingWindowEnrollment()?.phase == .enrolled {
-            try RecoveryActions.finishWindowEnrollmentRecords()
-            DispatchQueue.main.async { self.showWindowEnrolled() }
-            return
-          }
-          try RecoveryActions.admitWindowEnrollment()
-          DispatchQueue.main.async { needsPassword() }
-        } catch {
-          InstallerLog.shared.append(
-            "Code window enrollment refused: " + error.localizedDescription, level: .error)
-          DispatchQueue.main.async { self.failure = error.localizedDescription }
-        }
-      }
-    }
-  }
-
-  /// Finishes the records of an enrollment kmutil completed, and says how to
-  /// retry one it may not have.
-  func resumeWindowEnrollment() {
-    guard RecoveryActions.inRecovery, offersWindowEnrollment else { return }
-    DispatchQueue.global(qos: .userInitiated).async {
-      do {
-        guard let journal = try RecoveryActions.pendingWindowEnrollment() else { return }
-        if journal.phase == .enrolled {
-          try RecoveryActions.finishWindowEnrollmentRecords()
-          InstallerLog.shared.append("Finished the records of an interrupted enrollment.")
-        } else if journal.phase == .enrollmentRequested {
-          DispatchQueue.main.async {
-            self.notice = (
-              "The last enrollment did not finish",
-              "Choose Utilities → Enroll Expanded Code Window to try again before restarting."
-            )
-          }
-        }
-      } catch {
-        InstallerLog.shared.append(
-          "Could not resume code window enrollment: " + error.localizedDescription, level: .error)
-        DispatchQueue.main.async { self.failure = error.localizedDescription }
-      }
-    }
-  }
-
-  private func showWindowEnrolled() {
-    notice = (
-      "Expanded code window enrolled",
-      "Choose Apple menu → Restart to start Aurora Linux with it."
-    )
-  }
-
-  func enrollWindow() {
-    let credential = password
-    password.removeAll(keepingCapacity: false)
-    if RecoveryActions.isPreview {
-      notice = (
-        "Enrollment simulated", "This preview does not change your Mac's startup software."
-      )
-      return
-    }
-    guard let owner = authorizationOwner else {
-      failure = RecoveryOwnerError.noOwner.localizedDescription
-      return
-    }
-    enrollingWindow = true
-    operations = []
-    progress = 0
-    stage = .installing
-    DispatchQueue.global(qos: .userInitiated).async {
-      do {
-        try RecoveryActions.enrollExpandedWindow(owner: owner, password: credential) {
-          amount, operation in
-          DispatchQueue.main.async {
-            self.progress = amount
-            self.currentOperation = operation
-          }
-        }
-        InstallerLog.shared.append("Expanded code window enrolled.")
-        DispatchQueue.main.async {
-          self.enrollingWindow = false
-          self.stage = .welcome
-          self.showWindowEnrolled()
-        }
-      } catch {
-        InstallerLog.shared.append(
-          "Code window enrollment failed: " + error.localizedDescription, level: .error)
-        DispatchQueue.main.async {
-          self.enrollingWindow = false
-          if let issue = error as? EnrollmentGateIssue {
-            self.environmentIssue = issue
-          } else {
-            self.failure = error.localizedDescription
-          }
           self.stage = .welcome
         }
       }
@@ -588,7 +466,7 @@ final class InstallerModel {
     }
     if !accountNeedsAuthorization {
       if RecoveryActions.isPreview {
-        notice = ("Restart simulated", "This preview does not restart your Mac.")
+        previewNotice = ("Restart simulated", "This preview does not restart your Mac.")
         return
       }
       guard !restartingCompletedSetup else { return }
@@ -618,7 +496,7 @@ final class InstallerModel {
       return
     }
     if RecoveryActions.isPreview {
-      notice = (
+      previewNotice = (
         "Choose your startup disk",
         "In Recovery, this opens Startup Disk. Select \(DestinationVolume.name), click Restart, and authorize your recovery account when asked."
       )
@@ -785,7 +663,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       // Restoring an already enrolled stage 2 does not change boot policy.
       model.prepareRecoveryTools()
       model.resumeAccountSetup()
-      model.resumeWindowEnrollment()
     } else {
       // Start the check at once: Continue waits for it, with a spinner.
       model.startLaunchCheck()
@@ -841,12 +718,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       withTitle: "Create Recovery Account…", action: #selector(createRecoveryAccount(_:)),
       keyEquivalent: "")
     account.target = self
-    if let controller, model.offersWindowEnrollment {
-      utilities.addItem(
-        withTitle: "Enroll Expanded Code Window…",
-        action: #selector(InstallerView.enrollExpandedWindow(_:)), keyEquivalent: ""
-      ).target = controller
-    }
 
     let windows = submenu("Window")
     windows.addItem(

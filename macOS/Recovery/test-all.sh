@@ -18,7 +18,6 @@ compile_run digest Sources/Account/RecoveryDigest.swift Tests/RecoveryDigestChec
 compile_run owner Sources/RecoveryOwner.swift Tests/RecoveryOwnerCheck.swift
 compile_run bootstrap-owner Sources/RecoveryOwner.swift Tests/BootstrapOwnerCheck.swift
 compile_run boot-selection Sources/Account/AuraStage1.swift Sources/BootSelection.swift Tests/BootSelectionCheck.swift
-compile_run window-enrollment Sources/Account/AuraStage1.swift Sources/Account/RecoveryDigest.swift Sources/Account/RecoveryFileTransaction.swift Sources/RecoveryOwner.swift Sources/InstallConfiguration.swift Sources/BootSelection.swift Sources/RecoveryWindowEnrollment.swift Tests/RecoveryWindowEnrollmentCheck.swift
 compile_run macho-boot-object Sources/Account/AuraStage1.swift Tests/MachOBootObjectCheck.swift
 xcrun swiftc Sources/Account/AuraStage1.swift Tools/ExecuteWindowTool.swift -o "$out/aura-execute-window"
 "$out/aura-execute-window" --help >/dev/null

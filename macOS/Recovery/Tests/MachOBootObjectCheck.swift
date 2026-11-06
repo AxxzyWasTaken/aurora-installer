@@ -255,6 +255,30 @@ import Foundation
     refusesExpansion(original, window: 0x100, "a window of part of a page")
     refusesExpansion(file, "an object that is already expanded")
     refusesExpansion(object(valid), "not aura's object")
+    // A crafted object is refused, never a trap on the arithmetic.
+    func patched(_ name: String, field: Int, value: UInt64) -> Data {
+      var data = original
+      var offset = 0x8000 + 32
+      while data.subdata(in: (offset + 8)..<(offset + 24)) != Data(name16(name)) {
+        offset += Int(
+          data.subdata(in: (offset + 4)..<(offset + 8))
+            .withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+      }
+      data.replaceSubrange((offset + field)..<(offset + field + 8), with: le(value))
+      return data
+    }
+    refusesExpansion(
+      patched("__DATA", field: 24, value: UInt64.max - 0x100), "a virtual address that overflows")
+    refusesExpansion(
+      patched("__DATA", field: 40, value: UInt64.max - 0x100), "a file offset that overflows")
+    refusesExpansion(
+      original, window: UInt64.max - 0x3FFF, "a window that overflows the segment size")
+    refusesExpansion(
+      original, window: 0x4000, slot: UInt64.max - 0x3FFF, "a slot that overflows the segment size")
+    let repeating =
+      le(UInt32(0x8000_0035)) + le(UInt32(32 + 24)) + le(base) + le(UInt64(0)) + le(UInt32(32))
+      + le(UInt32(0)) + Array("com.apple.kernel".utf8) + [0, 0, 0, 0, 0, 0, 0, 0]
+    refusesExpansion(auraObject(raw: raw, extraCommand: repeating), "a member naming itself")
 
     // The default window is what reaches disk: a hole, not the whole window.
     let defaults = try MachOBootObject.expandExecuteWindow(original)
@@ -367,15 +391,24 @@ import Foundation
     rejects(object(valid).prefix(0x20000), "segments past the end of the file")
     rejects(Data(count: 0x10000), "raw image")
 
-    // Output of `kmutil inspect --show-mach-boot-properties` on macOS 26.6.2.
+    // Output of `kmutil inspect --show-mach-boot-properties` on macOS 26.6.2 (25G83).
     let inspection = """
       Mach-O boot properties derived for boot kernel collection:
       {
           kclo : 18446741874803752960
           kcep : 18446741874803820544
+          kcrf : 0
+          kcrz : 4456448
+          kcsf : 0
+          kcsz : 0
+          kcxf : 0
+          kcxz : 0
           kcbf : 0
           kcbz : 0
           kcwf : 4456448
+          kcwz : 32768
+          kclf : 4489216
+          kclz : 16384
       }
       """
     precondition(MachOBootObject.bootExecSize(fromInspection: inspection) == 0)
@@ -384,11 +417,29 @@ import Foundation
         fromInspection: inspection.replacingOccurrences(
           of: "kcbz : 0", with: "kcbz : 32768")) == 32768)
     precondition(MachOBootObject.bootExecSize(fromInspection: "no properties") == nil)
-    // macOS 26 has no kcrz, and macOS 27 prints both.
-    precondition(MachOBootObject.readOnlySize(fromInspection: inspection) == 4_456_448)
-    precondition(
-      MachOBootObject.readOnlySize(fromInspection: "    kcwf : 7\n    kcrz : 9\n") == 9)
-    precondition(MachOBootObject.readOnlySize(fromInspection: "no properties") == nil)
+    let used = try MachOBootObject.checkInspection(inspection, readOnlySize: 4_456_448)
+    precondition(used == "kcrz 4456448")
+    func inspectionRefused(_ output: String, _ why: String) {
+      do {
+        _ = try MachOBootObject.checkInspection(output, readOnlySize: 4_456_448)
+        preconditionFailure("accepted inspection: \(why)")
+      } catch {}
+    }
+    inspectionRefused("no properties", "nothing reported")
+    inspectionRefused(
+      inspection.replacingOccurrences(of: "kcbz : 0", with: "kcbz : 32768"), "SPTM would start")
+    inspectionRefused(
+      inspection.replacingOccurrences(of: "kcrz : 4456448", with: "kcrz : 4472832"),
+      "a different read-only region")
+    // kcrz decides even when kcwf agrees. Without it, only an exact kcwf passes.
+    let noRegion = inspection.replacingOccurrences(of: "    kcrz : 4456448\n", with: "")
+    let fallback = try MachOBootObject.checkInspection(noRegion, readOnlySize: 4_456_448)
+    precondition(fallback == "kcwf 4456448, no kcrz")
+    inspectionRefused(
+      noRegion.replacingOccurrences(of: "kcwf : 4456448", with: "kcwf : 4472832"),
+      "no kcrz and a different kcwf")
+    inspectionRefused(
+      noRegion.replacingOccurrences(of: "    kcwf : 4456448\n", with: ""), "neither property")
 
     // The installer fills the Stage 1 that the boot object carries in place.
     let raw = Data((0..<0x18000).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ 1) })

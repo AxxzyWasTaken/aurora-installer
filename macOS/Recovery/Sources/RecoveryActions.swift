@@ -53,27 +53,13 @@ enum RecoveryActions {
     else { return nil }
     return bytes.enumerated().reduce(UInt64(0)) { $0 | UInt64($1.element) << (8 * $1.offset) }
   }
-  /// Checks a Mach-O Stage 1 before anything changes: its layout, this Mac's
-  /// chip, and the kcbz that this Recovery's kmutil derives from it.
-  static func verifyMachOStage1(_ stage1: Data, at path: URL) throws {
+  /// Checks a Mach-O Stage 1 before anything changes: its layout and this Mac's
+  /// chip. What kmutil derives is checked on the padded file it enrolls.
+  static func verifyMachOStage1(_ stage1: Data) throws {
     try MachOBootObject.check(stage1)
     guard let chip = chipID(), AuraStage1Format.usesMachO(chipID: chip) else {
       throw RecoveryFailure(message: "This Mac starts from the raw startup software, not Mach-O.")
     }
-    guard
-      let output = try? run(
-        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
-    else {
-      InstallerLog.shared.append("kmutil inspect is unavailable; the Mach-O layout check stands.")
-      return
-    }
-    guard
-      let size = MachOBootObject.bootExecSize(
-        fromInspection: String(decoding: output, as: UTF8.self))
-    else {
-      throw RecoveryFailure(message: "kmutil did not report the startup software's layout.")
-    }
-    try check(size == 0, "kmutil would start SPTM for this startup software (kcbz \(size)).")
   }
   /// Bytes this volume's APFS container can still give to a file, or to kmutil in Preboot.
   static func freeBytes(_ path: URL) throws -> UInt64 {
@@ -92,25 +78,19 @@ enum RecoveryActions {
     let expanded = try MachOBootObject.expandExecuteWindow(stage1, window: window)
     try expanded.requireSpace(freeBytes: freeBytes(path.deletingLastPathComponent()))
     try expanded.write(to: path)
-    guard
-      let output = try? run(
+    let output: Data
+    do {
+      output = try run(
         "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
-    else {
-      InstallerLog.shared.append("kmutil inspect is unavailable; the Mach-O layout check stands.")
-      return
+    } catch {
+      throw RecoveryFailure(
+        message:
+          "This Recovery's kmutil could not check the startup software, so it was not enrolled. Open Window → Installer Log for its output."
+      )
     }
-    let text = String(decoding: output, as: UTF8.self)
-    guard let size = MachOBootObject.bootExecSize(fromInspection: text),
-      let readOnly = MachOBootObject.readOnlySize(fromInspection: text)
-    else {
-      throw RecoveryFailure(message: "kmutil did not report the startup software's layout.")
-    }
-    try check(size == 0, "kmutil would start SPTM for this startup software (kcbz \(size)).")
-    try check(
-      readOnly == expanded.readOnlySize,
-      "kmutil derives a read-only region of \(readOnly) bytes, not \(expanded.readOnlySize).")
-    InstallerLog.shared.append(
-      "Startup software padded to a read-only region of \(readOnly >> 20) MiB.")
+    let used = try MachOBootObject.checkInspection(
+      String(decoding: output, as: UTF8.self), readOnlySize: expanded.readOnlySize)
+    InstallerLog.shared.append("Startup software padded and checked by kmutil: \(used).")
   }
   static var inRecovery: Bool {
     #if AURORA_STEP2_RECOVERY
@@ -434,8 +414,7 @@ enum RecoveryActions {
     let stage1 = try asset(selection.mode.stage1Path, manifest: m)
     let stage2 = try asset(selection.mode.stage2Path, manifest: m)
     if selection.mode == .macho {
-      try verifyMachOStage1(
-        stage1, at: try payloadRoot().appendingPathComponent(selection.mode.stage1Path))
+      try verifyMachOStage1(stage1)
       // Files staged for the older path came from an earlier installer.
       try check(
         config.stage2Path == AuraStage1Format.confinedStage2Path

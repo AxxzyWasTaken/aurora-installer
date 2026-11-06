@@ -230,11 +230,30 @@ public enum MachOBootObject {
     bootProperty("kcbz", fromInspection: output)
   }
 
-  /// Bytes from the object's load address to the end of its read-only region.
-  /// macOS 27 prints this as kcrz. macOS 26 prints only kcwf, the file offset
-  /// of the first writable segment, which is the same boundary.
-  public static func readOnlySize(fromInspection output: String) -> UInt64? {
-    bootProperty("kcrz", fromInspection: output) ?? bootProperty("kcwf", fromInspection: output)
+  /// Checks what kmutil derives from a padded object before it is enrolled, and
+  /// returns what it relied on. kcrz is what iBoot sizes the window from. Without
+  /// kcrz only an exact kcwf, the first writable offset, is accepted, and anything
+  /// else refuses, so an unverified object never reaches the boot policy.
+  public static func checkInspection(_ output: String, readOnlySize expected: UInt64) throws
+    -> String
+  {
+    guard let boot = bootExecSize(fromInspection: output) else {
+      throw Invalid(reason: "kmutil did not report its layout")
+    }
+    guard boot == 0 else {
+      throw Invalid(reason: "kmutil would start SPTM for it (kcbz \(boot))")
+    }
+    if let region = bootProperty("kcrz", fromInspection: output) {
+      guard region == expected else {
+        throw Invalid(
+          reason: "kmutil derives a read-only region of \(region) bytes, not \(expected)")
+      }
+      return "kcrz \(region)"
+    }
+    guard let writable = bootProperty("kcwf", fromInspection: output), writable == expected else {
+      throw Invalid(reason: "kmutil did not report a read-only region of \(expected) bytes")
+    }
+    return "kcwf \(writable), no kcrz"
   }
 
   static func bootProperty(_ name: String, fromInspection output: String) -> UInt64? {
@@ -262,7 +281,8 @@ public enum ExecuteWindow {
   /// the load address, so the padding has to hold the region at any alignment.
   public static let alignment: UInt64 = 2 << 20
   /// Room kept at the start of __TEXT_EXEC for aura: Stage 1 where iBoot placed
-  /// it, then Stage 2 copied over it, each with its .bss and stacks.
+  /// it, then Stage 2 copied over it, each with its .bss and stacks. A confined
+  /// Stage 2 file larger than this cannot load.
   public static let auraSlot: UInt64 = 16 << 20
   static let page: UInt64 = 0x4000
 
@@ -384,6 +404,14 @@ extension MachOBootObject {
     guard window > 0, window % page == 0, slot % page == 0 else {
       throw Invalid(reason: "its execute window is not a whole number of pages")
     }
+    guard window <= 1 << 40, slot <= 1 << 40 else {
+      throw Invalid(reason: "its execute window is too large")
+    }
+    func sum(_ first: UInt64, _ second: UInt64) throws -> UInt64 {
+      let (result, overflow) = first.addingReportingOverflow(second)
+      guard !overflow else { throw Invalid(reason: "an address or offset is out of range") }
+      return result
+    }
     let (segments, entry) = try layout(object)
     let code = segments["__TEXT_EXEC"]!
     guard entry == code.vmaddr + rawEntryOffset else {
@@ -415,13 +443,13 @@ extension MachOBootObject {
 
     let codeSize = ExecuteWindow.codeSize(window: window, slot: slot)
     let growth = codeSize - code.vmsize
-    let codeEnd = code.vmaddr + code.vmsize
-    let fileEnd = code.fileoff + code.filesize
+    let codeEnd = try sum(code.vmaddr, code.vmsize)
+    let fileEnd = try sum(code.fileoff, code.filesize)
     guard fileEnd % page == 0, code.vmaddr % page == 0 else {
       throw Invalid(reason: "__TEXT_EXEC is not page-aligned")
     }
     func moved32(_ offset: UInt32) throws -> UInt32 {
-      guard let result = UInt32(exactly: UInt64(offset) + growth) else {
+      guard let result = UInt32(exactly: try sum(UInt64(offset), growth)) else {
         throw Invalid(reason: "its execute window is too large")
       }
       return result
@@ -431,6 +459,9 @@ extension MachOBootObject {
     var headers = [0]
     var index = 0
     while index < headers.count {
+      guard Set(headers).count == headers.count else {
+        throw Invalid(reason: "a fileset member repeats")
+      }
       let header = headers[index]
       index += 1
       guard try u32(header) == 0xFEED_FACF else {
@@ -457,19 +488,19 @@ extension MachOBootObject {
             put(codeSize, at: offset + 32)
             put(codeSize, at: offset + 48)
           } else if vmaddr >= codeEnd {
-            put(vmaddr + growth, at: offset + 24)
-            put(try u64(offset + 40) + growth, at: offset + 40)
+            put(try sum(vmaddr, growth), at: offset + 24)
+            put(try sum(try u64(offset + 40), growth), at: offset + 40)
             let sections = Int(try u32(offset + 64))
             guard length == 72 + 80 * sections else {
               throw Invalid(reason: "malformed segment")
             }
             for section in 0..<sections {
               let entry = offset + 72 + 80 * section
-              put(try u64(entry + 32) + growth, at: entry + 32)
+              put(try sum(try u64(entry + 32), growth), at: entry + 32)
               let fileOffset = try u32(entry + 48)
               if fileOffset != 0 { put(try moved32(fileOffset), at: entry + 48) }
             }
-          } else if vmaddr + vmsize > code.vmaddr {
+          } else if try sum(vmaddr, vmsize) > code.vmaddr {
             throw Invalid(reason: "\(name) overlaps __TEXT_EXEC")
           }
         case 0x8000_0034:  // LC_DYLD_CHAINED_FIXUPS
@@ -500,10 +531,10 @@ extension MachOBootObject {
 
     let expanded = ExpandedMachOBootObject(
       head: Data(bytes[0..<Int(fileEnd)]), tail: Data(bytes[Int(fileEnd)...]), padding: growth,
-      readOnlySize: code.fileoff + codeSize)
+      readOnlySize: try sum(code.fileoff, codeSize))
     _ = try layout(expanded.head, fileSize: expanded.size)
     return expanded
   }
 
-  static let loadHeaderOffset = 0x808
+  public static let loadHeaderOffset = 0x808
 }

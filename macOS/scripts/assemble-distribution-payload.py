@@ -39,14 +39,18 @@ def regular(path):
 
 
 def check_stage1_macho(esp):
-    """M4 and later Macs enroll aura's Mach-O boot object for the common Stage 1.
+    """M4 and later Macs enroll aura's Mach-O boot object for the common Stage 1,
+    padded, and it loads m1n1/boot-ctxr.bin. The installer refuses those Macs
+    without both, and there is no raw fallback for them.
 
     aura's tools/macho_boot_object.py carries the raw image unchanged at the
     start of __TEXT_EXEC, file offset 0x10000, with no __TEXT_BOOT_EXEC.
     """
     path = esp / 'aurora/stage1.macho'
     if not path.exists():
-        return
+        raise ValueError('M4 and later Macs need esp/aurora/stage1.macho')
+    if not any(regular(p).stat().st_size for p in (esp / 'm1n1').glob('boot-ctxr*.bin')):
+        raise ValueError('M4 and later Macs need esp/m1n1/boot-ctxr.bin or a board file for it')
     raw = regular(esp / 'aurora/stage1.bin').read_bytes()
     obj = regular(path).read_bytes()
     if (obj[:4] != b'\xcf\xfa\xed\xfe' or int.from_bytes(obj[12:16], 'little') != 12

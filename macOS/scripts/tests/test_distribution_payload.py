@@ -31,13 +31,21 @@ class DistributionPayloadTests(unittest.TestCase):
         self.image = {'installation_profile': 'fedora-kde', 'layout_kind': 'fedora-btrfs-v1',
                       'root_subvolume': 'root', 'efi_bytes': 524288000, 'efi_volume_id': 'A1B2C3D4', 'images': images}
         (self.bundle / 'image.json').write_text(json.dumps(self.image))
-        for name in ('m1n1/boot.bin', 'EFI/BOOT/BOOTAA64.EFI', 'aurora/stage1.bin'):
+        for name in ('m1n1/boot.bin', 'm1n1/boot-ctxr.bin', 'EFI/BOOT/BOOTAA64.EFI', 'aurora/stage1.bin'):
             path = self.bundle / 'esp' / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(name.encode())
+        self.write_stage_one_macho()
         self.write_neo_stage_two()
         self.app = self.root / 'Aurora Installer.app'
         binary = self.app / 'Contents/MacOS/OmarchyRecovery'; binary.parent.mkdir(parents=True); binary.write_bytes(b'recovery-fixture')
         (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'OmarchyRecovery',
             'OmarchyRecoveryBuildMode':'recovery','OmarchyRecoveryDataLayout':'external-install-data-v1'}))
+
+    def write_stage_one_macho(self):
+        raw = (self.bundle / 'esp/aurora/stage1.bin').read_bytes()
+        header = bytearray(0x10000)
+        header[:4] = b'\xcf\xfa\xed\xfe'
+        header[12:16] = (12).to_bytes(4, 'little')
+        (self.bundle / 'esp/aurora/stage1.macho').write_bytes(bytes(header) + raw + bytes(0x4000 - len(raw)))
 
     def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s', 'j614s')):
         records = {}
@@ -64,13 +72,32 @@ class DistributionPayloadTests(unittest.TestCase):
         with zipfile.ZipFile(output / metadata['package']) as archive:
             payload.aurora_recovery.validate_payload(archive)
 
+    def test_mach_o_macs_need_the_object_and_the_stage_two_it_loads(self):
+        (self.bundle / 'esp/aurora/stage1.macho').unlink()
+        with self.assertRaisesRegex(ValueError, 'stage1.macho'):
+            payload.assemble(self.bundle, self.app, self.root / 'no-object', release_id='fixture')
+        self.write_stage_one_macho()
+        shared = self.bundle / 'esp/m1n1/boot-ctxr.bin'
+        shared.unlink()
+        with self.assertRaisesRegex(ValueError, 'boot-ctxr'):
+            payload.assemble(self.bundle, self.app, self.root / 'no-stage-two', release_id='fixture')
+        shared.write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'boot-ctxr'):
+            payload.assemble(self.bundle, self.app, self.root / 'empty-stage-two', release_id='fixture')
+        shared.unlink()
+        (self.bundle / 'esp/m1n1/boot-ctxr-j700.bin').write_bytes(b'board file')
+        output = self.root / 'board-file'
+        payload.assemble(self.bundle, self.app, output, release_id='fixture')
+        metadata = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0]
+        with zipfile.ZipFile(output / metadata['package']) as archive:
+            self.assertEqual(archive.read('esp/m1n1/boot-ctxr-j700.bin'), b'board file')
+
     def test_mach_o_stage_one_must_carry_the_raw_stage_one(self):
         raw = (self.bundle / 'esp/aurora/stage1.bin').read_bytes()
         header = bytearray(0x10000)
         header[:4] = b'\xcf\xfa\xed\xfe'
         header[12:16] = (12).to_bytes(4, 'little')
         macho = self.bundle / 'esp/aurora/stage1.macho'
-        macho.write_bytes(bytes(header) + raw + bytes(0x4000 - len(raw)))
         output = self.root / 'output'
         payload.assemble(self.bundle, self.app, output, release_id='fixture')
         metadata = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0]

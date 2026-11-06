@@ -30,6 +30,56 @@ def fdt(compatible):
     return header + body + strings
 
 
+class EnrollmentTests(unittest.TestCase):
+    SELECTION = (HERE.parent.parent / 'Recovery/Sources/BootSelection.swift').read_text()
+    MACHO = {'stage1_mode': 'macho', 'stage2_path': 'm1n1/boot-ctxr.bin'}
+    RAW = {'stage1_mode': 'raw', 'stage2_path': 'm1n1/boot.bin'}
+
+    def test_a_mach_o_chip_expects_the_padded_compressed_path(self):
+        ok, how = conformance.enrollment_check(self.SELECTION, True, [self.MACHO])
+        self.assertTrue(ok)
+        self.assertIn('--compress', how)
+        self.assertNotIn('--raw', how)
+        for chain in (self.RAW, {'stage1_mode': 'macho', 'stage2_path': 'm1n1/boot.bin'}, {}):
+            self.assertFalse(conformance.enrollment_check(self.SELECTION, True, [self.MACHO, chain])[0], chain)
+        self.assertFalse(conformance.enrollment_check(self.SELECTION.replace('--compress', ''), True, [self.MACHO])[0])
+
+    def test_any_other_chip_expects_the_raw_path_unchanged(self):
+        ok, how = conformance.enrollment_check(self.SELECTION, False, [self.RAW, {}])
+        self.assertTrue(ok)
+        self.assertIn('--raw --entry-point 2048 --lowest-virtual-address 0', how)
+        self.assertFalse(conformance.enrollment_check(self.SELECTION, False, [self.MACHO])[0])
+        self.assertFalse(conformance.enrollment_check(self.SELECTION.replace('"--raw"', ''), False, [self.RAW])[0])
+
+    def confined(self, chain, stage2=None):
+        machine = {'device_identifier': 'apple,j700'}
+        dry = {d: {'boot_chain': chain} for d in conformance.DESKTOPS}
+        profiles = {d: {'payload': {'confined_stage2': stage2 or {}}} for d in conformance.DESKTOPS}
+        return {c['check']: c for c in conformance.confined_stage2_checks(machine, dry, profiles, '1.0.0b6')}
+
+    def test_a_payload_without_it_fails_only_the_published_scope(self):
+        checks = self.confined({'confined_stage2_missing': True, 'esp_layout': {}})
+        self.assertTrue(checks['confined stage2']['ok'])
+        self.assertFalse(checks['published confined stage2']['ok'])
+        self.assertEqual(checks['published confined stage2']['scope'], 'published')
+        self.assertEqual(conformance.verdict(list(checks.values()), True), 'PASS')
+        self.assertEqual(conformance.verdict(list(checks.values())), 'FAIL')
+
+    def test_a_payload_with_it_is_checked_like_a_board_stage_two(self):
+        layout = {'esp/m1n1/boot-ctxr-j700.bin': 'm1n1/boot-ctxr.bin'}
+        good = {'device_trees': [{'compatible': 'apple,j700'}], 'u_boot': '2026.07',
+                'versions': ['##aura_ver##1.0.0b6']}
+        chain = {'confined_stage2_missing': False, 'esp_layout': layout}
+        checks = self.confined(chain, {'esp/m1n1/boot-ctxr-j700.bin': good})
+        self.assertTrue(checks['confined stage2']['ok'])
+        self.assertTrue(checks['published confined stage2']['ok'])
+        other = dict(good, device_trees=[{'compatible': 'apple,j700'}, {'compatible': 'apple,j413'}])
+        self.assertFalse(self.confined(chain, {'esp/m1n1/boot-ctxr-j700.bin': other})['confined stage2']['ok'])
+        self.assertFalse(self.confined(chain)['confined stage2']['ok'])
+        self.assertTrue(conformance.CONFINED_MEMBER.fullmatch('esp/m1n1/boot-ctxr.bin'))
+        self.assertFalse(conformance.CONFINED_MEMBER.fullmatch('esp/m1n1/boot-j700.bin'))
+
+
 class FixtureTests(unittest.TestCase):
     def test_fixtures_are_scrubbed(self):
         for name, machine in MACHINES.items():

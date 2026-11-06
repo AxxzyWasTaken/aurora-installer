@@ -2,6 +2,7 @@
   import AuroraFirmware
   import Darwin
   import Foundation
+  import RecoveryAccountCore
 
   /// macOS lacks the free space an installation step needs there. Both
   /// numbers are bytes on the macOS volume that holds the installer's files,
@@ -317,6 +318,15 @@
       }
       guard NativeRestoreSourceLayout(sourceURL: firmware.sourceURL) != nil else {
         throw InstallerPlanPreparationError.firmwareUnavailable
+      }
+      // Refused now rather than after the restore image downloads.
+      if AuraStage1Format.usesMachO(chipID: facts.hardware.chipID),
+        try NativeBootChain.machORefusal(
+          metadata: NativeInstallationMetadata.authenticatedData(metadata),
+          deviceIdentifier: deviceIdentifier,
+          firmware: firmware.version.components(separatedBy: " ")[0]) != nil
+      {
+        throw InstallerPlanPreparationError.releaseLacksMachOStartup
       }
       let requirement: NativeStubStagingRequirement
       do {

@@ -348,6 +348,88 @@
       XCTAssertTrue(summary.contains("Nothing on the disk changed"), summary)
     }
 
+    /// `metadata` with the `aurora_macho_boot` declaration the assembler writes.
+    static func declaring(_ metadata: Data, stage1: Bool, confined: [String]) throws -> Data {
+      var document = try JSONSerialization.jsonObject(with: metadata) as! [String: Any]
+      var templates = document["os_list"] as! [[String: Any]]
+      templates[0]["aurora_macho_boot"] = [
+        "kind": "padded-ctxr-v1",
+        "stage1_member": stage1 ? "esp/aurora/stage1.macho" as Any : NSNull(),
+        "confined_members": confined,
+      ]
+      document["os_list"] = templates
+      return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+    }
+
+    func testMetadataThatDeclaresTheMachOFilesMustMatchThePayload() async throws {
+      let (metadata, payload, _) = try await Self.payload { Self.object(wrapping: $0) }
+      let matching = try Self.declaring(
+        metadata, stage1: true, confined: ["esp/m1n1/boot-ctxr.bin"])
+      for machO in [true, false] {
+        _ = try await admit(payload, metadata: matching, machO: machO)
+      }
+      for (stage1, confined) in [
+        (false, ["esp/m1n1/boot-ctxr.bin"]), (true, []),
+        (true, ["esp/m1n1/boot-ctxr.bin", "esp/m1n1/boot-ctxr-j700.bin"]),
+      ] {
+        let wrong = try Self.declaring(metadata, stage1: stage1, confined: confined)
+        do {
+          _ = try await admit(payload, metadata: wrong, machO: false)
+          XCTFail("Metadata that disagrees with its payload was admitted: \(confined)")
+        } catch {
+          XCTAssertEqual(error as? NativePayloadPreflightError, .invalidMetadata)
+        }
+      }
+    }
+
+    func testMetadataRefusesAMachOMacBeforeAnythingLargeDownloads() throws {
+      let (metadata, _, _) = try NativeESPFileTests.inputs()
+      func refusal(_ metadata: Data, device: String = "apple,j700", firmware: String = "26.6.2")
+        throws -> NativeBootChainError?
+      {
+        try NativeBootChain.machORefusal(
+          metadata: metadata, deviceIdentifier: device, firmware: firmware)
+      }
+      // Metadata from before the declaration only tells the Stage 1 qualification.
+      XCTAssertNil(try refusal(metadata))
+      XCTAssertEqual(try refusal(metadata, firmware: "1.0"), .missingMachOStage1)
+      func declared(_ stage1: Bool, _ confined: [String]) throws -> Data {
+        try Self.declaring(metadata, stage1: stage1, confined: confined)
+      }
+      XCTAssertEqual(try refusal(declared(false, ["esp/m1n1/boot-ctxr.bin"])), .missingMachOStage1)
+      XCTAssertEqual(try refusal(declared(true, [])), .missingConfinedStage2)
+      XCTAssertEqual(
+        try refusal(declared(true, ["esp/m1n1/boot-ctxr-j616s.bin"])), .missingConfinedStage2)
+      XCTAssertNil(try refusal(declared(true, ["esp/m1n1/boot-ctxr-j700.bin"])))
+      XCTAssertNil(try refusal(declared(true, ["esp/m1n1/boot-ctxr.bin"])))
+      // A declaration this installer can't read refuses the metadata.
+      XCTAssertThrowsError(try refusal(declared(true, ["esp/m1n1/other.bin"])))
+    }
+
+    func testAReleaseWithoutTheMachOFilesSaysSoInPlainWords() {
+      for error in [
+        NativeBootChainError.missingMachOStage1, .missingConfinedStage2, .confinedStage2TooLarge,
+      ] {
+        for (reason, summary) in [
+          PinnedAsahiEngineExecutor.payloadFailure(error),
+          PinnedAsahiEngineExecutor.preflightFailure(stage: .espFiles, error: error),
+        ] {
+          XCTAssertEqual(reason, .deviceUnsupported)
+          XCTAssertEqual(summary, NativeBootChainError.releaseLacksMachOSummary)
+          XCTAssertFalse(summary.contains(String(describing: error)), summary)
+        }
+        XCTAssertEqual(
+          PinnedAsahiEngineExecutor.preservedSummary(for: error),
+          NativeBootChainError.releaseLacksMachOSummary)
+      }
+      XCTAssertTrue(
+        NativeBootChainError.releaseLacksMachOSummary.contains("doesn't support this Mac yet"))
+      // A file that failed a check still reads as one.
+      XCTAssertEqual(
+        PinnedAsahiEngineExecutor.payloadFailure(NativeBootChainError.invalidStage1).0,
+        .planIntegrity)
+    }
+
     func testAPayloadWithoutTheConfinedStage2IsRefusedOnAMachOChip() async throws {
       let (metadata, payload, _) = try await Self.payload(extra: []) { Self.object(wrapping: $0) }
       do {

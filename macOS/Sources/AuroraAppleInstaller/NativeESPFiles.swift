@@ -127,6 +127,13 @@
           stage1, uuid: espUUID.lowercased(), path: stage2Path,
           windowMilliseconds: windowMilliseconds)
       if installed != expected {
+        // An earlier installer enrolled Mach-O Stage 1s unpadded, loading m1n1/boot.bin.
+        if stage1MachO != nil,
+          (try? Stage1Configuration.read(installed).stage2Path)
+            == AuraStage1Format.standardStage2Path
+        {
+          throw NativePreservedInstallError.earlierStage1
+        }
         guard allowDifferentStage1Code, !usesLegacyStage1 else {
           throw NativeBootChainError.invalidStage1
         }

@@ -56,6 +56,30 @@
       }
     }
 
+    func testAnEarlierInstallersUnpaddedMachOStage1IsRefusedWithWhatToDo() async throws {
+      var plan = try await NativeESPFileTests.plan(deviceIdentifier: "apple,j700")
+      plan.stage1MachO = Data()
+      let uuid = UUID().uuidString.lowercased()
+      let unpadded = try NativeBootChain.fillStage1(
+        plan.stage1, uuid: uuid, path: AuraStage1Format.standardStage2Path,
+        windowMilliseconds: plan.windowMilliseconds)
+      for different in [false, true] {
+        XCTAssertThrowsError(
+          try plan.admitPreservedStage1(
+            unpadded, espUUID: uuid, allowDifferentStage1Code: different)
+        ) {
+          XCTAssertEqual($0 as? NativePreservedInstallError, .earlierStage1)
+        }
+      }
+      let summary = try XCTUnwrap(
+        PinnedAsahiEngineExecutor.preservedSummary(for: NativePreservedInstallError.earlierStage1))
+      XCTAssertTrue(summary.contains("Erase Linux, then install Aurora again"), summary)
+      XCTAssertTrue(summary.contains("Nothing on the disk changed"), summary)
+      // A raw chip's Stage 1 on that path is its own, and is admitted.
+      plan.stage1MachO = nil
+      _ = try plan.admitPreservedStage1(unpadded, espUUID: uuid)
+    }
+
     func testCrossDistroResetKeepsAValidEnrolledModernStageOne() async throws {
       let plan = try await NativeESPFileTests.plan(deviceIdentifier: "apple,j700")
       XCTAssertFalse(plan.usesLegacyStage1)

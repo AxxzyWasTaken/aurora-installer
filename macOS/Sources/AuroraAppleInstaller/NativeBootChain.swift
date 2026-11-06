@@ -16,6 +16,16 @@
     case missingConfinedStage2
     /// That Stage 2 is larger than the slot aura keeps, so it could not load.
     case confinedStage2TooLarge
+
+    /// The release lacks what a Mach-O Mac starts from, as opposed to a file
+    /// that failed a check.
+    var releaseLacksMachO: Bool {
+      [.missingMachOStage1, .missingConfinedStage2, .confinedStage2TooLarge].contains(self)
+    }
+
+    static let releaseLacksMachOSummary =
+      "This release doesn't support this Mac yet. Macs with an M4-generation chip or later need "
+      + "startup software that this release's images don't include. Nothing on the disk changed."
   }
 
   struct NativeBootChainAdmission: Equatable, Sendable {
@@ -34,6 +44,55 @@
   enum NativeBootChain {
     static let commonStage1 = "esp/aurora/stage1.bin"
     static let commonStage1MachO = "esp/aurora/stage1.macho"
+
+    /// What a payload carries for a Mach-O Stage 1, as its metadata declares it
+    /// (`aurora_macho_boot`). Older metadata declares nothing.
+    struct MachODeclaration: Equatable, Sendable {
+      let stage1: Bool
+      let confined: Set<String>
+    }
+
+    static func isConfinedMember(_ name: String) -> Bool {
+      name.range(
+        of: #"\Aesp/m1n1/boot-ctxr(-[a-z0-9]+)?\.bin\z"#, options: .regularExpression) != nil
+    }
+
+    static func machODeclaration(template: [String: Any]) throws -> MachODeclaration? {
+      guard let value = template["aurora_macho_boot"], !(value is NSNull) else { return nil }
+      guard let values = value as? [String: Any],
+        Set(values.keys) == ["kind", "stage1_member", "confined_members"],
+        values["kind"] as? String == "padded-ctxr-v1",
+        let confined = values["confined_members"] as? [String],
+        confined.allSatisfy(isConfinedMember), Set(confined).count == confined.count
+      else { throw NativePayloadPreflightError.invalidMetadata }
+      switch values["stage1_member"] {
+      case let member as String where member == commonStage1MachO:
+        return MachODeclaration(stage1: true, confined: Set(confined))
+      case is NSNull:
+        return MachODeclaration(stage1: false, confined: Set(confined))
+      default:
+        throw NativePayloadPreflightError.invalidMetadata
+      }
+    }
+
+    /// Why this release can't start a Mach-O Mac, read from its signed metadata
+    /// before anything large downloads. Nil when the metadata doesn't say; the
+    /// payload is checked again once it is here.
+    static func machORefusal(metadata: Data, deviceIdentifier: String, firmware: String) throws
+      -> NativeBootChainError?
+    {
+      let template = try NativePayloadPreflight.target(metadata)
+      let board = String(deviceIdentifier.dropFirst(6))
+      guard try qualifiedFirmware(template: template, board: board + "ap").contains(firmware)
+      else { return .missingMachOStage1 }
+      guard let declared = try machODeclaration(template: template) else { return nil }
+      guard declared.stage1 else { return .missingMachOStage1 }
+      guard
+        declared.confined.contains("esp/m1n1/boot-ctxr-\(board).bin")
+          || declared.confined.contains("esp/m1n1/boot-ctxr.bin")
+      else { return .missingConfinedStage2 }
+      return nil
+    }
 
     /// `machOStage1` asks for the padded Mach-O Stage 1 (AuraStage1Format.usesMachO).
     /// Such a Mac needs the object and its Stage 2, or nothing it can start from is
@@ -63,6 +122,13 @@
         uniqueKeysWithValues: archive.members.filter { !$0.isDirectory }.map {
           ($0.name, $0)
         })
+      // Metadata that declares the Mach-O files must match the payload.
+      if let declared = try machODeclaration(template: template),
+        declared.stage1 != (members[commonStage1MachO] != nil)
+          || declared.confined != Set(members.keys.filter(isConfinedMember))
+      {
+        throw NativePayloadPreflightError.invalidMetadata
+      }
       let qualified = try qualifiedFirmware(template: template, board: board)
       let common = members[commonStage1] != nil && qualified.contains(firmware)
       var stage1: String?

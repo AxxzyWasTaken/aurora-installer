@@ -1,4 +1,5 @@
 #if os(macOS)
+  import CryptoKit
   import Darwin
   import Foundation
   import RecoveryAccountCore
@@ -97,6 +98,34 @@
         } catch {
           XCTAssertFalse(accepted, String(describing: error))
           XCTAssertEqual(error as? NativeHandoffValidationError, .invalidTarget)
+        }
+      }
+    }
+
+    func testAMachOHandoffChecksTheConfinedStage2ItWroteToTheESP() async throws {
+      for onESP in [true, false] {
+        let fixture = try NativeRecoveryHandoffFixture()
+        defer { fixture.remove() }
+        let bytes = Data("confined stage two".utf8)
+        try fixture.writeMachOInstallation(confined: bytes)
+        if !onESP {
+          try FileManager.default.removeItem(
+            at: fixture.esp.appendingPathComponent(AuraStage1Format.confinedStage2Path))
+        }
+        do {
+          let result = try await fixture.executor().execute(
+            package: fixture.package, journal: fixture.journalURL,
+            authorization: fixture.authorization(), requirement: "fixture", fullReadback: false)
+          XCTAssertTrue(onESP, "The handoff accepted an ESP without the confined Stage 2")
+          XCTAssertEqual(
+            try AppleInstallerTrustCore().validateEngineTranscript(result).completion,
+            .awaitingRecovery)
+          XCTAssertEqual(try fixture.journalSnapshot().state, .complete)
+        } catch {
+          // A missing file can't be read back, which refuses it like changed content.
+          XCTAssertFalse(onESP, String(describing: error))
+          XCTAssertNotNil(error as? NativeHandoffValidationError, String(describing: error))
+          XCTAssertNotEqual(try fixture.journalSnapshot().state, .complete)
         }
       }
     }
@@ -510,6 +539,71 @@
       // Normal mounted System roots may be root:admin 0775.
       XCTAssertEqual(chmod(system.path, 0o775), 0)
       XCTAssertEqual(chmod(sourcePreboot.path, 0o775), 0)
+    }
+
+    /// What a padded Mach-O installation leaves: the configuration naming
+    /// m1n1/boot-ctxr.bin, the file in the payload and on the ESP, and the ESP
+    /// evidence and its checkpoint counting it.
+    func writeMachOInstallation(confined: Data) throws {
+      let member = "esp/" + AuraStage1Format.confinedStage2Path
+      let work = root.appendingPathComponent("payload-work")
+      let file = work.appendingPathComponent(member)
+      try FileManager.default.createDirectory(
+        at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try confined.write(to: file)
+      XCTAssertEqual(chmod(package.payloadURL.path, 0o600), 0)
+      let zip = Process()
+      zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+      zip.arguments = ["-q", "-X", "-0", package.payloadURL.path, member]
+      zip.currentDirectoryURL = work
+      try zip.run()
+      zip.waitUntilExit()
+      XCTAssertEqual(zip.terminationStatus, 0)
+      XCTAssertEqual(chmod(package.payloadURL.path, 0o400), 0)
+      try confined.write(to: esp.appendingPathComponent(AuraStage1Format.confinedStage2Path))
+      var config = vector["config"] as! [String: Any]
+      config["bootMode"] = "macho"
+      config["stage2Path"] = AuraStage1Format.confinedStage2Path
+      try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]).write(
+        to: system.appendingPathComponent("Aurora/Recovery/InstallData/install-config.json"))
+      // The tree hash the handoff recomputes, over the layout a padded Stage 1 gets.
+      let evidence = try NativeHandoffEvidence(
+        snapshot: journalSnapshot(), metadata: Data((vector["metadata"] as! String).utf8))
+      let names = Set(
+        (vector["espFiles"] as! [String: String]).keys.map { "esp/" + $0 }
+          + ["esp/m1n1/boot-j700.bin", "esp/m1n1/boot.bin", "esp/aurora/stage1.bin", member])
+      let layout = try evidence.espLayout(members: names, firmware: "26.6.2", machOStage1: true)
+      var tree = SHA256()
+      var installed: UInt64 = 0
+      for name in layout.keys.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) {
+        let bytes = try Data(contentsOf: esp.appendingPathComponent(layout[name]!))
+        var length = UInt64(name.utf8.count).bigEndian
+        tree.update(data: withUnsafeBytes(of: &length) { Data($0) })
+        tree.update(data: Data(name.utf8))
+        tree.update(data: Data(SHA256.hash(data: bytes)))
+        installed += UInt64(bytes.count)
+      }
+      let evidenceName = "stub-and-esp-installed"
+      let evidenceURL = URL(fileURLWithPath: journalURL.path + "." + evidenceName + ".evidence")
+      let old = try Data(contentsOf: evidenceURL)
+      var record = try JSONSerialization.jsonObject(with: old) as! [String: Any]
+      var partitions = record["populated_partitions"] as! [[String: Any]]
+      partitions[0]["content_sha256"] = tree.finalize().map { String(format: "%02x", $0) }
+        .joined()
+      partitions[0]["installed_bytes"] = installed
+      record["populated_partitions"] = partitions
+      let updated = try JSONSerialization.data(
+        withJSONObject: record, options: [.sortedKeys, .withoutEscapingSlashes])
+      XCTAssertEqual(chmod(evidenceURL.path, 0o600), 0)
+      try updated.write(to: evidenceURL)
+      XCTAssertEqual(chmod(evidenceURL.path, 0o600), 0)
+      func digest(_ data: Data) -> String {
+        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+      }
+      let journal = try String(contentsOf: journalURL, encoding: .utf8)
+      XCTAssertTrue(journal.contains(digest(old)))
+      try journal.replacingOccurrences(of: digest(old), with: digest(updated)).write(
+        to: journalURL, atomically: false, encoding: .utf8)
     }
 
     func remove() { try? FileManager.default.removeItem(at: root) }

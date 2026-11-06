@@ -75,6 +75,11 @@
     }
 
     static func authenticated(_ staged: StagedInstallerArtifact) throws -> Self {
+      try Self(data: authenticatedData(staged))
+    }
+
+    /// The metadata's bytes, once they match the signed catalog.
+    static func authenticatedData(_ staged: StagedInstallerArtifact) throws -> Data {
       guard staged.fileURL.isFileURL, staged.artifact.role == "metadata",
         staged.artifact.expectedSizeBytes <= 65_536
       else { throw NativeInspectionError.invalidMetadata }
@@ -89,7 +94,7 @@
       guard UInt64(data.count) == staged.artifact.expectedSizeBytes,
         SHA256Digest(hashing: data).rawValue == staged.artifact.expectedDigest
       else { throw NativeInspectionError.metadataChanged }
-      return try Self(data: data)
+      return data
     }
 
     func target() throws -> Template {

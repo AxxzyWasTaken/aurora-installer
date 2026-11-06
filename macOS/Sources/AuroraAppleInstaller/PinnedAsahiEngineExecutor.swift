@@ -417,6 +417,9 @@
       if let update = macOSUpdateSummary(for: error) {
         return (.macOSUpdateRequired, update)
       }
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return (.deviceUnsupported, NativeBootChainError.releaseLacksMachOSummary)
+      }
       return error is NativeFirmwareSelectionError
         ? (.firmwarePreparation, "Compatible boot firmware could not be selected.")
         : (.planIntegrity, "The installation images could not be verified (\(errorName(error))).")
@@ -432,6 +435,9 @@
         return (.macOSSpaceRequired, shortfall.summary)
       }
       if let update = macOSUpdateSummary(for: error) { return (.macOSUpdateRequired, update) }
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return (.deviceUnsupported, NativeBootChainError.releaseLacksMachOSummary)
+      }
       let name = errorName(error)
       switch error {
       case NativeFirmwareSelectionError.updateArchiveOnly(let version):
@@ -586,6 +592,13 @@
     }
 
     static func preservedSummary(for error: any Error) -> String? {
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return NativeBootChainError.releaseLacksMachOSummary
+      }
+      if case NativePreservedInstallError.earlierStage1 = error {
+        return "This installation was set up by an earlier Aurora installer, and this one can't "
+          + "reset it. Nothing on the disk changed. Erase Linux, then install Aurora again."
+      }
       guard
         case NativePreservedInstallError.espFull(let required, let available) = error
       else { return nil }

@@ -971,6 +971,16 @@
             remedy:
               "Update macOS, then choose Check again. If this keeps happening, save the error details."
           )
+        case .releaseLacksMachOStartup:
+          return FailureDisplay(
+            headline: blockedHeadline,
+            plainDetail:
+              "Macs with an M4-generation chip or later need startup software that this release’s images don’t include yet. The disk has not been changed.",
+            technicalDetail: technical,
+            remedy:
+              "Check for a newer \(windowTitle) release. Nothing on this Mac needs to change.",
+            isBlockedModel: true
+          )
         case .firmwareArchiveUnsupported(let version):
           return FailureDisplay(
             headline: "This Mac can’t be installed with this installer yet",

@@ -59,10 +59,12 @@ class EnrollmentTests(unittest.TestCase):
 
     def test_a_payload_without_it_fails_only_the_published_scope(self):
         checks = self.confined({'confined_stage2_missing': True, 'esp_layout': {}})
-        self.assertTrue(checks['confined stage2']['ok'])
+        self.assertIsNone(checks['confined stage2']['ok'])
+        self.assertIn('not present', checks['confined stage2']['detail'])
         self.assertFalse(checks['published confined stage2']['ok'])
         self.assertEqual(checks['published confined stage2']['scope'], 'published')
-        self.assertEqual(conformance.verdict(list(checks.values()), True), 'PASS')
+        # Not a failure at the pin, and not a pass either: nothing was read.
+        self.assertEqual(conformance.verdict(list(checks.values()), True), 'UNTESTED-ON-HW')
         self.assertEqual(conformance.verdict(list(checks.values())), 'FAIL')
 
     def test_a_payload_with_it_is_checked_like_a_board_stage_two(self):

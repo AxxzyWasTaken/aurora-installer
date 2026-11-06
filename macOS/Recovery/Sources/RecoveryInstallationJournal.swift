@@ -25,10 +25,8 @@ struct RecoveryInstallationJournal: Codable {
   let replacedISC: Bool
   let iscVarWasPresent: Bool
   var phase: RecoveryInstallationPhase
-  /// The execute window this setup enrolls or has enrolled. Until enrollment has
-  /// finished, a resumed setup takes this from the boot mode, so a journal from
-  /// before Mach-O installations were padded still enrolls a padded object. A raw
-  /// setup has no such field.
+  /// The execute window this setup enrolls or has enrolled, from its boot mode.
+  /// A raw setup has no such field.
   var executeWindowSize: UInt64? = nil
 
   func validate(system: String, group: String, esp: String, stage1: String, stage2: String) throws {

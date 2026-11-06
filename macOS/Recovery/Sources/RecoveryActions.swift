@@ -8,6 +8,14 @@ struct RecoveryFailure: Error, LocalizedError {
   var errorDescription: String? { message }
 }
 
+/// Set once by the timer that stops a command, read after the command exits.
+final class CommandTimeout: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = false
+  var fired: Bool { lock.withLock { value } }
+  func fire() { lock.withLock { value = true } }
+}
+
 enum RecoveryActions {
   // The engine writes this only after the new System volume and ESP exist.
   // Keep loading independent of diskutil so Recovery can show the window first.
@@ -68,7 +76,7 @@ enum RecoveryActions {
   }
   /// Pads the Stage 1 and checks what kmutil derives from the file it will enroll.
   static func stageExpandedStage1(_ stage1: Data, window: UInt64, at path: URL) throws {
-    let usage = try run("/usr/bin/kmutil", ["configure-boot", "--help"])
+    let usage = try run("/usr/bin/kmutil", ["configure-boot", "--help"], timeout: 60)
     try check(
       String(decoding: usage, as: UTF8.self).contains("--compress"),
       "This Recovery's kmutil cannot compress startup software, which this Mac needs.")
@@ -78,7 +86,8 @@ enum RecoveryActions {
     let output: Data
     do {
       output = try run(
-        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
+        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"],
+        timeout: 300)
     } catch {
       throw RecoveryFailure(
         message:
@@ -139,7 +148,10 @@ enum RecoveryActions {
   static func hash(_ bytes: Data) -> String {
     RecoveryDigest.sha256(bytes)
   }
-  @discardableResult static func run(_ path: String, _ args: [String]) throws -> Data {
+  /// `timeout` stops a command that hangs; a stopped command counts as failed.
+  @discardableResult static func run(
+    _ path: String, _ args: [String], timeout: TimeInterval? = nil
+  ) throws -> Data {
     let logged = path != "/usr/sbin/nvram"
     let log = logged ? CommandLog(path, args) : nil
     let process = Process()
@@ -153,13 +165,29 @@ enum RecoveryActions {
       log?.finish(status: -1, reason: "Could not launch: " + error.localizedDescription)
       throw error
     }
+    let stopped = CommandTimeout()
+    let timer = timeout.map { seconds in
+      let item = DispatchWorkItem {
+        if process.isRunning {
+          stopped.fire()
+          process.terminate()
+        }
+      }
+      DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+      return item
+    }
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
+    timer?.cancel()
+    let name = URL(fileURLWithPath: path).lastPathComponent
     log?.output(String(decoding: data, as: UTF8.self))
+    if stopped.fired, let timeout {
+      log?.finish(status: process.terminationStatus, reason: "Stopped after \(Int(timeout)) s")
+      throw RecoveryFailure(message: "\(name) did not finish within \(Int(timeout)) seconds.")
+    }
     log?.finish(status: process.terminationStatus)
     try check(
-      process.terminationStatus == 0,
-      "\(URL(fileURLWithPath: path).lastPathComponent) failed (\(process.terminationStatus)).")
+      process.terminationStatus == 0, "\(name) failed (\(process.terminationStatus)).")
     return data
   }
   static func disk(_ path: String) throws -> [String: Any] {
@@ -396,12 +424,13 @@ enum RecoveryActions {
     try check(
       selection.mode.rawValue == config.bootMode,
       "This installation uses \(config.bootMode) boot mode only.")
-    if let chip = chipID() {
-      try check(
-        AuraBootMode.required(chipID: chip) == selection.mode,
-        "This Mac cannot start from the startup software in this installation's files. Run the Aurora installer again."
-      )
+    guard let chip = chipID() else {
+      throw RecoveryFailure(message: "Could not read this Mac's chip, so nothing was changed.")
     }
+    try check(
+      AuraBootMode.required(chipID: chip) == selection.mode,
+      "This Mac cannot start from the startup software in this installation's files. Run the Aurora installer again."
+    )
     try RecoveryOwnerResolver.verify(owner, current: resolveOwner())
     progress(0.05, "Verifying the installation files")
     let m = try manifest()
@@ -452,9 +481,7 @@ enum RecoveryActions {
       try journal.validate(
         system: systemUUID, group: groupUUID, esp: espUUID,
         stage1: hash(stage1), stage2: hash(stage2))
-      if journal.phase.needsEnrollment {
-        journal.executeWindowSize = selection.mode.executeWindowSize
-      }
+      journal.executeWindowSize = selection.mode.executeWindowSize
       operation = state.appendingPathComponent(journal.operation)
       transaction = try RecoveryFileTransaction.resume(
         directory: operation.appendingPathComponent("files"), files: files,
@@ -480,10 +507,7 @@ enum RecoveryActions {
         iscVarWasPresent: fm.fileExists(atPath: iscVar.path), phase: .prepared,
         executeWindowSize: selection.mode.executeWindowSize)
     }
-    let executeWindow = journal.executeWindowSize
-    try check(
-      executeWindow == nil || selection.mode == .macho,
-      "An expanded execute window needs the Mach-O startup software (M4 and later).")
+    let executeWindow = selection.mode.executeWindowSize
     func record(_ phase: RecoveryInstallationPhase) throws {
       journal.phase = phase
       try RecoveryFileTransaction.write(try JSONEncoder().encode(journal), to: pendingInstallation)

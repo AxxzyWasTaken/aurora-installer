@@ -567,7 +567,7 @@ def enrollment_check(selection, uses_macho, chains):
 def confined_stage2_checks(machine, dry, profiles, aura_label):
     """The Stage 2 a padded Stage 1 loads holds this board's trees and U-Boot, at the pin.
     Today's images may not carry one yet, which only a published-scope check reports."""
-    problems, published = [], []
+    problems, published, checked = [], [], 0
     for desktop in DESKTOPS:
         chain = dry[desktop].get('boot_chain')
         if not chain:
@@ -575,6 +575,7 @@ def confined_stage2_checks(machine, dry, profiles, aura_label):
         if chain.get('confined_stage2_missing'):
             published.append('%s has no %s' % (desktop, CONFINED_STAGE2))
             continue
+        checked += 1
         members = [k for k, v in chain['esp_layout'].items() if v == CONFINED_STAGE2]
         contents = profiles[desktop]['payload'].get('confined_stage2', {}).get(members[0]) if members else None
         if not contents:
@@ -587,9 +588,15 @@ def confined_stage2_checks(machine, dry, profiles, aura_label):
             problems.append('%s: %s carries no U-Boot' % (desktop, members[0]))
         if not any(v.endswith('##' + aura_label) for v in contents['versions']):
             published.append('%s %s is not aura %s' % (desktop, members[0], aura_label))
-    return [check('confined stage2', not problems, '; '.join(problems) or
-                  '%s carries only %s device trees and U-Boot, where the payload has it' % (
-                      CONFINED_STAGE2, machine['device_identifier'])),
+    if problems:
+        confined = check('confined stage2', False, '; '.join(problems))
+    elif not checked:
+        # Nothing to read, so nothing proven: the published check reports the gap.
+        confined = check('confined stage2', None, '%s not present in any payload, so not checked' % CONFINED_STAGE2)
+    else:
+        confined = check('confined stage2', True, '%s carries only %s device trees and U-Boot' % (
+            CONFINED_STAGE2, machine['device_identifier']))
+    return [confined,
             check('published confined stage2', not published, '; '.join(published) or
                   'payload carries %s from aura %s' % (CONFINED_STAGE2, aura_label), scope='published')]
 

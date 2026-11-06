@@ -341,6 +341,10 @@ public struct ExpandedMachOBootObject {
       if !published { unlink(temporary.path) }
     }
     let tailOffset = off_t(UInt64(head.count) + padding)
+    // The final size first, so the padding is a hole whatever the tail holds.
+    guard ftruncate(fd, off_t(size)) == 0 else {
+      throw WriteFailure(reason: "cannot size the file")
+    }
     try Self.writeAll(head, to: fd, at: 0)
     try Self.writeAll(tail, to: fd, at: tailOffset)
     var info = stat()

@@ -36,7 +36,8 @@ jobs:
           sparse-checkout: 'arch/arm64/boot/dts/apple/'
 
       # Aurora U-Boot 2026.07-g279c4afa4bba (aurora-wip, u-boot PR 29 merged), the U-Boot the
-      # distributions ship with aura 1.0.0b5 (v1.0.0b5, 9a173ff5).
+      # distributions pin with aura 1.0.0b5 (v1.0.0b5, 9a173ff5). Their published images
+      # were built before that pin and still carry d30213eadcaa.
       - name: Checkout u-boot
         uses: actions/checkout@v5
         with:

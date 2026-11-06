@@ -5,10 +5,12 @@ import Foundation
 /// does the same through `MachOBootObject.expandExecuteWindow` when it enrolls.
 @main struct ExecuteWindowTool {
   static let usage = """
-    usage: aura-execute-window [--window-mib N] [--slot-mib N] [-o OUTPUT] OBJECT
+    usage: aura-execute-window [--window-mib N] [--slot-mib N] [--stage2 PATH] [-o OUTPUT] OBJECT
 
     Writes OBJECT with its __TEXT_EXEC padded so that it holds aura and an aligned
-    window of N MiB (default \(ExecuteWindow.size >> 20), with \(ExecuteWindow.auraSlot >> 20) MiB kept for aura). Without -o the
+    window of N MiB (default \(ExecuteWindow.size >> 20), with \(ExecuteWindow.auraSlot >> 20) MiB kept for aura). --stage2 changes
+    the ESP path its filled Stage 1 chainloads. An object filled for \(AuraStage1Format.standardStage2Path) needs
+    --stage2 \(AuraStage1Format.confinedStage2Path) to load the Stage 2 updates keep current. Without -o the
     output goes to a new temporary file, whose path is the last line printed.
 
     """
@@ -21,6 +23,7 @@ import Foundation
   static func main() {
     var window = ExecuteWindow.size
     var slot = ExecuteWindow.auraSlot
+    var stage2: String?
     var output: URL?
     var input: URL?
     var arguments = Array(CommandLine.arguments.dropFirst())[...]
@@ -34,6 +37,9 @@ import Foundation
       switch argument {
       case "--window-mib": window = mebibytes(argument)
       case "--slot-mib": slot = mebibytes(argument)
+      case "--stage2":
+        guard let path = arguments.popFirst() else { fail(usage) }
+        stage2 = path
       case "-o":
         guard let path = arguments.popFirst() else { fail(usage) }
         output = URL(fileURLWithPath: path)
@@ -47,7 +53,8 @@ import Foundation
     }
     guard let input else { fail(usage) }
     do {
-      let object = try Data(contentsOf: input)
+      var object = try Data(contentsOf: input)
+      if let stage2 { object = try Stage1Configuration.retargeted(object, stage2Path: stage2) }
       let expanded = try MachOBootObject.expandExecuteWindow(object, window: window, slot: slot)
       let path =
         output

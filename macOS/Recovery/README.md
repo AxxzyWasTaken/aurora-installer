@@ -76,7 +76,7 @@ xcrun swiftc Sources/Account/AuraStage1.swift Tools/ExecuteWindowTool.swift -o a
 
 It takes the saved `macho/aura-boot.macho`, checks that its hash matches the receipt and that it names this installation's startup partition, changes only the block's Stage 2 path, and applies the same checks as a new installation. Before asking for a password, and again before enrolling, it refuses if `m1n1/boot-ctxr.bin` isn't on this installation's startup partition, with a message to start Linux and install updates first. The temporary padded file is removed afterwards. Boot policy, the startup partition, firmware, `install-config.json`, the saved recovery files, the receipt and boot arguments stay as they are, so `aura recover` on such a system still restores `m1n1/boot.bin` and leaves `m1n1/boot-ctxr.bin` alone.
 
-The utility is part of the Recovery app on the target's System volume. Only a fresh installation or an unfinished handoff publishes that app today; a completed installation doesn't get it from the main installer. Until there is a way to deliver it, an existing installation is re-enrolled by hand with `aura-execute-window` and `kmutil configure-boot --compress`.
+The utility is part of the Recovery app on the target's System volume. Only a fresh installation or an unfinished handoff publishes that app today; a completed installation doesn't get it from the main installer. Until there is a way to deliver it, an existing installation is re-enrolled by hand: `aura-execute-window --stage2 m1n1/boot-ctxr.bin -o padded.macho <its saved aura-boot.macho>`, then `kmutil configure-boot -c padded.macho -v <volume> --compress </dev/tty` in its paired Recovery, once `m1n1/boot-ctxr.bin` is on its ESP.
 
 Preview builds accept `--preview-macho` to show the item.
 

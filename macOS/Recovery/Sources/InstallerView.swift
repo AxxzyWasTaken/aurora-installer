@@ -25,7 +25,8 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
   private var skipButton: NSButton?
   private var issueShowing = false
   private var issueRepair = false
-  private var authorizationRepair = false
+  private enum AuthorizationPurpose { case install, repair, codeWindow }
+  private var authorizationPurpose = AuthorizationPurpose.install
   private let sheets = SheetPresenter()
   private var authorizationField: NSSecureTextField?
   private var authorizationProceed: NSButton?
@@ -163,7 +164,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       && sheets.active == nil
     {
       presentIssue()
-    } else if let notice = model.previewNotice, sheets.active == nil {
+    } else if let notice = model.notice, sheets.active == nil {
       let done = RecoveryPrimaryButton(
         title: "Done", target: self, action: #selector(donePanelPressed))
       done.keyEquivalent = "\r"
@@ -178,6 +179,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     switch model.stage {
     case .welcome: return model.recoveryInterface ? "Repair startup" : "Finish setup"
     case .installing:
+      if model.enrollingWindow { return "Enrolling expanded code window" }
       return model.recoveryInterface ? "Restoring startup software" : "Setting up Aurora Linux"
     case .account:
       return model.accountAlreadyStarted ? "Resume recovery setup" : "Create a recovery account"
@@ -248,7 +250,9 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     let stack = vertical(spacing: 15)
     stack.addArrangedSubview(
       label(
-        (model.recoveryInterface ? "Restoring " : "Setting up ") + DestinationVolume.name,
+        (model.enrollingWindow
+          ? "Updating " : model.recoveryInterface ? "Restoring " : "Setting up ")
+          + DestinationVolume.name,
         size: 14))
     let progress = NSProgressIndicator()
     progress.isIndeterminate = false
@@ -501,7 +505,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       model.checkEnrollmentEnvironment { [weak self] passed in
         guard passed else { return }
         LaunchTrace.mark("ui.continue.ready")
-        self?.showAuthorization(repair: false)
+        self?.showAuthorization(.install)
       }
       return
     }
@@ -511,7 +515,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     // write.
     let owner = model.authorizationOwner
     let sourceOwner = model.authorizationUsesSourceOwner
-    showAuthorization(repair: false)
+    showAuthorization(.install)
     LaunchTrace.mark("ui.continue.ready")
     model.checkEnrollmentEnvironment { [weak self] passed in
       if passed {
@@ -522,7 +526,9 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     }
   }
 
-  private var authorizationOpen: Bool { authorizationField != nil && !authorizationRepair }
+  private var authorizationOpen: Bool {
+    authorizationField != nil && authorizationPurpose == .install
+  }
 
   private func authorizationRecheckPassed(owner: RecoveryOwner?, sourceOwner: Bool) {
     guard authorizationOpen else { return }
@@ -532,7 +538,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       LaunchTrace.mark("ui.authorization.ownerChanged")
       authorizationField?.stringValue = ""
       closePanel()
-      showAuthorization(repair: false)
+      showAuthorization(.install)
       return
     }
     if authorizationSubmitPending { submitAuthorization() }
@@ -578,22 +584,32 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
 
   private func closePanel() { sheets.close() }
 
-  private func showAuthorization(repair: Bool) {
+  /// Utilities → Enroll Expanded Code Window.
+  @objc func enrollExpandedWindow(_ sender: Any?) {
+    model.prepareWindowEnrollment { [weak self] in self?.showAuthorization(.codeWindow) }
+  }
+
+  private func showAuthorization(_ purpose: AuthorizationPurpose) {
     guard view.window != nil else {
       LaunchTrace.mark("ui.authorization.noWindow")
       return
     }
     LaunchTrace.mark("ui.authorization.open")
-    authorizationRepair = repair
+    authorizationPurpose = purpose
     let owner =
       model.authorizationOwner?.username
       ?? (RecoveryActions.inRecovery ? "the volume owner" : NSUserName())
     var explanation = "Enter password for " + owner + "."
-    if !repair {
+    switch purpose {
+    case .install:
       explanation +=
         model.authorizationUsesSourceOwner
         ? " Use your existing macOS owner’s password to set up Aurora. Your macOS security settings are unaffected."
         : " Use your Aurora installation’s credentials to adjust its security settings. The security of your macOS installations is unaffected."
+    case .codeWindow:
+      explanation +=
+        " Aurora enrolls this volume’s startup software again with the expanded code window. Nothing else changes."
+    case .repair: break
     }
     let field = NSSecureTextField()
     field.placeholderString = "Password"
@@ -611,15 +627,17 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       title: "Cancel", target: self, action: #selector(cancelPanelPressed))
     cancel.keyEquivalent = "\u{1b}"
     let proceed = RecoveryPrimaryButton(
-      title: repair ? "Shut Down" : "Install", target: self,
-      action: #selector(authorizePanelPressed))
+      title: purpose == .repair ? "Shut Down" : purpose == .codeWindow ? "Enroll" : "Install",
+      target: self, action: #selector(authorizePanelPressed))
     proceed.keyEquivalent = "\r"
     authorizationProceed = proceed
     // Turns left of the buttons while Install waits for this Mac's check.
     let spinner = RecoveryBusyIndicator()
     authorizationSpinner = spinner
     let panel = RecoverySheet(
-      title: repair ? "Authorize startup disk" : "Authorize installation",
+      title: purpose == .repair
+        ? "Authorize startup disk"
+        : purpose == .codeWindow ? "Authorize startup software" : "Authorize installation",
       message: explanation, width: 430, height: 230, body: field, bodyHeight: 28,
       buttons: [cancel, proceed], accessory: spinner)
     present(panel, focus: field)
@@ -634,7 +652,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
       authorizationField?.window?.makeFirstResponder(authorizationField)
       return
     }
-    if !authorizationRepair && model.checkingEnvironment {
+    if authorizationPurpose == .install && model.checkingEnvironment {
       // This Mac is still being checked again: keep the password in its
       // field and install as soon as the check passes. End editing first so
       // disabling the field keeps what was typed.
@@ -652,13 +670,17 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     guard !credential.isEmpty else { return }
     authorizationField?.stringValue = ""
     closePanel()
-    if authorizationRepair {
+    switch authorizationPurpose {
+    case .repair:
       model.repairRecoveryBoot(password: credential) { [weak self] in
-        self?.showAuthorization(repair: true)
+        self?.showAuthorization(.repair)
       }
-    } else {
+    case .install:
       model.password = credential
       model.startDemo()
+    case .codeWindow:
+      model.password = credential
+      model.enrollWindow()
     }
   }
 
@@ -685,12 +707,13 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
   }
 
   func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    if item.action == #selector(enrollExpandedWindow(_:)) { return model.canEnrollWindow }
     guard item.action == #selector(toggleInstallerLog(_:)) else { return true }
     return RecoveryLogMenu.validate(item, showing: logWindow?.isShowing == true)
   }
 
   @objc private func donePanelPressed() {
-    model.previewNotice = nil
+    model.notice = nil
     closePanel()
   }
 
@@ -720,7 +743,7 @@ final class InstallerView: NSViewController, NSTextFieldDelegate, NSMenuItemVali
     model.failure = nil
     closePanel()
     if repair {
-      model.repairRecoveryBoot { [weak self] in self?.showAuthorization(repair: true) }
+      model.repairRecoveryBoot { [weak self] in self?.showAuthorization(.repair) }
     } else {
       showInstallerLog()
     }

@@ -37,8 +37,8 @@ final class InstallerModel {
   var preparingTools = false { didSet { changed() } }
   var debugEnabled = false { didSet { changed() } }
   var proxyEnabled = false { didSet { changed() } }
-  /// Utilities → Expanded Code Window: the next enrollment pads the Mach-O object.
-  var expandedExecuteWindow = false { didSet { changed() } }
+  /// Utilities → Enroll Expanded Code Window is running.
+  var enrollingWindow = false { didSet { changed() } }
   var accountUsername = "" { didSet { changed() } }
   var accountPassword = "" { didSet { changed() } }
   var accountConfirmation = "" { didSet { changed() } }
@@ -51,7 +51,7 @@ final class InstallerModel {
   /// yet. It stays out of the way: Restart defers it, and holding Shift on
   /// Restart or Utilities → Create Recovery Account… opens its setup.
   var accountOptional = false { didSet { changed() } }
-  var previewNotice: (title: String, message: String)? { didSet { changed() } }
+  var notice: (title: String, message: String)? { didSet { changed() } }
   private var checkingAccount = false
   private var awaitingStartupDiskReturn = false
   private var previewChecks = 0
@@ -168,7 +168,7 @@ final class InstallerModel {
     accountPassword = ""
     accountConfirmation = ""
     if RecoveryActions.isPreview {
-      previewNotice = (
+      notice = (
         "Restart simulated",
         "Recovery account setup is deferred. This preview does not restart your Mac."
       )
@@ -336,13 +336,14 @@ final class InstallerModel {
 
   private var installationTask: Task<Void, Never>?
   var bootSelection: BootSelection {
-    BootSelection(
-      machoEnabled: RecoveryActions.configuredBootMode == .macho,
-      expandedExecuteWindow: expandedExecuteWindow)
+    BootSelection(mode: RecoveryActions.configuredBootMode)
   }
-  /// Enrollment is what reads the option, so it can change only before that starts.
-  var canChooseExecuteWindow: Bool {
-    !recoveryInterface && stage == .welcome && RecoveryActions.configuredBootMode == .macho
+  /// A completed Mach-O installation can re-enroll its Stage 1 padded.
+  var offersWindowEnrollment: Bool {
+    recoveryInterface && RecoveryActions.configuredBootMode == .macho
+  }
+  var canEnrollWindow: Bool {
+    offersWindowEnrollment && stage == .welcome && !checkingEnvironment
   }
 
   var steps: [String] {
@@ -384,6 +385,80 @@ final class InstallerModel {
       } catch {
         DispatchQueue.main.async {
           self.failure = error.localizedDescription
+          self.stage = .welcome
+        }
+      }
+    }
+  }
+
+  /// Refuses before asking for a password: wrong environment or chip, or no
+  /// Stage 2 for a padded Stage 1 to load.
+  func prepareWindowEnrollment(needsPassword: @escaping () -> Void) {
+    guard canEnrollWindow else { return }
+    if RecoveryActions.isPreview {
+      notice = (
+        "Enrollment simulated", "This preview does not change your Mac's startup software."
+      )
+      return
+    }
+    guard RecoveryActions.inRecovery else {
+      environmentIssue = .notRecovery
+      return
+    }
+    checkEnrollmentEnvironment { passed in
+      guard passed else { return }
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          try RecoveryActions.admitWindowEnrollment()
+          DispatchQueue.main.async { needsPassword() }
+        } catch {
+          InstallerLog.shared.append(
+            "Code window enrollment refused: " + error.localizedDescription, level: .error)
+          DispatchQueue.main.async { self.failure = error.localizedDescription }
+        }
+      }
+    }
+  }
+
+  func enrollWindow() {
+    let credential = password
+    password.removeAll(keepingCapacity: false)
+    guard let owner = authorizationOwner else {
+      failure = RecoveryOwnerError.noOwner.localizedDescription
+      return
+    }
+    enrollingWindow = true
+    operations = []
+    progress = 0
+    stage = .installing
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        try RecoveryActions.enrollExpandedWindow(owner: owner, password: credential) {
+          amount, operation in
+          DispatchQueue.main.async {
+            self.progress = amount
+            self.currentOperation = operation
+          }
+        }
+        InstallerLog.shared.append("Expanded code window enrolled.")
+        DispatchQueue.main.async {
+          self.enrollingWindow = false
+          self.stage = .welcome
+          self.notice = (
+            "Expanded code window enrolled",
+            "Choose Apple menu → Restart to start Aurora Linux with it."
+          )
+        }
+      } catch {
+        InstallerLog.shared.append(
+          "Code window enrollment failed: " + error.localizedDescription, level: .error)
+        DispatchQueue.main.async {
+          self.enrollingWindow = false
+          if let issue = error as? EnrollmentGateIssue {
+            self.environmentIssue = issue
+          } else {
+            self.failure = error.localizedDescription
+          }
           self.stage = .welcome
         }
       }
@@ -474,7 +549,7 @@ final class InstallerModel {
     }
     if !accountNeedsAuthorization {
       if RecoveryActions.isPreview {
-        previewNotice = ("Restart simulated", "This preview does not restart your Mac.")
+        notice = ("Restart simulated", "This preview does not restart your Mac.")
         return
       }
       guard !restartingCompletedSetup else { return }
@@ -504,7 +579,7 @@ final class InstallerModel {
       return
     }
     if RecoveryActions.isPreview {
-      previewNotice = (
+      notice = (
         "Choose your startup disk",
         "In Recovery, this opens Startup Disk. Select \(DestinationVolume.name), click Restart, and authorize your recovery account when asked."
       )
@@ -726,11 +801,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       withTitle: "Create Recovery Account…", action: #selector(createRecoveryAccount(_:)),
       keyEquivalent: "")
     account.target = self
-    let executeWindow = utilities.addItem(
-      withTitle: "Expanded Code Window", action: #selector(toggleExecuteWindow(_:)),
-      keyEquivalent: "")
-    executeWindow.target = self
-    executeWindow.isHidden = RecoveryActions.configuredBootMode != .macho
+    if let controller, model.offersWindowEnrollment {
+      utilities.addItem(
+        withTitle: "Enroll Expanded Code Window…",
+        action: #selector(InstallerView.enrollExpandedWindow(_:)), keyEquivalent: ""
+      ).target = controller
+    }
 
     let windows = submenu("Window")
     windows.addItem(
@@ -808,20 +884,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func createRecoveryAccount(_ sender: Any?) { model.showRecoveryAccountSetup() }
 
-  @objc private func toggleExecuteWindow(_ sender: Any?) {
-    guard model.canChooseExecuteWindow else { return }
-    model.expandedExecuteWindow.toggle()
-    InstallerLog.shared.append(
-      model.expandedExecuteWindow
-        ? "Expanded code window selected. It keeps about 128 MiB of memory from Linux."
-        : "Expanded code window cleared.")
-  }
-
   @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-    if item.action == #selector(toggleExecuteWindow(_:)) {
-      item.state = model.expandedExecuteWindow ? .on : .off
-      return model.canChooseExecuteWindow
-    }
     guard item.action == #selector(createRecoveryAccount(_:)) else { return true }
     return model.accountOptional && model.stage == .complete
   }

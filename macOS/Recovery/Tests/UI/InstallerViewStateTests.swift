@@ -112,6 +112,33 @@ final class InstallerViewStateTests: XCTestCase {
     return (prompt, field)
   }
 
+  func testCodeWindowEnrollmentIsOfferedOnCompletedMachOInstallationsOnly() {
+    let saved = CommandLine.arguments
+    defer { CommandLine.arguments = saved }
+    CommandLine.arguments = saved + ["--recovery-preview"]
+    let raw = InstallerModel()
+    XCTAssertTrue(raw.recoveryInterface)
+    XCTAssertFalse(raw.offersWindowEnrollment)
+    XCTAssertFalse(raw.canEnrollWindow)
+
+    CommandLine.arguments = saved + ["--preview-macho"]
+    let setup = InstallerModel()
+    XCTAssertFalse(setup.recoveryInterface)
+    XCTAssertFalse(setup.offersWindowEnrollment, "A new setup enrolls padded on its own")
+
+    CommandLine.arguments = saved + ["--recovery-preview", "--preview-macho"]
+    let installed = InstallerModel()
+    XCTAssertTrue(installed.offersWindowEnrollment)
+    XCTAssertTrue(installed.canEnrollWindow)
+    installed.prepareWindowEnrollment { XCTFail("A preview asked for a password") }
+    XCTAssertEqual(installed.notice?.title, "Enrollment simulated")
+    installed.notice = nil
+    installed.stage = .installing
+    XCTAssertFalse(installed.canEnrollWindow, "Not while another step runs")
+    installed.prepareWindowEnrollment { XCTFail("Started during another step") }
+    XCTAssertNil(installed.notice)
+  }
+
   func testLaunchCheckSpinsLeftOfACentredDisabledContinue() throws {
     let model = InstallerModel()
     let (window, controller) = show(model)
@@ -433,7 +460,7 @@ final class InstallerViewStateTests: XCTestCase {
     XCTAssertTrue(found.allSatisfy { $0.contains("listUsers") }, logs.viewer.displayedText)
 
     // Another sheet does not hide or block the log.
-    model.previewNotice = ("Restart simulated", "This preview does not restart your Mac.")
+    model.notice = ("Restart simulated", "This preview does not restart your Mac.")
     let notice = try XCTUnwrap(window.attachedSheet)
     XCTAssertTrue(validated() == (.on, true))
     XCTAssertTrue(mainMenu.performKeyEquivalent(with: commandL))

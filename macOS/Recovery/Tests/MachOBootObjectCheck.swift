@@ -288,9 +288,65 @@ import Foundation
     } catch {}
   }
 
+  /// Vectors from aura's tools/fill_stage1_config.py.
+  static func checkConfiguration() throws {
+    let uuid = "3ce364b1-1de6-4418-a00d-5b2d95884ad7"
+    func block(_ path: String, crc: UInt32, magic: String = "AURORA-S1-CFG01\0") -> Data {
+      let encoded = Array((";" + path).utf8)
+      var bytes = Array(magic.utf8) + le(UInt32(1)) + le(UInt32(5000)) + Array(uuid.utf8)
+      bytes += [UInt8](repeating: 0, count: 4) + encoded
+      bytes += [UInt8](repeating: 0, count: 192 - encoded.count) + le(crc)
+      return Data(bytes)
+    }
+    let code = Data(repeating: 0x5A, count: 0x40)
+    let standard = code + block("m1n1/boot.bin", crc: 0x3C0C_2E4E) + code
+    let confined = code + block("m1n1/boot-ctxr.bin", crc: 0x158D_6EE6) + code
+    let read = try Stage1Configuration.read(standard)
+    precondition(read.espUUID == uuid && read.stage2Path == "m1n1/boot.bin")
+    let readConfined = try Stage1Configuration.read(confined)
+    precondition(readConfined.stage2Path == "m1n1/boot-ctxr.bin")
+    let moved = try Stage1Configuration.retargeted(
+      standard, stage2Path: AuraStage1Format.confinedStage2Path)
+    precondition(moved == confined, "a retargeted block must match aura's own fill")
+    let back = try Stage1Configuration.retargeted(
+      moved, stage2Path: AuraStage1Format.standardStage2Path)
+    precondition(back == standard)
+    func refused(_ image: Data, path: String = "m1n1/boot-ctxr.bin", _ why: String) {
+      do {
+        _ = try Stage1Configuration.retargeted(image, stage2Path: path)
+        preconditionFailure("retargeted: \(why)")
+      } catch {}
+    }
+    refused(code, "no block")
+    refused(standard + standard, "two blocks")
+    refused(code + block("m1n1/boot.bin", crc: 0), "a wrong checksum")
+    var empty = code + block("m1n1/boot.bin", crc: 0x3C0C_2E4E)
+    empty.removeLast(1)
+    refused(empty, "a truncated block")
+    for path in ["", "m1n1;boot.bin", "m1n1\\boot.bin", "é", String(repeating: "a", count: 191)] {
+      refused(standard, path: path, "the path \(path)")
+    }
+  }
+
+  static func checkSpace() throws {
+    let expanded = try MachOBootObject.expandExecuteWindow(auraObject(raw: rawImage()))
+    // The default window: aura's slot, its alignment slack, the window and the object around them.
+    precondition(ExecuteWindow.size == 128 << 20 && expanded.size > 146 << 20)
+    precondition(expanded.size < 147 << 20)
+    try expanded.requireSpace(freeBytes: expanded.size)
+    do {
+      try expanded.requireSpace(freeBytes: expanded.size - 1)
+      preconditionFailure("a sparse object is counted at its whole decompressed size")
+    } catch {
+      precondition(error.localizedDescription.contains("147 MiB"), error.localizedDescription)
+    }
+  }
+
   static func main() throws {
     try MachOBootObject.check(object(valid))
     try checkExpansion()
+    try checkConfiguration()
+    try checkSpace()
 
     var boot = valid
     boot.insert(Segment(name: "__TEXT_BOOT_EXEC", offset: 0x440000, size: 0x4000), at: 3)
@@ -373,7 +429,7 @@ import Foundation
       precondition(!AuraStage1Format.usesMachO(chipID: chip), String(chip, radix: 16))
     }
     print(
-      "PASS Mach-O boot object: no __TEXT_BOOT_EXEC, kmutil's required segments, linear file backing, entry in __TEXT_EXEC; kcbz and kcrz from kmutil inspect; in-place Stage 1 fill; execute-window padding keeps code and stays sparse; M4-and-later chip predicate"
+      "PASS Mach-O boot object: no __TEXT_BOOT_EXEC, kmutil's required segments, linear file backing, entry in __TEXT_EXEC; kcbz and kcrz from kmutil inspect; in-place Stage 1 fill; Stage 2 path retargeted as aura fills it; execute-window padding keeps code, stays sparse and counts its whole size for free space; M4-and-later chip predicate"
     )
   }
 }

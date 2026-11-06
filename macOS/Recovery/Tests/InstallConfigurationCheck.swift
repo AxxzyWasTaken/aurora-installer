@@ -65,7 +65,23 @@ import Foundation
     macho["bootMode"] = "macho"
     let decoded = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
     precondition(decoded.bootMode == "macho")
+    // Each padded Stage 1 names the confined Stage 2; a raw installation never does.
+    macho["stage2Path"] = "m1n1/boot-ctxr.bin"
+    let confined = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
+    precondition(confined.stage2Path == "m1n1/boot-ctxr.bin")
+    var raw = value
+    raw["stage2Path"] = "m1n1/boot-ctxr.bin"
+    do {
+      _ = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: raw))
+      preconditionFailure("accepted a raw installation that loads the confined Stage 2")
+    } catch {}
+    macho["stage2Path"] = "m1n1/boot-other.bin"
+    do {
+      _ = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
+      preconditionFailure("accepted an unknown Stage 2 path")
+    } catch {}
     print(
-      "PASS strict per-install configuration, raw and Mach-O modes, IDs, paths and missing fields")
+      "PASS strict per-install configuration, raw and Mach-O modes, Stage 2 path per mode, IDs, paths and missing fields"
+    )
   }
 }

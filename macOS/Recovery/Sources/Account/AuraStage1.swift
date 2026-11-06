@@ -10,6 +10,95 @@ public enum AuraStage1Format {
   public static func usesMachO(chipID: UInt64) -> Bool {
     (0x8130...0x8FFF).contains(chipID) || (0x6040...0x6FFF).contains(chipID)
   }
+
+  /// The ESP file a raw Stage 1, or a Mach-O Stage 1 enrolled without padding, loads.
+  public static let standardStage2Path = "m1n1/boot.bin"
+  /// The ESP file a padded Stage 1 loads. Package updates on Mach-O chips write
+  /// this one and leave `standardStage2Path` alone, so an unpadded Stage 1 can
+  /// never load a Stage 2 that needs the larger window.
+  public static let confinedStage2Path = "m1n1/boot-ctxr.bin"
+
+  public static func stage2Path(machO: Bool) -> String {
+    machO ? confinedStage2Path : standardStage2Path
+  }
+}
+
+/// The configuration block in aura's Stage 1 (aura src/stage1_config.c): magic,
+/// then version, proxy window, a NUL-padded ESP PARTUUID and a NUL-padded Stage 2
+/// path, then the CRC-32 of those fields. It reads the same in a raw image and in
+/// the boot object that carries one.
+public enum Stage1Configuration {
+  public struct Invalid: Error, LocalizedError {
+    public let reason: String
+    public var errorDescription: String? {
+      "The startup software's configuration is invalid: \(reason)."
+    }
+  }
+
+  static let magic = Data("AURORA-S1-CFG01\0".utf8)
+  static let uuidRange = 8..<48
+  static let pathRange = 48..<240
+
+  /// The ESP and Stage 2 a filled Stage 1 chainloads.
+  public static func read(_ image: Data) throws -> (espUUID: String, stage2Path: String) {
+    let (_, body) = try block(in: Data(image))
+    let uuid = body[uuidRange].prefix { $0 != 0 }
+    let path = body[pathRange].prefix { $0 != 0 }
+    guard uuid.count == 36,
+      body[(uuidRange.lowerBound + 36)..<uuidRange.upperBound].allSatisfy({ $0 == 0 }),
+      UUID(uuidString: String(decoding: uuid, as: UTF8.self)) != nil,
+      path.first == UInt8(ascii: ";"),
+      body[(pathRange.lowerBound + path.count)..<pathRange.upperBound].allSatisfy({ $0 == 0 })
+    else { throw Invalid(reason: "it names no startup partition and path") }
+    return (
+      String(decoding: uuid, as: UTF8.self), String(decoding: path.dropFirst(), as: UTF8.self)
+    )
+  }
+
+  /// Returns `image` chainloading `stage2Path`, with every other byte unchanged.
+  public static func retargeted(_ image: Data, stage2Path: String) throws -> Data {
+    let image = Data(image)
+    _ = try read(image)
+    let encoded = Array((";" + stage2Path).utf8)
+    guard encoded.count < pathRange.count, stage2Path.utf8.count > 0,
+      stage2Path.utf8.allSatisfy({ $0 >= 0x20 && $0 < 0x7F && $0 != 0x3B && $0 != 0x5C })
+    else { throw Invalid(reason: "its Stage 2 path cannot be stored") }
+    let (offset, fields) = try block(in: image)
+    var body = fields
+    body.replaceSubrange(
+      pathRange, with: encoded + [UInt8](repeating: 0, count: pathRange.count - encoded.count))
+    var result = image
+    result.replaceSubrange(
+      offset..<(offset + body.count + 4),
+      with: body + withUnsafeBytes(of: crc32(body).littleEndian, Array.init))
+    return result
+  }
+
+  /// The block's offset past its magic, and its fields without the CRC.
+  private static func block(in image: Data) throws -> (Int, [UInt8]) {
+    guard let first = image.range(of: magic),
+      image.range(of: magic, in: first.upperBound..<image.endIndex) == nil,
+      first.upperBound + pathRange.upperBound + 4 <= image.endIndex
+    else { throw Invalid(reason: "it has no single configuration block") }
+    let bytes = [UInt8](image[first.upperBound..<(first.upperBound + pathRange.upperBound + 4)])
+    let body = Array(bytes.prefix(pathRange.upperBound))
+    func word(_ at: Int) -> UInt32 {
+      (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[at + $1]) << (8 * $1) }
+    }
+    guard word(0) == 1, word(pathRange.upperBound) == crc32(body) else {
+      throw Invalid(reason: "its version or checksum is wrong")
+    }
+    return (first.upperBound, body)
+  }
+
+  private static func crc32(_ bytes: [UInt8]) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for byte in bytes {
+      crc ^= UInt32(byte)
+      for _ in 0..<8 { crc = crc >> 1 ^ (crc & 1 == 0 ? 0 : 0xEDB8_8320) }
+    }
+    return ~crc
+  }
 }
 
 /// Checks a Mach-O Stage 1 before kmutil enrolls it. kmutil records the size
@@ -206,6 +295,17 @@ public struct ExpandedMachOBootObject {
   public let readOnlySize: UInt64
 
   public var size: UInt64 { UInt64(head.count) + padding + UInt64(tail.count) }
+
+  /// The file is sparse, but kmutil reads and compresses all of it and where it
+  /// works isn't documented, so its enrollment counts the whole decompressed size.
+  public func requireSpace(freeBytes: UInt64) throws {
+    guard freeBytes >= size else {
+      throw WriteFailure(
+        reason:
+          "this volume has \(freeBytes >> 20) MiB free and it needs \((size + (1 << 20) - 1) >> 20) MiB"
+      )
+    }
+  }
 
   /// Atomically writes the object as a sparse file, which costs about what the
   /// original object does on APFS. Only `head` and `tail` are read back: a new

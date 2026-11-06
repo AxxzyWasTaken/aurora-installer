@@ -26,7 +26,7 @@ struct RecoveryFailure: Error { let message: String }
         preconditionFailure("Changed bundle accepted")
       } catch {}
     }
-    // A resumed setup keeps the window it started with; an earlier journal has none.
+    // A raw setup records no window; a padded setup keeps the one it started with.
     let plain = RecoveryInstallationJournal(
       operation: "operation-" + UUID().uuidString, systemUUID: "system", groupUUID: "group",
       espUUID: "esp", stage1SHA256: "first", stage2SHA256: "second", originalFiles: [],

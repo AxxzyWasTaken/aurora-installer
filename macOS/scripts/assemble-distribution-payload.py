@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import plistlib
 import re
+import struct
 import sys
 import zipfile
 
@@ -39,25 +40,120 @@ def regular(path):
 
 
 MAX_CONFINED_STAGE2_BYTES = 16 << 20
+CONFINED_STAGE2 = re.compile(r'boot-ctxr(?:-(j[0-9]+[a-z]*))?\.bin')
+FDT_MAGIC = b'\xd0\x0d\xfe\xed'
+
+
+def uses_macho(chip):
+    """The native installer's AuraStage1Format.usesMachO: M4 and later."""
+    return 0x8130 <= chip <= 0x8FFF or 0x6040 <= chip <= 0x6FFF
+
+
+def fdt_root_compatible(blob):
+    """The root node's compatible strings of the device tree at the start of blob."""
+    if len(blob) < 40:
+        raise ValueError('short device tree')
+    magic, total, structure, strings = struct.unpack_from('>4I', blob)
+    strings_size, structure_size = struct.unpack_from('>2I', blob, 32)
+    if (magic != 0xD00DFEED or total > len(blob) or structure + structure_size > total
+            or strings + strings_size > total):
+        raise ValueError('invalid device tree header')
+    end = structure + structure_size
+    if struct.unpack_from('>I', blob, structure)[0] != 1:
+        raise ValueError('device tree has no root node')
+    name_end = blob.find(b'\0', structure + 4, end)
+    if name_end < 0 or name_end != structure + 4:
+        raise ValueError('invalid device tree root name')
+    cursor = (name_end + 4) & ~3
+    while cursor + 4 <= end:
+        token = struct.unpack_from('>I', blob, cursor)[0]
+        cursor += 4
+        if token == 4:
+            continue
+        if token != 3 or cursor + 8 > end:
+            break
+        size, name = struct.unpack_from('>II', blob, cursor)
+        cursor += 8
+        key = blob[strings + name:blob.find(b'\0', strings + name)]
+        value = blob[cursor:cursor + size]
+        cursor = (cursor + size + 3) & ~3
+        if key == b'compatible':
+            return [item.decode('ascii', 'replace') for item in value.split(b'\0') if item]
+    raise ValueError('device tree root has no compatible')
+
+
+def board_chip(path, board):
+    """The chip that a board Stage 2's own device tree names."""
+    data = regular(path).read_bytes()
+    cursor = data.find(FDT_MAGIC)
+    while cursor >= 0:
+        try:
+            compatible = fdt_root_compatible(data[cursor:])
+        except (ValueError, struct.error):
+            compatible = []
+        if compatible and compatible[0] == 'apple,' + board:
+            for entry in compatible:
+                found = re.fullmatch(r'apple,t([0-9a-f]{4})', entry)
+                if found:
+                    return int(found[1], 16)
+            raise ValueError(path.name + ' names no chip for ' + board)
+        cursor = data.find(FDT_MAGIC, cursor + 1)
+    raise ValueError(path.name + ' has no device tree for ' + board)
+
+
+def check_confined_stage2(bundle, stage2_members):
+    """The Stage 2 that a padded Mach-O Stage 1 loads, where the payload has one.
+
+    One payload serves every Mac, so a payload without these files still
+    assembles, and the native installer refuses M4 and later Macs on it. Where
+    they are present, each M4 or later board must find one the way the native
+    installer looks: its own boot-ctxr-<board>.bin, else boot-ctxr.bin.
+    Returns the members, for the metadata to declare.
+    """
+    esp = bundle / 'esp'
+    confined = sorted((esp / 'm1n1').glob('boot-ctxr*.bin'))
+    if not confined:
+        return []
+    if not (esp / 'aurora/stage1.macho').exists():
+        raise ValueError('boot-ctxr files need esp/aurora/stage1.macho, the Stage 1 that loads them')
+    boards = {member.removeprefix('esp/m1n1/boot-').removesuffix('.bin'): bundle / member
+              for member in stage2_members.values()}
+    shared, own = False, set()
+    for path in confined:
+        found = CONFINED_STAGE2.fullmatch(path.name)
+        if not found:
+            raise ValueError('unexpected Stage 2 file ' + path.name)
+        size = regular(path).stat().st_size
+        if not size:
+            raise ValueError(path.name + ' is empty')
+        if size > MAX_CONFINED_STAGE2_BYTES:
+            raise ValueError(path.name + ' is larger than the 16 MiB slot aura keeps for it')
+        board = found[1]
+        if board is None:
+            shared = True
+        elif board in boards and uses_macho(board_chip(boards[board], board)):
+            own.add(board)
+        else:
+            raise ValueError(path.name + ' is for a board without an M4 or later Stage 2 here')
+    if not shared:
+        missing = sorted(board for board, path in boards.items()
+                         if board not in own and uses_macho(board_chip(path, board)))
+        if missing:
+            raise ValueError('no boot-ctxr file for the M4 or later boards ' + ', '.join(missing))
+    return ['esp/m1n1/' + path.name for path in confined]
 
 
 def check_stage1_macho(esp):
-    """M4 and later Macs enroll aura's Mach-O boot object for the common Stage 1,
-    padded, and it loads m1n1/boot-ctxr.bin. The installer refuses those Macs
-    without both, and there is no raw fallback for them.
+    """M4 and later Macs enroll aura's Mach-O boot object for the common Stage 1.
+    A payload without one still serves M1 to M3, and the native installer
+    refuses the later Macs on it.
 
     aura's tools/macho_boot_object.py carries the raw image unchanged at the
     start of __TEXT_EXEC, file offset 0x10000, with no __TEXT_BOOT_EXEC.
     """
     path = esp / 'aurora/stage1.macho'
     if not path.exists():
-        raise ValueError('M4 and later Macs need esp/aurora/stage1.macho')
-    confined = [regular(p) for p in (esp / 'm1n1').glob('boot-ctxr*.bin')]
-    if not any(p.stat().st_size for p in confined):
-        raise ValueError('M4 and later Macs need esp/m1n1/boot-ctxr.bin or a board file for it')
-    for p in confined:
-        if p.stat().st_size > MAX_CONFINED_STAGE2_BYTES:
-            raise ValueError(p.name + ' is larger than the 16 MiB slot aura keeps for it')
+        return
     raw = regular(esp / 'aurora/stage1.bin').read_bytes()
     obj = regular(path).read_bytes()
     if (obj[:4] != b'\xcf\xfa\xed\xfe' or int.from_bytes(obj[12:16], 'little') != 12
@@ -101,6 +197,7 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     if 'j614sap' not in stage2_members:
         raise ValueError('the J614s requires a current board-specific Stage 2')
     check_stage1_macho(bundle / 'esp')
+    confined = check_confined_stage2(bundle, stage2_members)
     distribution_icon = regular(DISTRIBUTION_ICONS[profile.split('-')[0]])
     expected_layout = {'fedora': 'fedora', 'arch': 'alarm', 'nixos': 'nixos'}[profile.split('-')[0]] + '-btrfs-v1'
     if image['layout_kind'] != expected_layout or image['root_subvolume'] != 'root':
@@ -179,6 +276,12 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     }}
     if stage2_members:
         template['aurora_stage2'] = {'kind': 'board-file-v1', 'board_members': stage2_members}
+    # What M4 and later Macs start from, so the installer can refuse one before
+    # it downloads anything large. It checks the payload against this later.
+    template['aurora_macho_boot'] = {
+        'kind': 'padded-ctxr-v1',
+        'stage1_member': 'esp/aurora/stage1.macho' if (bundle / 'esp/aurora/stage1.macho').exists() else None,
+        'confined_members': confined}
     # The payload admits every supported Mac, including the MacBook Neo. The
     # native installer derives the Neo's firmware, calibration and radio
     # policy on the Mac itself; the payload carries none of them.

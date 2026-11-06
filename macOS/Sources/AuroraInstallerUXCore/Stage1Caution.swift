@@ -16,7 +16,7 @@
       "Support for this 14-inch MacBook Pro is experimental: the Aurora team has not started Aurora on one yet. It shares the M4 Pro chip and aura’s Stage 1 with the tested 16-inch model, but its own board is untested, so Aurora may not start."
 
     private static let preliminaryOLED =
-      "Support for this MacBook Pro with the OLED touchscreen is preliminary and untested on hardware. Nobody on the Aurora team has one yet. Its Linux device tree is new and untested, the touchscreen and the glowing Apple logo do not work yet, and the built-in display works only as a simple boot screen until the display driver supports it. Aurora may not start."
+      "Support for this MacBook Pro with the OLED touchscreen is preliminary and untested on hardware. Nobody on the Aurora team has one yet. Its Linux device tree is new and untested, the touchscreen does not work yet, the glowing Apple logo is untested, and the built-in display works only as a simple boot screen until the display driver supports it. Aurora may not start."
 
     static let reasons: [String: String] = [
       "apple,j575d": untriedChip,

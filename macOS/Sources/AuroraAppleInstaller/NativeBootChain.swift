@@ -14,12 +14,16 @@
     case missingMachOStage1
     /// The payload has no Stage 2 for a padded Stage 1 to load.
     case missingConfinedStage2
+    /// That Stage 2 is larger than the slot aura keeps, so it could not load.
+    case confinedStage2TooLarge
   }
 
   struct NativeBootChainAdmission: Equatable, Sendable {
     let stage1Member: String?
     /// The Mach-O boot object wrapping the common Stage 1, for chips that use it.
     var stage1MachOMember: String? = nil
+    /// The padded object's whole size, which enrollment needs room for.
+    var expandedStage1Bytes: UInt64? = nil
     let windowMilliseconds: UInt32
     let espLayout: [String: String]
 
@@ -63,6 +67,7 @@
       let common = members[commonStage1] != nil && qualified.contains(firmware)
       var stage1: String?
       var stage1MachO: String?
+      var expandedStage1: UInt64?
       var window: UInt32 = 0
       if machOStage1, !common || members[commonStage1MachO] == nil {
         throw NativeBootChainError.missingMachOStage1
@@ -86,8 +91,10 @@
           windowMilliseconds: window)
         if machOStage1, let object = members[commonStage1MachO] {
           do {
-            _ = try MachOBootObject.fill(
+            // Recovery pads the object after partitioning, so refuse here what it would refuse.
+            let carried = try MachOBootObject.fill(
               try await archive.read(object, maximumBytes: 64 << 20), raw: bytes, filled: filled)
+            expandedStage1 = try MachOBootObject.expandExecuteWindow(carried).size
           } catch is MachOBootObject.Invalid {
             throw NativeBootChainError.invalidStage1
           }
@@ -110,10 +117,13 @@
           })?.key,
           let file = members[confined], file.sizeBytes > 0
         else { throw NativeBootChainError.missingConfinedStage2 }
+        guard UInt64(file.sizeBytes) <= ExecuteWindow.auraSlot else {
+          throw NativeBootChainError.confinedStage2TooLarge
+        }
       }
       return NativeBootChainAdmission(
-        stage1Member: stage1, stage1MachOMember: stage1MachO, windowMilliseconds: window,
-        espLayout: layout)
+        stage1Member: stage1, stage1MachOMember: stage1MachO, expandedStage1Bytes: expandedStage1,
+        windowMilliseconds: window, espLayout: layout)
     }
 
     static func qualifiedFirmware(template: [String: Any], board: String) throws -> [String] {

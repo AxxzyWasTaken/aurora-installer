@@ -155,6 +155,7 @@
             "stage2_path": boot.stage2Path, "confined_stage2_missing": confinedStage2Missing,
           ]
           if let member = boot.stage1MachOMember { chain["stage1_macho_member"] = member }
+          if let bytes = boot.expandedStage1Bytes { chain["expanded_stage1_bytes"] = bytes }
           if let member = boot.stage1Member,
             let stage = archive.members.first(where: { $0.name == member })
           {

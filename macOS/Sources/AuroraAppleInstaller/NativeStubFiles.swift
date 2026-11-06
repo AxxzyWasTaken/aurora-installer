@@ -9,6 +9,9 @@
     /// Refuses, before the first disk change, a stage macOS lacks the free
     /// space for. Throws `MacOSFreeSpaceShortfall` with the stage's needs.
     func requireStagingSpace(journal: URL) throws
+    /// Refuses, before the first disk change, a stub too small for the padded
+    /// Stage 1 Recovery enrolls there.
+    func requireRoom(forExpandedStage1 bytes: UInt64) throws
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization,
       sourceBootstrap: NativeSourceBootstrap) async throws
@@ -16,6 +19,23 @@
   extension NativeStubFilesExecuting {
     var firmwarePlan: NativeStubFilePlan? { nil }
     func requireStagingSpace(journal: URL) throws {}
+    func requireRoom(forExpandedStage1 bytes: UInt64) throws {}
+  }
+
+  /// Room on the stub for what Recovery adds after the restore. The padded file is
+  /// sparse, but kmutil reads and compresses all of it, so its whole size counts.
+  enum NativeEnrollmentSpace {
+    /// The Recovery app and the installation data kept beside it.
+    static let recoveryDataBytes: UInt64 = 512 << 20
+
+    static func require(stubBytes: UInt64, restoredBytes: UInt64, expandedStage1: UInt64) throws {
+      let (kept, overflowed) = restoredBytes.addingReportingOverflow(recoveryDataBytes)
+      let (needed, overflow) = kept.addingReportingOverflow(expandedStage1)
+      guard !overflowed, !overflow, needed <= stubBytes else {
+        throw NativeStubFileError.noRoomForStage1(
+          requiredBytes: overflowed || overflow ? .max : needed, stubBytes: stubBytes)
+      }
+    }
   }
 
   protocol NativeStubFilesPreparing: Sendable {
@@ -200,6 +220,12 @@
         source.end > offsetBytes
       else { return 0 }
       return min(lengthBytes, source.end - offsetBytes)
+    }
+
+    func requireRoom(forExpandedStage1 bytes: UInt64) throws {
+      try NativeEnrollmentSpace.require(
+        stubBytes: plan.source.stubBytes, restoredBytes: plan.estimatedStubBytes,
+        expandedStage1: bytes)
     }
 
     func requireStagingSpace(journal: URL) throws {

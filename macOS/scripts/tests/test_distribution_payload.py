@@ -84,6 +84,10 @@ class DistributionPayloadTests(unittest.TestCase):
         shared.write_bytes(b'')
         with self.assertRaisesRegex(ValueError, 'boot-ctxr'):
             payload.assemble(self.bundle, self.app, self.root / 'empty-stage-two', release_id='fixture')
+        with shared.open('wb') as stream:
+            stream.truncate((16 << 20) + 1)
+        with self.assertRaisesRegex(ValueError, '16 MiB'):
+            payload.assemble(self.bundle, self.app, self.root / 'large-stage-two', release_id='fixture')
         shared.unlink()
         (self.bundle / 'esp/m1n1/boot-ctxr-j700.bin').write_bytes(b'board file')
         output = self.root / 'board-file'

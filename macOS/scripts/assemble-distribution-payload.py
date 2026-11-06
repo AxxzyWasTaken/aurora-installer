@@ -38,6 +38,9 @@ def regular(path):
     return path
 
 
+MAX_CONFINED_STAGE2_BYTES = 16 << 20
+
+
 def check_stage1_macho(esp):
     """M4 and later Macs enroll aura's Mach-O boot object for the common Stage 1,
     padded, and it loads m1n1/boot-ctxr.bin. The installer refuses those Macs
@@ -49,8 +52,12 @@ def check_stage1_macho(esp):
     path = esp / 'aurora/stage1.macho'
     if not path.exists():
         raise ValueError('M4 and later Macs need esp/aurora/stage1.macho')
-    if not any(regular(p).stat().st_size for p in (esp / 'm1n1').glob('boot-ctxr*.bin')):
+    confined = [regular(p) for p in (esp / 'm1n1').glob('boot-ctxr*.bin')]
+    if not any(p.stat().st_size for p in confined):
         raise ValueError('M4 and later Macs need esp/m1n1/boot-ctxr.bin or a board file for it')
+    for p in confined:
+        if p.stat().st_size > MAX_CONFINED_STAGE2_BYTES:
+            raise ValueError(p.name + ' is larger than the 16 MiB slot aura keeps for it')
     raw = regular(esp / 'aurora/stage1.bin').read_bytes()
     obj = regular(path).read_bytes()
     if (obj[:4] != b'\xcf\xfa\xed\xfe' or int.from_bytes(obj[12:16], 'little') != 12

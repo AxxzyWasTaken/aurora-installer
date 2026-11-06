@@ -315,6 +315,9 @@
           stage = .stubFiles
           try InstallerPerformance.measure("staging_space") {
             try stubFiles.requireStagingSpace(journal: journal)
+            if let expanded = espFiles.expandedStage1Bytes {
+              try stubFiles.requireRoom(forExpandedStage1: expanded)
+            }
           }
           preparedAPFS = apfs
           preparedStubFiles = stubFiles
@@ -447,6 +450,12 @@
         return (.planIntegrity, "This installer has no \(stage.step) step for this plan.")
       case NativeStubFileError.cacheFull, NativeStubFileError.freeSpaceUnavailable:
         return (.unclassified, stagingSummary(error))
+      case NativeStubFileError.noRoomForStage1:
+        return (
+          .planIntegrity,
+          "The startup container for this macOS version is too small for this Mac's startup "
+            + "software. Nothing on the disk changed."
+        )
       case is RestoreFailure:
         return (.firmwarePreparation, "The macOS restore image could not be read (\(name)).")
       case is CancellationError:

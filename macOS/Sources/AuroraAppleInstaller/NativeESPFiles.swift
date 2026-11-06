@@ -15,6 +15,8 @@
     let stage1: Data
     /// aura's Mach-O boot object for `stage1`, enrolled instead of it.
     var stage1MachO: Data? = nil
+    /// That object's whole size once padded.
+    var expandedStage1Bytes: UInt64? = nil
     let windowMilliseconds: UInt32
     let firmware: String
     let usesLegacyStage1: Bool
@@ -101,6 +103,7 @@
       else { throw NativePayloadPreflightError.invalidPartitions }
       return Self(
         archive: archive, entries: entries, icon: icon, stage1: bytes, stage1MachO: machO,
+        expandedStage1Bytes: boot.expandedStage1Bytes,
         windowMilliseconds: boot.windowMilliseconds, firmware: firmware, usesLegacyStage1: legacy)
     }
 
@@ -156,12 +159,15 @@
 
   protocol NativeESPFilesExecuting: Sendable {
     var requiresNativeFinishing: Bool { get }
+    /// What the padded Stage 1 needs room for on the stub, where one is enrolled.
+    var expandedStage1Bytes: UInt64? { get }
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization,
       sourceBootstrap: NativeSourceBootstrap) async throws
   }
   extension NativeESPFilesExecuting {
     var requiresNativeFinishing: Bool { false }
+    var expandedStage1Bytes: UInt64? { nil }
   }
   protocol NativeESPFilesPreparing: Sendable {
     func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
@@ -234,6 +240,7 @@
       try NativeESPFileStore.requireFAT($0)
     }
     var requiresNativeFinishing: Bool { plan.usesLegacyStage1 }
+    var expandedStage1Bytes: UInt64? { plan.expandedStage1Bytes }
 
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization,

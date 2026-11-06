@@ -312,6 +312,15 @@
 
     /// Every member whose body the stub stage reads from the archive. Links
     /// were read while admitting the plan.
+    /// Roughly what the stub keeps from the restore image: the members as the
+    /// archive stores them. The Recovery image takes about its stored size.
+    var estimatedStubBytes: UInt64 {
+      let sizes = Dictionary(
+        archive.members.map { ($0.name, UInt64($0.sizeBytes)) },
+        uniquingKeysWith: { first, _ in first })
+      return copies.reduce(UInt64(recoveryMember.sizeBytes)) { $0 + (sizes[$1.member] ?? 0) }
+    }
+
     var readMembers: [IPSWArchiveMember] {
       let members = Dictionary(uniqueKeysWithValues: archive.members.map { ($0.name, $0) })
       var seen = Set<String>()

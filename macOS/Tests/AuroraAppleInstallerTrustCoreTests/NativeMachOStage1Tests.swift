@@ -125,14 +125,28 @@
       } catch {}
     }
 
-    /// The fixture payload with `esp/aurora/stage1.macho` and `extra` added by zip(1).
+    /// `raw` with aura's load header, as padding requires, and its trailer kept last.
+    static func loadable(_ raw: Data) -> Data {
+      func le<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+        withUnsafeBytes(of: value.littleEndian, Array.init)
+      }
+      var image = Data(raw.dropLast(8))
+      image.append(Data(count: MachOBootObject.loadHeaderOffset - image.count))
+      image.append(contentsOf: Array("AURALOAD".utf8) + le(UInt32(1)) + le(UInt32(1)))
+      image.append(contentsOf: le(UInt64(0x18000)) + le(UInt64(0)))
+      return image + raw.suffix(8)
+    }
+
+    /// The fixture payload with its Stage 1 made `loadable`, and with
+    /// `esp/aurora/stage1.macho` and `extra` added by zip(1).
     static func payload(
-      extra: [String] = ["esp/m1n1/boot-ctxr.bin"], machO: @escaping (Data) -> Data
+      extra: [String] = ["esp/m1n1/boot-ctxr.bin"], extraBytes: [String: Int] = [:],
+      machO: @escaping (Data) -> Data
     ) async throws -> (Data, Data, Data) {
       let (metadata, payload, _) = try NativeESPFileTests.inputs()
       let archive = try await IPSWArchive.open(NativeRawImageWriterTests.Source(bytes: payload))
       let member = try XCTUnwrap(archive.members.first { $0.name == "esp/aurora/stage1.bin" })
-      let raw = try await archive.read(member, maximumBytes: 64 << 20)
+      let raw = loadable(try await archive.read(member, maximumBytes: 64 << 20))
       let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
         "aurora-macho-payload-" + UUID().uuidString)
       defer { try? FileManager.default.removeItem(at: directory) }
@@ -141,17 +155,20 @@
       try FileManager.default.createDirectory(
         at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
       try object.write(to: path)
+      let stage1 = directory.appendingPathComponent("esp/aurora/stage1.bin")
+      try raw.write(to: stage1)
       for name in extra {
         let file = directory.appendingPathComponent(name)
         try FileManager.default.createDirectory(
           at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(name.utf8).write(to: file)
+        try Data(count: extraBytes[name] ?? 16).write(to: file)
       }
       let zip = directory.appendingPathComponent("payload.zip")
       try payload.write(to: zip)
       let process = Process()
       process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-      process.arguments = ["-q", "-X", "-0", zip.path, "esp/aurora/stage1.macho"] + extra
+      process.arguments =
+        ["-q", "-X", "-0", zip.path, "esp/aurora/stage1.macho", "esp/aurora/stage1.bin"] + extra
       process.currentDirectoryURL = directory
       try process.run()
       process.waitUntilExit()
@@ -258,6 +275,77 @@
       } catch {
         XCTAssertEqual(error as? NativeBootChainError, .missingConfinedStage2)
       }
+    }
+
+    func testAConfinedStage2LargerThanAurasSlotIsRefused() async throws {
+      let name = "esp/m1n1/boot-ctxr.bin"
+      let (metadata, fits, _) = try await Self.payload(extraBytes: [name: 16 << 20]) {
+        Self.object(wrapping: $0)
+      }
+      _ = try await admit(fits, metadata: metadata, machO: true)
+      let (_, large, _) = try await Self.payload(extraBytes: [name: (16 << 20) + 1]) {
+        Self.object(wrapping: $0)
+      }
+      do {
+        _ = try await admit(large, metadata: metadata, machO: true)
+        XCTFail("A Stage 2 larger than the slot was admitted")
+      } catch {
+        XCTAssertEqual(error as? NativeBootChainError, .confinedStage2TooLarge)
+      }
+      // A raw chip never receives the file, so its size is no concern there.
+      _ = try await admit(large, metadata: metadata, machO: false)
+    }
+
+    func testAdmissionRefusesAnObjectRecoveryCouldNotPad() async throws {
+      let (metadata, payload, object) = try await Self.payload { Self.object(wrapping: $0) }
+      let admitted = try await admit(payload, metadata: metadata, machO: true)
+      let padded = try MachOBootObject.expandExecuteWindow(object)
+      XCTAssertEqual(admitted.expandedStage1Bytes, padded.size)
+      XCTAssertGreaterThan(try XCTUnwrap(admitted.expandedStage1Bytes), 146 << 20)
+      let raw = try await admit(payload, metadata: metadata, machO: false)
+      XCTAssertNil(raw.expandedStage1Bytes)
+      // No aura load header: it fills, but Recovery would refuse to pad it.
+      let (_, unpaddable, _) = try await Self.payload {
+        var other = $0
+        other.replaceSubrange(
+          MachOBootObject.loadHeaderOffset..<(MachOBootObject.loadHeaderOffset + 8),
+          with: Data(count: 8))
+        return Self.object(wrapping: other)
+      }
+      do {
+        _ = try await admit(unpaddable, metadata: metadata, machO: true)
+        XCTFail("Admitted an object that can't be padded")
+      } catch {
+        XCTAssertEqual(error as? NativeBootChainError, .invalidStage1)
+      }
+    }
+
+    func testEnrollmentSpaceCountsThePaddedObjectsWholeSizeBeforePartitioning() throws {
+      let expanded: UInt64 = 153_190_400
+      let reserve = NativeEnrollmentSpace.recoveryDataBytes
+      XCTAssertNoThrow(
+        try NativeEnrollmentSpace.require(
+          stubBytes: 5_999_951_872, restoredBytes: 3 << 30, expandedStage1: expanded))
+      let exact = 1 << 30 + reserve + expanded
+      XCTAssertNoThrow(
+        try NativeEnrollmentSpace.require(
+          stubBytes: exact, restoredBytes: 1 << 30, expandedStage1: expanded))
+      XCTAssertThrowsError(
+        try NativeEnrollmentSpace.require(
+          stubBytes: exact - 1, restoredBytes: 1 << 30, expandedStage1: expanded)
+      ) {
+        XCTAssertEqual(
+          $0 as? NativeStubFileError,
+          .noRoomForStage1(requiredBytes: exact, stubBytes: exact - 1))
+      }
+      XCTAssertThrowsError(
+        try NativeEnrollmentSpace.require(
+          stubBytes: .max, restoredBytes: .max, expandedStage1: expanded))
+      let (reason, summary) = PinnedAsahiEngineExecutor.preflightFailure(
+        stage: .stubFiles,
+        error: NativeStubFileError.noRoomForStage1(requiredBytes: 2, stubBytes: 1))
+      XCTAssertEqual(reason, .planIntegrity)
+      XCTAssertTrue(summary.contains("Nothing on the disk changed"), summary)
     }
 
     func testAPayloadWithoutTheConfinedStage2IsRefusedOnAMachOChip() async throws {

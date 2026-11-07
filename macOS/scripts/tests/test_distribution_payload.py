@@ -39,7 +39,7 @@ class DistributionPayloadTests(unittest.TestCase):
         (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'OmarchyRecovery',
             'OmarchyRecoveryBuildMode':'recovery','OmarchyRecoveryDataLayout':'external-install-data-v1'}))
 
-    def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s', 'j614s')):
+    def write_neo_stage_two(self, sha256=None, boards=('j700',) + payload.BOARD_STAGE2_REQUIRED):
         records = {}
         for board in boards:
             dedicated = self.bundle / ('esp/m1n1/boot-%s.bin' % board)
@@ -112,7 +112,9 @@ class DistributionPayloadTests(unittest.TestCase):
         qualified = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0][
             'aurora_stage1']['qualified_machines']
         caution = supported_models.stage1_caution()
-        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s'})
+        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
+                                        'apple,j624', 'apple,j715', 'apple,j773g', 'apple,j614c',
+                                        'apple,j773s', 'apple,j575c'})
         for identifier in list(caution) + ['apple,j314s', 'apple,j316s', 'apple,j314c', 'apple,j316c',
                                            'apple,j375c', 'apple,j375d']:
             self.assertIn(identifier.removeprefix('apple,') + 'ap', qualified)
@@ -122,7 +124,7 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertIn('j616sap', qualified)
 
     def test_public_payload_without_required_m4_stage_two_is_refused(self):
-        self.write_neo_stage_two(boards=('j700', 'j616s'))
+        self.write_neo_stage_two(boards=('j700',) + tuple(b for b in payload.BOARD_STAGE2_REQUIRED if b != 'j614s'))
         output = self.root / 'output'
         with self.assertRaisesRegex(ValueError, 'J614s requires a current board-specific'):
             payload.assemble(self.bundle, self.app, output, release_id='fixture')

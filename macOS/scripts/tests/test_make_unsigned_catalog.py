@@ -18,6 +18,11 @@ M3_MACS = [
     "apple,j514s", "apple,j514c", "apple,j514m", "apple,j516s", "apple,j516c",
     "apple,j516m",
 ]
+M4_MACS = [
+    "apple,j604", "apple,j623", "apple,j624", "apple,j713", "apple,j715",
+    "apple,j773g", "apple,j614s", "apple,j614c", "apple,j616s", "apple,j616c",
+    "apple,j773s", "apple,j575c",
+]
 BASE_URL = "https://downloads.example.test/releases/os-v1.0.0-mac.1.20260902"
 NOW = "2026-09-04T00:00:00Z"
 
@@ -250,18 +255,17 @@ class CatalogGeneratorTests(unittest.TestCase):
 
     def test_refused_and_unknown_macs_are_rejected_with_a_reason(self) -> None:
         for identifier, fragment in (
-            ("apple,j604", "not in scripts/supported-models.json"),
+            ("apple,j813", "not in scripts/supported-models.json"),
         ):
             document = json.loads(json.dumps(self.inputs))
             document["device_identifiers"].append(identifier)
             self.assertRejected(document, fragment)
 
-    def test_the_manifest_is_every_m1_m2_and_m3_mac_the_m4_boards_and_the_neo(self) -> None:
+    def test_the_manifest_is_every_m1_to_m4_mac_and_the_neo(self) -> None:
         manifest = json.loads(MANIFEST.read_text())
-        self.assertEqual(len(manifest["supported"]), 38)
+        self.assertEqual(len(manifest["supported"]), 48)
         self.assertIn("apple,j575d", manifest["supported"])
-        self.assertIn("apple,j614s", manifest["supported"])
-        self.assertIn("apple,j616s", manifest["supported"])
+        self.assertTrue(set(M4_MACS) <= set(manifest["supported"]))
         self.assertTrue(set(M3_MACS) <= set(manifest["supported"]))
         self.assertIn("apple,j700", manifest["supported"])
         self.assertEqual(manifest["refused"], {})
@@ -338,7 +342,7 @@ class CatalogGeneratorTests(unittest.TestCase):
     def test_a_developer_group_takes_only_developer_boards_or_moved_macs(self) -> None:
         for identifier, fragment in (
             ("apple,j293", "lists apple,j293 twice"),
-            ("apple,j604", "not a developer board"),
+            ("apple,j813", "not a developer board"),
         ):
             document = self.with_neo()
             document["developer_models"][0]["device_identifiers"] = [identifier]
@@ -389,7 +393,7 @@ class CatalogGeneratorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         path = self.directory / "catalog.json"
         catalog = json.loads(path.read_text())
-        catalog["models"].append(dict(catalog["models"][0], deviceIdentifier="apple,j604"))
+        catalog["models"].append(dict(catalog["models"][0], deviceIdentifier="apple,j813"))
         path.write_text(json.dumps(catalog))
         check = subprocess.run(
             [
@@ -402,7 +406,7 @@ class CatalogGeneratorTests(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(check.returncode, 0)
-        self.assertIn("apple,j604 is not in scripts/supported-models.json", check.stderr)
+        self.assertIn("apple,j813 is not in scripts/supported-models.json", check.stderr)
 
 
 if __name__ == "__main__":

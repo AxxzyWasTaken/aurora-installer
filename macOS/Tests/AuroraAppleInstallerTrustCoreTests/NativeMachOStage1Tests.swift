@@ -42,9 +42,11 @@
       let policy = try NativeInspectionPolicy.sealed()
       let chips = try policy.chipMinimum.keys.map { try XCTUnwrap(UInt64($0)) }
       XCTAssertFalse(chips.isEmpty)
-      // The table's M4-generation and later chips: T6040 (M4 Pro) and T8140 (A18 Pro).
+      // The table's M4-generation and later chips: T6040 (M4 Pro), T6041 (M4 Max),
+      // T8132 (M4) and T8140 (A18 Pro).
       XCTAssertEqual(
-        Set(chips.filter { AuraStage1Format.usesMachO(chipID: $0) }), [0x6040, 0x8140])
+        Set(chips.filter { AuraStage1Format.usesMachO(chipID: $0) }),
+        [0x6040, 0x6041, 0x8132, 0x8140])
       for chip in chips where !AuraStage1Format.usesMachO(chipID: chip) {
         XCTAssertTrue(chip < 0x6040 || (0x8000..<0x8130).contains(chip), String(chip, radix: 16))
       }

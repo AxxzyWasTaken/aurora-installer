@@ -15,9 +15,20 @@
     private static let untriedBoard =
       "Support for this 14-inch MacBook Pro is experimental: the Aurora team has not started Aurora on one yet. It shares the M4 Pro chip and aura’s Stage 1 with the tested 16-inch model, but its own board is untested, so Aurora may not start."
 
+    private static let untriedM4Board =
+      "Support for this Mac is experimental: the Aurora team has not started Aurora on one yet. It shares its M4-family chip and aura’s Stage 1 with a tested Mac, but its own board is untested, so Aurora may not start."
+
     static let reasons: [String: String] = [
       "apple,j575d": untriedChip,
       "apple,j614s": untriedBoard,
+      "apple,j604": untriedM4Board,
+      "apple,j623": untriedM4Board,
+      "apple,j624": untriedM4Board,
+      "apple,j715": untriedM4Board,
+      "apple,j773g": untriedM4Board,
+      "apple,j614c": untriedM4Board,
+      "apple,j773s": untriedM4Board,
+      "apple,j575c": untriedM4Board,
     ]
 
     public static func reason(for deviceIdentifier: String) -> String? {

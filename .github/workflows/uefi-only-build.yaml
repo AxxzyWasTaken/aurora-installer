@@ -35,13 +35,13 @@ jobs:
           path: linux
           sparse-checkout: 'arch/arm64/boot/dts/apple/'
 
-      # Aurora U-Boot 2026.07-gd30213eadcaa (aurora-wip, u-boot PR 28 merged), the U-Boot that
-      # ships with aura 1.0.0b5 (v1.0.0b5, 9a173ff5).
+      # Aurora U-Boot 2026.07-g279c4afa4bba (aurora-wip, u-boot PR 29 merged), the U-Boot the
+      # distributions ship with aura 1.0.0b5 (v1.0.0b5, 9a173ff5).
       - name: Checkout u-boot
         uses: actions/checkout@v5
         with:
           repository: aurora-silicon/u-boot
-          ref: d30213eadcaa886f4206d7661b61bc6cf7837828
+          ref: 279c4afa4bbaf600af1c2f493c75d8aadc206243
           path: u-boot
 
       - name: Install aarch64-linux-gnu- toolchain

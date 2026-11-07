@@ -232,7 +232,9 @@
           == evidence.installed.efiPartition.lowercased(),
         let bootMode = config["bootMode"] as? String,
         NativeRecoveryBootMode(rawValue: bootMode) != nil,
-        config["stage2Path"] as? String == "m1n1/boot.bin",
+        let stage2Path = config["stage2Path"] as? String,
+        stage2Path
+          == AuraStage1Format.stage2Path(machO: bootMode == NativeRecoveryBootMode.macho.rawValue),
         let name = config["volumeName"] as? String
       else {
         throw NativeHandoffValidationError.invalidTarget
@@ -276,7 +278,10 @@
       let espMembers = archive.members.filter {
         $0.name.hasPrefix("esp/") && !$0.name.hasSuffix("/")
       }
-      let layout = try evidence.espLayout(members: Set(espMembers.map(\.name)), firmware: firmware)
+      // Only a Mach-O configuration names the confined Stage 2 (checked above).
+      let layout = try evidence.espLayout(
+        members: Set(espMembers.map(\.name)), firmware: firmware,
+        machOStage1: stage2Path == AuraStage1Format.confinedStage2Path)
       var treeHash = SHA256()
       var installedBytes: UInt64 = 0
       for member in espMembers.sorted(by: { $0.name.utf8.lexicographicallyPrecedes($1.name.utf8) })

@@ -108,7 +108,7 @@ enum RecoveryBaseline {
   // All backups finish before the first ESP write. Include the currently
   // attempted file in rollback because a writer can fail after replacing it.
   static func restore(
-    files: [String: Data], root: URL, backup: URL,
+    files: [String: Data], root: URL, backup: URL, stage2Path: String = RecoveryBaseline.stage2Path,
     write: (Data, URL) throws -> Void
   ) throws {
     let required = Set([stage2Path] + vendorPaths)

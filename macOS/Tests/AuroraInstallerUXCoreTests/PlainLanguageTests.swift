@@ -300,6 +300,19 @@
       }
     }
 
+    func testAResetOnlyErasingFixesOffersEraseLinuxNotCheckAgain() throws {
+      let summary =
+        "This installation was set up by an earlier Aurora installer, and this one can't reset it."
+      let display = PlainLanguage.engineFailure(
+        EngineFailureNotice(
+          reason: .reinstallRequired, exitStatus: 1, diskUnchanged: true, summary: summary),
+        technicalDetail: "detail")
+      XCTAssertEqual(display.plainDetail, summary + " No disk changes were made.")
+      let remedy = try XCTUnwrap(display.remedy)
+      XCTAssertTrue(remedy.contains("Erase Linux"), remedy)
+      XCTAssertFalse(remedy.contains("Check again"), remedy)
+    }
+
     func testASpaceFailureShowsItsNumbersAndNeverAReleaseMismatch() throws {
       let summary =
         "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "

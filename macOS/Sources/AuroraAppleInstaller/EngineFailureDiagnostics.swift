@@ -36,6 +36,9 @@
     /// summary names the space needed and the space free, in gigabytes.
     /// Older apps show this as unclassified.
     case macOSSpaceRequired = 10
+    /// The installation can't be reset by this installer, only erased and
+    /// installed again. Older apps show this as unclassified.
+    case reinstallRequired = 11
 
     private static let macOSUpdatePrefix = "This Mac needs macOS "
     private static let macOSUpdateSuffix = " or later."

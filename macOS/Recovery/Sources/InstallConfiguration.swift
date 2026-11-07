@@ -29,8 +29,9 @@ struct InstallConfiguration: Decodable {
         && (object["allowCustomBootArguments"] == nil || object["allowCustomBootArguments"] is Bool)
     else { throw InstallConfigurationError.invalid }
     let config = try JSONDecoder().decode(Self.self, from: data)
-    guard config.schema == 2, AuraBootMode(rawValue: config.bootMode) != nil,
-      config.stage2Path == "m1n1/boot.bin",
+    // A raw Stage 1 loads the standard Stage 2, and a padded Mach-O one the confined one.
+    guard config.schema == 2, let mode = AuraBootMode(rawValue: config.bootMode),
+      config.stage2Path == AuraStage1Format.stage2Path(machO: mode == .macho),
       !config.volumeName.isEmpty, config.volumeName.count <= 80,
       !config.volumeName.contains("/"),
       config.volumeName.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })

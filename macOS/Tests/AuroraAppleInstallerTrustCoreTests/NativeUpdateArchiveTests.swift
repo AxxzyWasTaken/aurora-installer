@@ -407,6 +407,46 @@
       }
     }
 
+    func testThePaddedStage1NeedsRoomBesideWhatTheStubRestores() async throws {
+      let fixture = try NativeStubFileTests.ExecutionFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.directory) }
+      let archive = try Self.vectors().archive("full")
+      func plan(stubBytes: UInt64) async throws -> NativeStubFilePlan {
+        try await NativeStubFilePlan(
+          archive: IPSWArchive.open(NativeStubFileTests.Source(bytes: archive)),
+          source: NativeFirmwareSelection(
+            version: "14.8.3", sourceURL: Self.updateArchive(), stubBytes: stubBytes),
+          deviceClass: "j613ap", boardID: 0x30, chipID: 0x8122)
+      }
+      let probe = try await plan(stubBytes: 2_499_805_184)
+      // The Recovery image counts as it is decoded, as the plan's size limit counts it.
+      let recovery = try XCTUnwrap(probe.recoveryImage)
+      XCTAssertNotEqual(recovery.outputBytes, probe.recoveryMember.sizeBytes)
+      let sizes = Dictionary(
+        probe.archive.members.map { ($0.name, UInt64($0.sizeBytes)) },
+        uniquingKeysWith: { first, _ in first })
+      let restored = probe.copies.reduce(UInt64(recovery.outputBytes)) {
+        $0 + sizes[$1.member]!
+      }
+      XCTAssertEqual(probe.estimatedStubBytes, restored)
+      let expanded: UInt64 = 153_190_400
+      let needed = restored + NativeEnrollmentSpace.recoveryDataBytes + expanded
+      for stub in [needed, needed - 1] {
+        let execution = NativeStubFilesExecution(
+          package: fixture.package, approved: fixture.approved,
+          plan: try await plan(stubBytes: stub), owner: geteuid(), platform: fixture.platform,
+          cache: nil)
+        if stub == needed {
+          XCTAssertNoThrow(try execution.requireRoom(forExpandedStage1: expanded))
+        } else {
+          XCTAssertThrowsError(try execution.requireRoom(forExpandedStage1: expanded)) {
+            XCTAssertEqual(
+              $0 as? NativeStubFileError, .noRoomForStage1(requiredBytes: needed, stubBytes: stub))
+          }
+        }
+      }
+    }
+
     /// An execution over the full vector whose Recovery member body read
     /// can be intercepted.
     func interceptable(_ fixture: NativeStubFileTests.ExecutionFixture) async throws -> (

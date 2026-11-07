@@ -10,14 +10,19 @@
       let path: String
     }
     let archive: IPSWArchive
-    let entries: [Entry]
+    var entries: [Entry]
     let icon: IPSWArchiveMember
     let stage1: Data
     /// aura's Mach-O boot object for `stage1`, enrolled instead of it.
     var stage1MachO: Data? = nil
+    /// That object's whole size once padded.
+    var expandedStage1Bytes: UInt64? = nil
     let windowMilliseconds: UInt32
     let firmware: String
     let usesLegacyStage1: Bool
+
+    /// The ESP file the Stage 1 this plan installs chainloads.
+    var stage2Path: String { AuraStage1Format.stage2Path(machO: stage1MachO != nil) }
 
     static func make(
       metadata: Data, archive: IPSWArchive, device: String, firmware: String,
@@ -90,6 +95,7 @@
       else { throw NativePayloadPreflightError.invalidPartitions }
       return Self(
         archive: archive, entries: entries, icon: icon, stage1: bytes, stage1MachO: machO,
+        expandedStage1Bytes: boot.expandedStage1Bytes,
         windowMilliseconds: boot.windowMilliseconds, firmware: firmware, usesLegacyStage1: legacy)
     }
 
@@ -116,17 +122,23 @@
       else { throw NativeBootChainError.invalidStage1 }
       let expected =
         usesLegacyStage1
-        ? try NativeLegacyStage1.fill(
-          stage1, uuid: espUUID.lowercased(), path: "m1n1/boot.bin")
+        ? try NativeLegacyStage1.fill(stage1, uuid: espUUID.lowercased(), path: stage2Path)
         : try NativeBootChain.fillStage1(
-          stage1, uuid: espUUID.lowercased(), path: "m1n1/boot.bin",
+          stage1, uuid: espUUID.lowercased(), path: stage2Path,
           windowMilliseconds: windowMilliseconds)
       if installed != expected {
+        // An earlier installer enrolled Mach-O Stage 1s unpadded, loading m1n1/boot.bin.
+        if stage1MachO != nil,
+          (try? Stage1Configuration.read(installed).stage2Path)
+            == AuraStage1Format.standardStage2Path
+        {
+          throw NativePreservedInstallError.earlierStage1
+        }
         guard allowDifferentStage1Code, !usesLegacyStage1 else {
           throw NativeBootChainError.invalidStage1
         }
         try NativeBootChain.validateInstalledStage1(
-          installed, uuid: espUUID.lowercased(), path: "m1n1/boot.bin")
+          installed, uuid: espUUID.lowercased(), path: stage2Path)
       }
       return NativeStubFileIdentity(
         bytes: installed.count, sha256: NativeStubFileStore.hash(installed))
@@ -135,12 +147,15 @@
 
   protocol NativeESPFilesExecuting: Sendable {
     var requiresNativeFinishing: Bool { get }
+    /// What the padded Stage 1 needs room for on the stub, where one is enrolled.
+    var expandedStage1Bytes: UInt64? { get }
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization,
       sourceBootstrap: NativeSourceBootstrap) async throws
   }
   extension NativeESPFilesExecuting {
     var requiresNativeFinishing: Bool { false }
+    var expandedStage1Bytes: UInt64? { nil }
   }
   protocol NativeESPFilesPreparing: Sendable {
     func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
@@ -213,6 +228,7 @@
       try NativeESPFileStore.requireFAT($0)
     }
     var requiresNativeFinishing: Bool { plan.usesLegacyStage1 }
+    var expandedStage1Bytes: UInt64? { plan.expandedStage1Bytes }
 
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization,
@@ -317,7 +333,7 @@
       } else {
         stage1 = try NativeBootChain.fillStage1(
           plan.stage1, uuid: esp.uuid.lowercased(),
-          path: "m1n1/boot.bin", windowMilliseconds: plan.windowMilliseconds)
+          path: plan.stage2Path, windowMilliseconds: plan.windowMilliseconds)
         legacy = nil
       }
       let stage1Identity = try await systemStore.data(stage1, at: Self.stage1Path)

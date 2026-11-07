@@ -2,6 +2,7 @@
   import AuroraFirmware
   import Darwin
   import Foundation
+  import RecoveryAccountCore
   import XCTest
   @testable import AuroraAppleInstallerTrustCore
 
@@ -274,6 +275,10 @@
         if machO || machOSource != nil {
           plan.stage1MachO = NativeMachOStage1Tests.object(
             wrapping: machOSource?(plan.stage1) ?? plan.stage1)
+          // A real payload carries its own file; any member not otherwise installed stands in.
+          if let member = plan.archive.members.first(where: { $0.name == "esp/m1n1/boot.bin" }) {
+            plan.entries.append(.init(member: member, path: AuraStage1Format.confinedStage2Path))
+          }
         }
         self.plan = plan
         esp = images.base.mounts.appendingPathComponent("disk0s5")

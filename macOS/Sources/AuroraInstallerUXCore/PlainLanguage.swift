@@ -631,6 +631,14 @@
             ? "Update the installer and choose Check again."
             : "Save the error details and check the verified installation record before trying again."
         )
+      case .reinstallRequired:
+        return FailureDisplay(
+          headline: "This installation can’t be reset",
+          plainDetail: cause,
+          technicalDetail: technicalDetail,
+          remedy:
+            "Choose Erase Linux to remove this installation, then install Aurora again. \(engineDiagnosticsLocation)"
+        )
       case .startOverRequired:
         return FailureDisplay(
           headline: "This installation can’t be continued",
@@ -970,6 +978,16 @@
             technicalDetail: technical,
             remedy:
               "Update macOS, then choose Check again. If this keeps happening, save the error details."
+          )
+        case .releaseLacksMachOStartup:
+          return FailureDisplay(
+            headline: blockedHeadline,
+            plainDetail:
+              "Macs with an M4-generation chip or later need startup software that this release’s images don’t include yet. The disk has not been changed.",
+            technicalDetail: technical,
+            remedy:
+              "Check for a newer \(windowTitle) release. Nothing on this Mac needs to change.",
+            isBlockedModel: true
           )
         case .firmwareArchiveUnsupported(let version):
           return FailureDisplay(

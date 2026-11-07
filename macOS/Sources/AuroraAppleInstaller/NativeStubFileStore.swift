@@ -12,6 +12,8 @@
     case cacheFull
     /// macOS could not report the free space of the installer's directory.
     case freeSpaceUnavailable
+    /// The fixed startup container can't also hold the padded Stage 1's enrollment.
+    case noRoomForStage1(requiredBytes: UInt64, stubBytes: UInt64)
   }
 
   struct NativeStubFileIdentity: Codable, Equatable, Sendable {

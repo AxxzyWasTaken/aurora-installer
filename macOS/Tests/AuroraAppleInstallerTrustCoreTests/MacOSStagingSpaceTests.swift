@@ -511,6 +511,81 @@
       }
     }
 
+    func testAMachOMacIsRefusedAtPlanningWhenTheReleaseLacksItsStartupSoftware() async throws {
+      let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+      defer { try? FileManager.default.removeItem(at: root) }
+      func staged(_ extra: [String: Any]) throws -> StagedInstallerArtifact {
+        var template: [String: Any] = [
+          "omarchy_target": "apple-silicon-full-os", "default_os_name": "Fixture",
+          "partitions": [["size": "1GiB"]],
+        ]
+        template.merge(extra) { _, new in new }
+        let data = try JSONSerialization.data(withJSONObject: ["os_list": [template]])
+        let url = root.appendingPathComponent(UUID().uuidString + ".json")
+        try data.write(to: url)
+        return StagedInstallerArtifact(
+          artifact: try PinnedInstallerArtifact(
+            role: "metadata", sourceURL: URL(string: "https://example.com/metadata.json")!,
+            fileName: "metadata.json", expectedDigest: SHA256Digest(hashing: data).rawValue,
+            expectedSizeBytes: UInt64(data.count)),
+          fileURL: url, reusedExistingFile: false)
+      }
+      struct Opened: Error {}
+      let neo = NativeInspectionHardware(
+        chipID: 0x8140, bootVersion: "mBoot-18000.161.10", macOSVersion: "26.6.2",
+        recoveryVersion: "25.7.83.0.0,0")
+      // Opening the restore image is as far as an admitted plan gets here.
+      let estimator = NativeStubStagingEstimator(
+        facts: { .init(deviceIdentifier: "apple,j700", hardware: neo) }, boardID: { 0x64 },
+        open: { _ in throw Opened() })
+      let qualified: [String: Any] = [
+        "aurora_stage1": [
+          "kind": "common-raw-v1", "qualified_machines": ["j700ap": ["26.6", "26.6.2"]],
+        ]
+      ]
+      func declaring(_ stage1: Bool, _ confined: [String]) -> [String: Any] {
+        qualified.merging([
+          "aurora_macho_boot": [
+            "kind": "padded-ctxr-v1",
+            "stage1_member": stage1 ? "esp/aurora/stage1.macho" as Any : NSNull(),
+            "confined_members": confined,
+          ]
+        ]) { _, new in new }
+      }
+      for (extra, refused) in [
+        ([:], true), (declaring(true, []), true),
+        (declaring(false, ["esp/m1n1/boot-ctxr.bin"]), true),
+        (qualified, false), (declaring(true, ["esp/m1n1/boot-ctxr-j700.bin"]), false),
+      ] as [([String: Any], Bool)] {
+        // Before anything downloads: the restore image is never opened for this.
+        let metadata = try staged(extra)
+        func check() throws {
+          try estimator.refuseUnstartableMachO(deviceIdentifier: "apple,j700", metadata: metadata)
+        }
+        if refused {
+          XCTAssertThrowsError(try check()) {
+            let error = $0 as? InstallerPlanPreparationError
+            XCTAssertEqual(error, .releaseLacksMachOStartup, "\(extra)")
+          }
+        } else {
+          XCTAssertNoThrow(try check(), "\(extra)")
+        }
+      }
+      // An M3 Mac starts from the raw Stage 1, so nothing here concerns it.
+      let m3 = NativeStubStagingEstimator(
+        facts: {
+          .init(
+            deviceIdentifier: "apple,j613",
+            hardware: NativeInspectionHardware(
+              chipID: 0x8122, bootVersion: "mBoot-18000.161.10", macOSVersion: "26.6.2",
+              recoveryVersion: "25.7.83.0.0,0"))
+        }, boardID: { 0x30 }, open: { _ in throw Opened() })
+      let plain = try staged([:])
+      XCTAssertNoThrow(
+        try m3.refuseUnstartableMachO(deviceIdentifier: "apple,j613", metadata: plain))
+    }
+
     private func inventory(_ candidates: [ValidatedEngineCandidate]) -> ValidatedEngineInventory {
       ValidatedEngineInventory(
         layoutDigest: "sha256:" + String(repeating: "a", count: 64),

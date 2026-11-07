@@ -147,6 +147,7 @@
       let marker: URL
       let images: URL
       var requiresNativeFinishing = false
+      var expandedStage1Bytes: UInt64? = nil
       func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
         any NativeESPFilesExecuting
       )? { self }
@@ -430,6 +431,7 @@
       var preflightError: (any Error & Sendable)? = nil
       var prepareError: (any Error & Sendable)? = nil
       var stagingError: (any Error & Sendable)? = nil
+      var roomError: (any Error & Sendable)? = nil
       func preflight(_ package: ImportedEngineHandoffPackage) async throws -> (
         any NativeStubFilesExecuting
       )? {
@@ -438,6 +440,9 @@
       }
       func requireStagingSpace(journal: URL) throws {
         if let stagingError { throw stagingError }
+      }
+      func requireRoom(forExpandedStage1 bytes: UInt64) throws {
+        if let roomError { throw roomError }
       }
       func prepare(
         journal: URL, authorization: MachineOwnerAuthorization,
@@ -452,7 +457,7 @@
 
     private func closureExecutor(
       _ fixture: PinnedExecutorFixture, files: ShortOfSpaceFilesFixture,
-      recordMutation: Bool = false
+      recordMutation: Bool = false, expandedStage1: UInt64? = nil
     ) -> PinnedAsahiEngineExecutor {
       let apfs = fixture.root.appendingPathComponent("apfs")
       let partitions = fixture.root.appendingPathComponent("partitions")
@@ -464,9 +469,29 @@
         stubFilesPreparer: files,
         osPartitionsPreparer: NativePartitionsFixture(marker: partitions, files: apfs),
         payloadImagesPreparer: NativeImagesFixture(marker: images, partitions: partitions),
-        espFilesPreparer: NativeESPFixture(marker: esp, images: images),
+        espFilesPreparer: NativeESPFixture(
+          marker: esp, images: images, expandedStage1Bytes: expandedStage1),
         installationFinisher: NativeFinishingFixture(
           esp: esp, marker: fixture.root.appendingPathComponent("finished")))
+    }
+
+    func testAStubWithoutRoomForThePaddedStage1StopsBeforeAnyDiskChange() async throws {
+      let fixture = try makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let files = ShortOfSpaceFilesFixture(
+        roomError: NativeStubFileError.noRoomForStage1(requiredBytes: 2, stubBytes: 1))
+      await assertThrowsErrorAsync(
+        try await closureExecutor(fixture, files: files, expandedStage1: 153_190_400).execute(
+          fixture.package, authorization: try machineOwnerAuthorization())
+      ) {
+        guard case .engineFailed(let report) = $0 as? PinnedAsahiEngineExecutionError else {
+          return XCTFail("Expected a typed failure")
+        }
+        XCTAssertTrue(report.notice.diskUnchanged)
+        XCTAssertTrue(report.notice.summary.contains("too small"), report.notice.summary)
+      }
+      XCTAssertFalse(
+        FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("apfs").path))
     }
 
     func testAStagingShortfallIsReportedAsMacOSSpaceBeforeAnyDiskChange() async throws {

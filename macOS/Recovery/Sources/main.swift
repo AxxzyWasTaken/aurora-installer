@@ -334,7 +334,7 @@ final class InstallerModel {
 
   private var installationTask: Task<Void, Never>?
   var bootSelection: BootSelection {
-    BootSelection(machoEnabled: RecoveryActions.configuredBootMode == .macho)
+    BootSelection(mode: RecoveryActions.configuredBootMode)
   }
 
   var steps: [String] {

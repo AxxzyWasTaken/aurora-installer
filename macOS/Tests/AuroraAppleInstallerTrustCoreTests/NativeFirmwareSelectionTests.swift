@@ -298,7 +298,11 @@
       let metadata = directory.appendingPathComponent("metadata.json")
       let payload = directory.appendingPathComponent("payload.zip")
       try Data(fixture.completeMetadata.utf8).write(to: metadata)
+      // This chip enrolls the padded Mach-O Stage 1, so the payload must carry it.
       try fixture.completeArchive.write(to: payload)
+      let (_, machOArchive, _) = try await NativeMachOStage1Tests.payload {
+        NativeMachOStage1Tests.object(wrapping: $0)
+      }
       let package = ImportedEngineHandoffPackage(
         packageURL: directory, manifestURL: directory.appendingPathComponent("manifest.json"),
         requestURL: directory.appendingPathComponent("request.json"),
@@ -311,6 +315,15 @@
       let hardware = NativeInspectionHardware(
         chipID: 0x8140, bootVersion: "mBoot-18000.161.10",
         macOSVersion: "26.6.2", recoveryVersion: "25.7.83.0.0,0")
+      do {
+        try await NativePayloadPreflight.check(
+          package, owner: geteuid(),
+          firmwareFacts: {
+            NativeFirmwareSelection.Facts(deviceIdentifier: "apple,j700", hardware: hardware)
+          })
+        XCTFail("A Mach-O chip was admitted without the Mach-O Stage 1")
+      } catch NativeBootChainError.missingMachOStage1 {}
+      try machOArchive.write(to: payload)
       try await NativePayloadPreflight.check(
         package, owner: geteuid(),
         firmwareFacts: {
@@ -339,7 +352,7 @@
           })
         XCTFail("Excluded host admitted by production preflight")
       } catch NativeBootChainError.unsupportedBoard {}
-      XCTAssertEqual(try Data(contentsOf: payload), fixture.completeArchive)
+      XCTAssertEqual(try Data(contentsOf: payload), machOArchive)
     }
   }
 #endif

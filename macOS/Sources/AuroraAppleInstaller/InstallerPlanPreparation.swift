@@ -21,6 +21,9 @@
     /// installer cannot prepare: one whose Recovery image patches an earlier
     /// one.
     case firmwareArchiveUnsupported(version: String)
+    /// This Mac boots a Mach-O Stage 1, and the release's metadata says its
+    /// images don't carry one, or the Stage 2 it loads, for this Mac.
+    case releaseLacksMachOStartup
   }
 
   public protocol InstallerPlanExecuting: Sendable {

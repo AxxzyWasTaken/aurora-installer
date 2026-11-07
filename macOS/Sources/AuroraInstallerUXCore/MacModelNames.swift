@@ -99,6 +99,8 @@
       "apple,j616c": mac("MacBook Pro 16-inch (M4 Max, 2024)", "MacBook Pro", "M4"),
       "apple,j773s": mac("Mac mini (M4 Pro, 2024)", "Mac mini", "M4"),
       "apple,j575c": mac("Mac Studio (M4 Max, 2025)", "Mac Studio", "M4"),
+      "apple,j813": mac("MacBook Air 13-inch (M5, 2026)", "MacBook Air", "M5"),
+      "apple,j873g": mac("Mac mini (M6)", "Mac mini", "M6"),
       "apple,j700": mac("MacBook Neo (A18 Pro, 2026)", "MacBook Neo", "A18 Pro"),
     ]
   }

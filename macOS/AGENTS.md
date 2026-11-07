@@ -52,10 +52,12 @@ Local source edits, pure tests, read-only inspection, and disposable artifacts
 are reversible. Obtain the owner's explicit authorization immediately before
 helper registration, privileged execution, disk or boot-policy mutation,
 signing or notarization with production credentials, publication, deployment,
-or physical-device work. Public builds keep unqualified boards such as
-`apple,j614s` fail-closed until official support and physical qualification
-both exist. Developer builds (`AuroraDeveloperBuild`, sealed developer
-catalog only) may admit unqualified boards their engine supports.
+or physical-device work. Public builds admit every Mac that Aurora's kernel
+has a device tree for (`scripts/supported-models.json`). A board the Aurora
+team has not booted stays installable: its `stage1_caution` warning names the
+risk and the recovery steps, and the owner acknowledges it before any disk
+change. Developer builds (`AuroraDeveloperBuild`, sealed developer catalog
+only) may add boards outside that list.
 
 ## Standalone repository conventions
 

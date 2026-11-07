@@ -23,6 +23,7 @@ M4_MACS = [
     "apple,j773g", "apple,j614s", "apple,j614c", "apple,j616s", "apple,j616c",
     "apple,j773s", "apple,j575c",
 ]
+M5_M6_MACS = ["apple,j813", "apple,j873g"]
 BASE_URL = "https://downloads.example.test/releases/os-v1.0.0-mac.1.20260902"
 NOW = "2026-09-04T00:00:00Z"
 
@@ -255,17 +256,18 @@ class CatalogGeneratorTests(unittest.TestCase):
 
     def test_refused_and_unknown_macs_are_rejected_with_a_reason(self) -> None:
         for identifier, fragment in (
-            ("apple,j813", "not in scripts/supported-models.json"),
+            ("apple,j999", "not in scripts/supported-models.json"),
         ):
             document = json.loads(json.dumps(self.inputs))
             document["device_identifiers"].append(identifier)
             self.assertRejected(document, fragment)
 
-    def test_the_manifest_is_every_m1_to_m4_mac_and_the_neo(self) -> None:
+    def test_the_manifest_is_every_m1_to_m6_mac_and_the_neo(self) -> None:
         manifest = json.loads(MANIFEST.read_text())
-        self.assertEqual(len(manifest["supported"]), 48)
+        self.assertEqual(len(manifest["supported"]), 50)
         self.assertIn("apple,j575d", manifest["supported"])
         self.assertTrue(set(M4_MACS) <= set(manifest["supported"]))
+        self.assertTrue(set(M5_M6_MACS) <= set(manifest["supported"]))
         self.assertTrue(set(M3_MACS) <= set(manifest["supported"]))
         self.assertIn("apple,j700", manifest["supported"])
         self.assertEqual(manifest["refused"], {})
@@ -342,7 +344,7 @@ class CatalogGeneratorTests(unittest.TestCase):
     def test_a_developer_group_takes_only_developer_boards_or_moved_macs(self) -> None:
         for identifier, fragment in (
             ("apple,j293", "lists apple,j293 twice"),
-            ("apple,j813", "not a developer board"),
+            ("apple,j999", "not a developer board"),
         ):
             document = self.with_neo()
             document["developer_models"][0]["device_identifiers"] = [identifier]
@@ -393,7 +395,7 @@ class CatalogGeneratorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         path = self.directory / "catalog.json"
         catalog = json.loads(path.read_text())
-        catalog["models"].append(dict(catalog["models"][0], deviceIdentifier="apple,j813"))
+        catalog["models"].append(dict(catalog["models"][0], deviceIdentifier="apple,j999"))
         path.write_text(json.dumps(catalog))
         check = subprocess.run(
             [
@@ -406,7 +408,7 @@ class CatalogGeneratorTests(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(check.returncode, 0)
-        self.assertIn("apple,j813 is not in scripts/supported-models.json", check.stderr)
+        self.assertIn("apple,j999 is not in scripts/supported-models.json", check.stderr)
 
 
 if __name__ == "__main__":

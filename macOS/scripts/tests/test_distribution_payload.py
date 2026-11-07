@@ -114,7 +114,7 @@ class DistributionPayloadTests(unittest.TestCase):
         caution = supported_models.stage1_caution()
         self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
                                         'apple,j624', 'apple,j715', 'apple,j773g', 'apple,j614c',
-                                        'apple,j773s', 'apple,j575c'})
+                                        'apple,j773s', 'apple,j575c', 'apple,j813', 'apple,j873g'})
         for identifier in list(caution) + ['apple,j314s', 'apple,j316s', 'apple,j314c', 'apple,j316c',
                                            'apple,j375c', 'apple,j375d']:
             self.assertIn(identifier.removeprefix('apple,') + 'ap', qualified)
@@ -122,6 +122,9 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertIn('j700ap', qualified)
         self.assertIn('j614sap', qualified)
         self.assertIn('j616sap', qualified)
+        # The M6 Mac mini's stub is macOS 27.0, the firmware aura was brought up on.
+        self.assertIn('27.0', qualified['j873gap'])
+        self.assertIn('26.6.2', qualified['j813ap'])
 
     def test_public_payload_without_required_m4_stage_two_is_refused(self):
         self.write_neo_stage_two(boards=('j700',) + tuple(b for b in payload.BOARD_STAGE2_REQUIRED if b != 'j614s'))

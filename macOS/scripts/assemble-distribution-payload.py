@@ -27,9 +27,9 @@ DISTRIBUTION_ICONS = {
 }
 
 
-# The M4 Macs the payload must carry a board Stage 2 for, besides the Neo.
+# The M4 and later Macs the payload must carry a board Stage 2 for, besides the Neo.
 BOARD_STAGE2_REQUIRED = ('j604', 'j623', 'j624', 'j713', 'j715', 'j773g', 'j614s', 'j614c',
-                         'j616s', 'j616c', 'j773s', 'j575c')
+                         'j616s', 'j616c', 'j773s', 'j575c', 'j813', 'j873g')
 
 
 def digest(path):
@@ -90,7 +90,7 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
         # The MacBook Neo cannot load the combined Stage 2 that carries every
         # board's device trees, so the shared payload must carry its own.
         raise ValueError('the MacBook Neo requires a current board-specific Stage 2')
-    # The M4 Macs boot only their own board Stage 2 as well. A board missing
+    # The M4 and later Macs boot only their own board Stage 2 as well. A board missing
     # here has no device tree in the image's kernel.
     for board in BOARD_STAGE2_REQUIRED:
         if board + 'ap' not in stage2_members:
@@ -170,7 +170,8 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     # installer warns their owners, with the recovery steps, before installing.
     supported_models.stage1_caution()
     template['aurora_stage1'] = {'kind': 'common-raw-v1', 'qualified_machines': {
-        identifier.removeprefix('apple,') + 'ap': ['13.5', '14.8.3', '26.6', '26.6.2'] for identifier in identifiers
+        identifier.removeprefix('apple,') + 'ap': ['13.5', '14.8.3', '26.6', '26.6.2', '27.0']
+        for identifier in identifiers
     }}
     if stage2_members:
         template['aurora_stage2'] = {'kind': 'board-file-v1', 'board_members': stage2_members}

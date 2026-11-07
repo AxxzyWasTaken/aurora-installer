@@ -66,7 +66,9 @@
           "33042": "12.4",
           "33058": "14.8.3",
           "33074": "26.6",
-          "33088": "26.6"
+          "33088": "26.6",
+          "33090": "26.6",
+          "33106": "27.0"
         },
         "devices": {
           "j180d": {
@@ -253,6 +255,14 @@
             "expert": false,
             "minimum": "26.6.2"
           },
+          "j813": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j873g": {
+            "expert": false,
+            "minimum": "27.0"
+          },
           "j773g": {
             "expert": false,
             "minimum": "26.6.2"
@@ -295,10 +305,22 @@
               "j713",
               "j715",
               "j773g",
-              "j773s"
+              "j773s",
+              "j813"
             ],
             "sourceURL": "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw",
             "version": "26.6.2"
+          },
+          {
+            "expert": false,
+            "minimumBoot": "mBoot-20457.1.29",
+            "minimumMacOS": "27.0",
+            "minimumRecovery": "26.1.428.0.0,0",
+            "models": [
+              "j873g"
+            ],
+            "sourceURL": "https://updates.cdn-apple.com/2026FallFCS/afcfc88e-bbe6-44bf-a5da-07c56eebc06c/UniversalMac_27.0_26A428_Restore.ipsw",
+            "version": "27.0"
           },
           {
             "expert": false,

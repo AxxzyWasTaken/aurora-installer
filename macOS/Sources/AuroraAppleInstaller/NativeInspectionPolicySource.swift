@@ -61,10 +61,14 @@
           "24628": "14.8.3",
           "24626": "26.6",
           "24640": "26.6",
+          "24641": "26.6",
           "33027": "11.0",
           "33042": "12.4",
           "33058": "14.8.3",
-          "33088": "26.6"
+          "33074": "26.6",
+          "33088": "26.6",
+          "33090": "26.6",
+          "33106": "27.0"
         },
         "devices": {
           "j180d": {
@@ -195,7 +199,15 @@
             "expert": false,
             "minimum": "14.8.3"
           },
+          "j575c": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
           "j575d": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j604": {
             "expert": false,
             "minimum": "26.6.2"
           },
@@ -207,6 +219,10 @@
             "expert": false,
             "minimum": "14.8.3"
           },
+          "j614c": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
           "j614s": {
             "expert": false,
             "minimum": "26.6.2"
@@ -215,9 +231,45 @@
             "expert": false,
             "minimum": "26.6.2"
           },
+          "j616c": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j623": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j624": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
           "j700": {
             "expert": false,
             "minimum": "26.6"
+          },
+          "j713": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j715": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j813": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j873g": {
+            "expert": false,
+            "minimum": "27.0"
+          },
+          "j773g": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j773s": {
+            "expert": false,
+            "minimum": "26.6.2"
           }
         },
         "firmware": [
@@ -238,15 +290,37 @@
             "minimumMacOS": "26.0",
             "minimumRecovery": "25.7.83.0.0,0",
             "models": [
+              "j575c",
               "j575d",
+              "j604",
               "j613",
+              "j614c",
               "j614s",
               "j615",
+              "j616c",
               "j616s",
-              "j700"
+              "j623",
+              "j624",
+              "j700",
+              "j713",
+              "j715",
+              "j773g",
+              "j773s",
+              "j813"
             ],
             "sourceURL": "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw",
             "version": "26.6.2"
+          },
+          {
+            "expert": false,
+            "minimumBoot": "mBoot-20457.1.29",
+            "minimumMacOS": "27.0",
+            "minimumRecovery": "26.1.428.0.0,0",
+            "models": [
+              "j873g"
+            ],
+            "sourceURL": "https://updates.cdn-apple.com/2026FallFCS/afcfc88e-bbe6-44bf-a5da-07c56eebc06c/UniversalMac_27.0_26A428_Restore.ipsw",
+            "version": "27.0"
           },
           {
             "expert": false,

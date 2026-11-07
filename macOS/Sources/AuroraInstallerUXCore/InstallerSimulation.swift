@@ -175,7 +175,7 @@
       return availability
     }
 
-    /// The supported M1, M2, M3 and M4 Macs and the MacBook Neo every catalog
+    /// The supported M1 to M6 Macs and the MacBook Neo every catalog
     /// enables (scripts/supported-models.json).
     public static let simulatedCatalogDevices = [
       "apple,j274", "apple,j293", "apple,j313", "apple,j456", "apple,j457", "apple,j314s",
@@ -183,8 +183,10 @@
       "apple,j415", "apple,j473", "apple,j493", "apple,j414s", "apple,j414c", "apple,j416s",
       "apple,j416c", "apple,j474s", "apple,j475c", "apple,j475d", "apple,j180d", "apple,j433",
       "apple,j434", "apple,j504", "apple,j613", "apple,j615", "apple,j514s", "apple,j514c",
-      "apple,j514m", "apple,j516s", "apple,j516c", "apple,j516m", "apple,j575d", "apple,j614s",
-      "apple,j616s", "apple,j700",
+      "apple,j514m", "apple,j516s", "apple,j516c", "apple,j516m", "apple,j575d", "apple,j604",
+      "apple,j623", "apple,j624", "apple,j713", "apple,j715", "apple,j773g", "apple,j614s",
+      "apple,j614c", "apple,j616s", "apple,j616c", "apple,j773s", "apple,j575c", "apple,j813",
+      "apple,j873g", "apple,j700",
     ]
 
     private var refusedOnce: Bool {

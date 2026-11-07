@@ -457,7 +457,8 @@
         "j274", "j293", "j313", "j456", "j457", "j314s", "j314c", "j316s", "j316c", "j375c",
         "j375d", "j413", "j415", "j473", "j493", "j414s", "j414c", "j416s", "j416c", "j474s",
         "j475c", "j475d", "j180d", "j433", "j434", "j504", "j613", "j615", "j514s", "j514c",
-        "j514m", "j516s", "j516c", "j516m", "j575d", "j614s", "j616s", "j700",
+        "j514m", "j516s", "j516c", "j516m", "j575d", "j604", "j623", "j624", "j713", "j715",
+        "j773g", "j614s", "j614c", "j616s", "j616c", "j773s", "j575c", "j813", "j873g", "j700",
       ].map { "apple,\($0)" }
       XCTAssertEqual(identifiers, Set(everySupportedMac))
       let manifest = try JSONSerialization.jsonObject(

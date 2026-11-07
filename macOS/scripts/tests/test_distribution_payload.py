@@ -17,11 +17,18 @@ payload = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(payload)
 import supported_models  # noqa: E402  (on the path the payload module adds)
 
-# Root compatibles. A published payload also carries A7 boards, whose tree names no
-# apple,tNNNN, and M4 or later boards the release doesn't support, such as the J713.
-COMPATIBLES = {board: ['apple,' + board, 'apple,' + chip, 'apple,arm-platform'] for board, chip in (
-    ('j700', 't8140'), ('j616s', 't6040'), ('j614s', 't6040'), ('j274', 't8103'), ('j713', 't8132'))}
+# Root compatibles: every board that needs its own Stage 2, an M1, and boards a
+# published payload may also carry: A7 boards, whose tree names no apple,tNNNN,
+# and M4 or later boards the release doesn't support, such as the M5 Pro J714s.
+CHIPS = {'j604': 't8132', 'j623': 't8132', 'j624': 't8132', 'j713': 't8132', 'j715': 't8132',
+         'j773g': 't8132', 'j614s': 't6040', 'j616s': 't6040', 'j773s': 't6040', 'j614c': 't6041',
+         'j616c': 't6041', 'j575c': 't6041', 'j813': 't8142', 'j873g': 't8152', 'j700': 't8140',
+         'j274': 't8103', 'j714s': 't6050'}
+COMPATIBLES = {board: ['apple,' + board, 'apple,' + chip, 'apple,arm-platform']
+               for board, chip in CHIPS.items()}
 COMPATIBLES['j71'] = ['apple,j71', 'apple,s5l8960x', 'apple,arm-platform']
+# Every supported M4 or later board, which a payload must carry a board Stage 2 for.
+M4_OR_LATER = ('j700',) + payload.BOARD_STAGE2_REQUIRED
 
 
 def device_tree(compatibles):
@@ -67,7 +74,7 @@ class DistributionPayloadTests(unittest.TestCase):
         header[12:16] = (12).to_bytes(4, 'little')
         (self.bundle / 'esp/aurora/stage1.macho').write_bytes(bytes(header) + raw + bytes(0x4000 - len(raw)))
 
-    def write_neo_stage_two(self, sha256=None, boards=('j700', 'j616s', 'j614s', 'j71', 'j713')):
+    def write_neo_stage_two(self, sha256=None, boards=M4_OR_LATER + ('j71', 'j714s')):
         records = {}
         for board in boards:
             dedicated = self.bundle / ('esp/m1n1/boot-%s.bin' % board)
@@ -132,19 +139,20 @@ class DistributionPayloadTests(unittest.TestCase):
         shared = self.bundle / 'esp/m1n1/boot-ctxr.bin'
         shared.unlink()
         (self.bundle / 'esp/m1n1/boot-ctxr-j700.bin').write_bytes(b'board file')
-        # The native installer would refuse a J614s or J616s on this payload. The
-        # unsupported J713 and the A7 J71 need nothing.
-        with self.assertRaisesRegex(ValueError, r'boards j614s, j616s$'):
+        # The native installer would refuse every other M4 or later Mac on this
+        # payload. The unsupported J714s and the A7 J71 need nothing.
+        others = sorted(payload.BOARD_STAGE2_REQUIRED)
+        with self.assertRaisesRegex(ValueError, r'boards ' + ', '.join(others) + '$'):
             self.assembled('neo-only')
-        for board in ('j616s', 'j614s'):
+        for board in others:
             (self.bundle / ('esp/m1n1/boot-ctxr-%s.bin' % board)).write_bytes(b'board file')
         metadata, output = self.assembled('every-board')
-        self.assertEqual(metadata['aurora_macho_boot']['confined_members'], [
-            'esp/m1n1/boot-ctxr-j614s.bin', 'esp/m1n1/boot-ctxr-j616s.bin', 'esp/m1n1/boot-ctxr-j700.bin'])
+        self.assertEqual(metadata['aurora_macho_boot']['confined_members'],
+                         ['esp/m1n1/boot-ctxr-%s.bin' % board for board in sorted(M4_OR_LATER)])
         with zipfile.ZipFile(output / metadata['package']) as archive:
             self.assertEqual(archive.read('esp/m1n1/boot-ctxr-j700.bin'), b'board file')
         # A board the release doesn't support may carry its own file too.
-        (self.bundle / 'esp/m1n1/boot-ctxr-j713.bin').write_bytes(b'board file')
+        (self.bundle / 'esp/m1n1/boot-ctxr-j714s.bin').write_bytes(b'board file')
         self.assembled('unsupported-board-file')
         # The shared file covers a board without its own.
         (self.bundle / 'esp/m1n1/boot-ctxr-j614s.bin').unlink()
@@ -152,7 +160,7 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assembled('board-and-shared')
 
     def test_a_board_file_must_be_for_an_m4_or_later_board_here(self):
-        self.write_neo_stage_two(boards=('j700', 'j616s', 'j614s', 'j274'))
+        self.write_neo_stage_two(boards=M4_OR_LATER + ('j274',))
         (self.bundle / 'esp/m1n1/boot-ctxr-j274.bin').write_bytes(b'board file')
         with self.assertRaisesRegex(ValueError, 'boot-ctxr-j274.bin'):
             self.assembled('m1-board')
@@ -228,7 +236,9 @@ class DistributionPayloadTests(unittest.TestCase):
         qualified = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0][
             'aurora_stage1']['qualified_machines']
         caution = supported_models.stage1_caution()
-        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s'})
+        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
+                                        'apple,j624', 'apple,j715', 'apple,j773g', 'apple,j614c',
+                                        'apple,j773s', 'apple,j575c', 'apple,j813', 'apple,j873g'})
         for identifier in list(caution) + ['apple,j314s', 'apple,j316s', 'apple,j314c', 'apple,j316c',
                                            'apple,j375c', 'apple,j375d']:
             self.assertIn(identifier.removeprefix('apple,') + 'ap', qualified)
@@ -236,9 +246,12 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertIn('j700ap', qualified)
         self.assertIn('j614sap', qualified)
         self.assertIn('j616sap', qualified)
+        # The M6 Mac mini's stub is macOS 27.0, the firmware aura was brought up on.
+        self.assertIn('27.0', qualified['j873gap'])
+        self.assertIn('26.6.2', qualified['j813ap'])
 
     def test_public_payload_without_required_m4_stage_two_is_refused(self):
-        self.write_neo_stage_two(boards=('j700', 'j616s'))
+        self.write_neo_stage_two(boards=('j700',) + tuple(b for b in payload.BOARD_STAGE2_REQUIRED if b != 'j614s'))
         output = self.root / 'output'
         with self.assertRaisesRegex(ValueError, 'J614s requires a current board-specific'):
             payload.assemble(self.bundle, self.app, output, release_id='fixture')

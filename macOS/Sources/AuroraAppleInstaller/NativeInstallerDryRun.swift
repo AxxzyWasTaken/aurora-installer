@@ -132,23 +132,36 @@
           "length_bytes": $0.lengthBytes,
         ]
       }
+      let machOStage1 = AuraStage1Format.usesMachO(chipID: machine.hardware.chipID)
+      result["uses_macho_stage1"] = machOStage1
       if let archive, let firmware {
         do {
-          let boot = try await NativeBootChain.admit(
-            metadata: metadata, archive: archive, deviceIdentifier: device,
-            firmware: firmware.version,
-            machOStage1: AuraStage1Format.usesMachO(chipID: machine.hardware.chipID))
+          let boot: NativeBootChainAdmission
+          var confinedStage2Missing = false
+          do {
+            boot = try await NativeBootChain.admit(
+              metadata: metadata, archive: archive, deviceIdentifier: device,
+              firmware: firmware.version, machOStage1: machOStage1)
+          } catch NativeBootChainError.missingConfinedStage2 {
+            confinedStage2Missing = true
+            boot = try await NativeBootChain.admit(
+              metadata: metadata, archive: archive, deviceIdentifier: device,
+              firmware: firmware.version, machOStage1: machOStage1,
+              requireConfinedStage2: false)
+          }
           var chain: [String: Any] = [
             "esp_layout": boot.espLayout, "window_milliseconds": boot.windowMilliseconds,
             "stage1_mode": boot.stage1MachOMember == nil ? "raw" : "macho",
+            "stage2_path": boot.stage2Path, "confined_stage2_missing": confinedStage2Missing,
           ]
           if let member = boot.stage1MachOMember { chain["stage1_macho_member"] = member }
+          if let bytes = boot.expandedStage1Bytes { chain["expanded_stage1_bytes"] = bytes }
           if let member = boot.stage1Member,
             let stage = archive.members.first(where: { $0.name == member })
           {
             let bytes = try await archive.read(stage, maximumBytes: 64 << 20)
             let filled = try NativeBootChain.fillStage1(
-              bytes, uuid: "00000000-0000-4000-8000-000000000001", path: "m1n1/boot.bin",
+              bytes, uuid: "00000000-0000-4000-8000-000000000001", path: boot.stage2Path,
               windowMilliseconds: boot.windowMilliseconds)
             chain["stage1_member"] = member
             chain["stage1_bytes"] = filled.count

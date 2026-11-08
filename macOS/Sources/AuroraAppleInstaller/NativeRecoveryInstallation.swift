@@ -63,13 +63,14 @@
       let bootMode =
         (espReceipt.stage1MachO == nil
         ? NativeRecoveryBootMode.raw : NativeRecoveryBootMode.macho).rawValue
+      let stage2Path = AuraStage1Format.stage2Path(machO: espReceipt.stage1MachO != nil)
       if let legacy = espReceipt.legacyStage1 {
         try NativeLegacyStage1.verify(
           system.read("Finish Installation.app/Contents/Resources/boot.bin", maximum: 4 << 20),
           receipt: legacy, uuid: target.esp.uuid.lowercased(), path: "m1n1/boot.bin")
       }
-      let stage2 = try esp.identity("m1n1/boot.bin")
-      guard let stage2Entry = espReceipt.files.first(where: { $0.path == "m1n1/boot.bin" }),
+      let stage2 = try esp.identity(stage2Path)
+      guard let stage2Entry = espReceipt.files.first(where: { $0.path == stage2Path }),
         stage2 == stage2Entry.identity
       else { throw NativeHandoffValidationError.changedContent }
       for (path, identity) in vendor.files {
@@ -90,7 +91,7 @@
         "groupUUID": try NativeSourceBootstrap.uuid(target.group),
         "prebootUUID": try NativeSourceBootstrap.uuid(target.volume("Preboot").uuid),
         "espUUID": try NativeSourceBootstrap.uuid(target.esp.uuid),
-        "bootMode": bootMode, "stage2Path": "m1n1/boot.bin",
+        "bootMode": bootMode, "stage2Path": stage2Path,
         "bootstrap": bootstrap.configuration,
         "allowCustomBootArguments": RecoveryBootPolicyArguments.allowsCustomBootArguments(
           deviceIdentifier: package.deviceIdentifier),
@@ -98,18 +99,17 @@
       var files = vendor.files
       files["raw/aura-raw.bin"] = espReceipt.stage1
       files["raw/boot.bin"] = stage2
-      // Both modes chainload the same Stage 2; NV2 stays off until the owner turns it on.
-      var modes = ["raw": ["espPath": "m1n1/boot.bin"]]
       if let machO = espReceipt.stage1MachO {
         files["macho/aura-boot.macho"] = machO
-        modes["macho"] = ["espPath": "m1n1/boot.bin"]
       }
-      let manifest: [String: Any] = [
-        "schema": 2, "defaultMode": bootMode, "nestedVirtualization": false,
-        "modes": modes,
+      var manifest: [String: Any] = [
+        "schema": 2, "defaultMode": bootMode,
+        "modes": [bootMode: ["espPath": stage2Path]],
         "vendorFirmware": vendor.files.keys.sorted(),
         "files": files.mapValues { ["sha256": $0.sha256, "bytes": $0.bytes] as [String: Any] },
       ]
+      // A raw installation's manifest keeps its shape.
+      if espReceipt.stage1MachO == nil { manifest["nestedVirtualization"] = false }
       let configuration = try json(config)
       let payloadManifest = try json(manifest)
       let templateIdentity = try NativeRecoveryTemplate.templateIdentity(template, owner: owner)
@@ -146,7 +146,7 @@
               identity: identity, at: "AuraPayloads/" + path)
           } else {
             _ = try await store.file(
-              esp.tree, path: path == "raw/boot.bin" ? "m1n1/boot.bin" : path,
+              esp.tree, path: path == "raw/boot.bin" ? stage2Path : path,
               identity: identity, at: "AuraPayloads/" + path)
           }
         }

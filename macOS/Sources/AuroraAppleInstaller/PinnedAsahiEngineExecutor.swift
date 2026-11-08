@@ -168,7 +168,7 @@
         } catch {
           let update = Self.macOSUpdateSummary(for: error)
           throw preparationFailure(
-            error, reason: update == nil ? .unclassified : .macOSUpdateRequired,
+            error, reason: update == nil ? Self.preservedReason(for: error) : .macOSUpdateRequired,
             operation: operation, journal: journal, package: package,
             password: authorization.password,
             summary: update ?? Self.preservedSummary(for: error)
@@ -315,6 +315,9 @@
           stage = .stubFiles
           try InstallerPerformance.measure("staging_space") {
             try stubFiles.requireStagingSpace(journal: journal)
+            if let expanded = espFiles.expandedStage1Bytes {
+              try stubFiles.requireRoom(forExpandedStage1: expanded)
+            }
           }
           preparedAPFS = apfs
           preparedStubFiles = stubFiles
@@ -414,6 +417,9 @@
       if let update = macOSUpdateSummary(for: error) {
         return (.macOSUpdateRequired, update)
       }
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return (.deviceUnsupported, NativeBootChainError.releaseLacksMachOSummary)
+      }
       return error is NativeFirmwareSelectionError
         ? (.firmwarePreparation, "Compatible boot firmware could not be selected.")
         : (.planIntegrity, "The installation images could not be verified (\(errorName(error))).")
@@ -429,6 +435,9 @@
         return (.macOSSpaceRequired, shortfall.summary)
       }
       if let update = macOSUpdateSummary(for: error) { return (.macOSUpdateRequired, update) }
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return (.deviceUnsupported, NativeBootChainError.releaseLacksMachOSummary)
+      }
       let name = errorName(error)
       switch error {
       case NativeFirmwareSelectionError.updateArchiveOnly(let version):
@@ -447,6 +456,12 @@
         return (.planIntegrity, "This installer has no \(stage.step) step for this plan.")
       case NativeStubFileError.cacheFull, NativeStubFileError.freeSpaceUnavailable:
         return (.unclassified, stagingSummary(error))
+      case NativeStubFileError.noRoomForStage1:
+        return (
+          .planIntegrity,
+          "The startup container for this macOS version is too small for this Mac's startup "
+            + "software. Nothing on the disk changed."
+        )
       case is RestoreFailure:
         return (.firmwarePreparation, "The macOS restore image could not be read (\(name)).")
       case is CancellationError:
@@ -576,7 +591,25 @@
       return EngineFailureReason.macOSUpdateSummary(version: version)
     }
 
+    /// Why a reset stopped, so its screen offers what helps: an unsupported Mac
+    /// gets the unsupported-Mac screen, and an installation only erasing fixes
+    /// gets Erase Linux rather than Check again.
+    static func preservedReason(for error: any Error) -> EngineFailureReason {
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return .deviceUnsupported
+      }
+      if case NativePreservedInstallError.earlierStage1 = error { return .reinstallRequired }
+      return .unclassified
+    }
+
     static func preservedSummary(for error: any Error) -> String? {
+      if let chain = error as? NativeBootChainError, chain.releaseLacksMachO {
+        return NativeBootChainError.releaseLacksMachOSummary
+      }
+      if case NativePreservedInstallError.earlierStage1 = error {
+        return "This installation was set up by an earlier Aurora installer, and this one can't "
+          + "reset it. Erase Linux, then install Aurora again."
+      }
       guard
         case NativePreservedInstallError.espFull(let required, let available) = error
       else { return nil }

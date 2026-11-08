@@ -26,6 +26,20 @@ struct RecoveryFailure: Error { let message: String }
         preconditionFailure("Changed bundle accepted")
       } catch {}
     }
+    // A raw setup records no window; a padded setup keeps the one it started with.
+    let plain = RecoveryInstallationJournal(
+      operation: "operation-" + UUID().uuidString, systemUUID: "system", groupUUID: "group",
+      espUUID: "esp", stage1SHA256: "first", stage2SHA256: "second", originalFiles: [],
+      replacedISC: false, iscVarWasPresent: false, phase: .prepared)
+    let plainJSON = try JSONEncoder().encode(plain)
+    precondition(!String(decoding: plainJSON, as: UTF8.self).contains("executeWindowSize"))
+    let plainResumed = try JSONDecoder().decode(RecoveryInstallationJournal.self, from: plainJSON)
+    precondition(plainResumed.executeWindowSize == nil)
+    var windowed = plain
+    windowed.executeWindowSize = 128 << 20
+    let windowedResumed = try JSONDecoder().decode(
+      RecoveryInstallationJournal.self, from: JSONEncoder().encode(windowed))
+    precondition(windowedResumed.executeWindowSize == 128 << 20)
     precondition(RecoveryInstallationPhase.bundleInstalled.mayRestoreFiles)
     precondition(!RecoveryInstallationPhase.enrollmentRequested.mayRestoreFiles)
     precondition(RecoveryInstallationPhase.enrollmentRequested.needsEnrollment)
@@ -72,6 +86,33 @@ struct RecoveryFailure: Error { let message: String }
       precondition(invoked.first == "verify")
       precondition(invoked.contains("enroll") == (phase == .enrollmentRequested))
       precondition(invoked.contains("finalize") == (phase != .committed))
+    }
+    // A setup past enrollment finishes without staging the object again.
+    for phase in RecoveryInstallationPhase.allCases {
+      var staged = false
+      let run = {
+        try RecoveryInstallationCoordinator.run(
+          phase: phase, persist: { _ in },
+          stage: {
+            staged = true
+            if !phase.needsEnrollment { throw Injected.stop }
+          },
+          authorizePolicy: {}, installBundle: {}, verifyBundle: {}, enroll: {}, finalize: {},
+          commit: {})
+      }
+      try run()
+      precondition(staged == phase.needsEnrollment, phase.rawValue)
+    }
+    // A refusal to stage stops before the policy changes.
+    var authorized = false
+    do {
+      try RecoveryInstallationCoordinator.run(
+        phase: .prepared, persist: { _ in }, stage: { throw Injected.stop },
+        authorizePolicy: { authorized = true }, installBundle: {}, verifyBundle: {}, enroll: {},
+        finalize: {}, commit: {})
+      preconditionFailure("A staging refusal was ignored")
+    } catch Injected.stop {
+      precondition(!authorized)
     }
     print("PASS installation interruption phases, target/build binding and ambiguous enrollment")
   }

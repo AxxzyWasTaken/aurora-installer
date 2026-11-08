@@ -2,6 +2,7 @@
   import AuroraFirmware
   import Darwin
   import Foundation
+  import RecoveryAccountCore
 
   protocol NativePreservedReinstallExecuting: Sendable {
     func execute(
@@ -86,7 +87,8 @@
         approved: approved, metadata: metadata, archive: archive, disk: facts.disk,
         stubBytes: firmware.stubBytes,
         firmwareVersion: firmware.version.components(separatedBy: " ")[0],
-        installedStage1: installedStage1)
+        installedStage1: installedStage1,
+        machOStage1: AuraStage1Format.usesMachO(chipID: facts.hardware.chipID))
       let nativeJournal = try NativePreservedInstallJournal(
         url: journalURL, package: package, transcript: prepared.transcript, owner: owner)
       try nativeJournal.bindInstallConf(installConf)

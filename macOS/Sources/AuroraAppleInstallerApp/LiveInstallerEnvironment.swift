@@ -18,6 +18,7 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
   private let helperProbe: @Sendable () async -> HelperDisplay
   private let recoveryAccountInspector: (@Sendable () async throws -> RecoveryAccountReply)?
   private let stagingEstimate: @Sendable (String, StagedInstallerArtifact) async throws -> UInt64
+  private let startupCheck: @Sendable (String, StagedInstallerArtifact) throws -> Void
   private let macOSFreeBytes: @Sendable () throws -> UInt64
   /// The stub stage's requirement depends only on this Mac and the release
   /// metadata, so a size change reuses it instead of reading the image again.
@@ -38,11 +39,15 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       @escaping @Sendable (String, StagedInstallerArtifact) async throws -> UInt64 = {
         try await NativeStubStagingEstimator().requiredFreeBytes(deviceIdentifier: $0, metadata: $1)
       },
+    startupCheck: @escaping @Sendable (String, StagedInstallerArtifact) throws -> Void = {
+      try NativeStubStagingEstimator().refuseUnstartableMachO(deviceIdentifier: $0, metadata: $1)
+    },
     macOSFreeBytes: @escaping @Sendable () throws -> UInt64 = {
       try MacOSStagingVolume.freeBytes()
     }
   ) {
     self.stagingEstimate = stagingEstimate
+    self.startupCheck = startupCheck
     self.macOSFreeBytes = macOSFreeBytes
     self.selection = selection
     self.inspector = inspector
@@ -454,6 +459,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
         + "(\(InstallerLog.bytes(release.assets.payload.artifact.expectedSizeBytes)))")
     Self.discardStaleDownloads(
       in: workspace.staging, keeping: release.assets.metadata.fileURL.deletingLastPathComponent())
+    // An M4-or-later Mac this release can't start is told so before anything
+    // large downloads.
+    try startupCheck(host.identity.deviceIdentifier, release.assets.metadata)
     // The payload is pinned by the verified catalog and does not depend on the
     // plan, so it downloads while the engine checks the Mac and the owner picks
     // a size. The session cancels it if this preparation fails.

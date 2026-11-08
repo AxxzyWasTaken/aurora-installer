@@ -8,6 +8,14 @@ struct RecoveryFailure: Error, LocalizedError {
   var errorDescription: String? { message }
 }
 
+/// Set once by the timer that stops a command, read after the command exits.
+final class CommandTimeout: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = false
+  var fired: Bool { lock.withLock { value } }
+  func fire() { lock.withLock { value = true } }
+}
+
 enum RecoveryActions {
   // The engine writes this only after the new System volume and ESP exist.
   // Keep loading independent of diskutil so Recovery can show the window first.
@@ -50,27 +58,45 @@ enum RecoveryActions {
     else { return nil }
     return bytes.enumerated().reduce(UInt64(0)) { $0 | UInt64($1.element) << (8 * $1.offset) }
   }
-  /// Checks a Mach-O Stage 1 before anything changes: its layout, this Mac's
-  /// chip, and the kcbz that this Recovery's kmutil derives from it.
-  static func verifyMachOStage1(_ stage1: Data, at path: URL) throws {
+  /// Checks a Mach-O Stage 1 before anything changes: its layout and this Mac's
+  /// chip. What kmutil derives is checked on the padded file it enrolls.
+  static func verifyMachOStage1(_ stage1: Data) throws {
     try MachOBootObject.check(stage1)
     guard let chip = chipID(), AuraStage1Format.usesMachO(chipID: chip) else {
       throw RecoveryFailure(message: "This Mac starts from the raw startup software, not Mach-O.")
     }
-    guard
-      let output = try? run(
-        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"])
-    else {
-      InstallerLog.shared.append("kmutil inspect is unavailable; the Mach-O layout check stands.")
-      return
+  }
+  /// Bytes this volume's APFS container can still give to a file, or to kmutil in Preboot.
+  static func freeBytes(_ path: URL) throws -> UInt64 {
+    var status = statfs()
+    guard statfs(path.path, &status) == 0 else {
+      throw RecoveryFailure(message: "Could not read this volume's free space.")
     }
-    guard
-      let size = MachOBootObject.bootExecSize(
-        fromInspection: String(decoding: output, as: UTF8.self))
-    else {
-      throw RecoveryFailure(message: "kmutil did not report the startup software's layout.")
+    return UInt64(status.f_bavail) * UInt64(status.f_bsize)
+  }
+  /// Pads the Stage 1 and checks what kmutil derives from the file it will enroll.
+  static func stageExpandedStage1(_ stage1: Data, window: UInt64, at path: URL) throws {
+    let usage = try run("/usr/bin/kmutil", ["configure-boot", "--help"], timeout: 60)
+    try check(
+      String(decoding: usage, as: UTF8.self).contains("--compress"),
+      "This Recovery's kmutil cannot compress startup software, which this Mac needs.")
+    let expanded = try MachOBootObject.expandExecuteWindow(stage1, window: window)
+    try expanded.requireSpace(freeBytes: freeBytes(path.deletingLastPathComponent()))
+    try expanded.write(to: path)
+    let output: Data
+    do {
+      output = try run(
+        "/usr/bin/kmutil", ["inspect", "-z", "-B", path.path, "--show-mach-boot-properties"],
+        timeout: 300)
+    } catch {
+      throw RecoveryFailure(
+        message:
+          "This Recovery's kmutil could not check the startup software, so it was not enrolled. Open Window → Installer Log for its output."
+      )
     }
-    try check(size == 0, "kmutil would start SPTM for this startup software (kcbz \(size)).")
+    let used = try MachOBootObject.checkInspection(
+      String(decoding: output, as: UTF8.self), readOnlySize: expanded.readOnlySize)
+    InstallerLog.shared.append("Startup software padded and checked by kmutil: \(used).")
   }
   static var inRecovery: Bool {
     #if AURORA_STEP2_RECOVERY
@@ -122,7 +148,10 @@ enum RecoveryActions {
   static func hash(_ bytes: Data) -> String {
     RecoveryDigest.sha256(bytes)
   }
-  @discardableResult static func run(_ path: String, _ args: [String]) throws -> Data {
+  /// `timeout` stops a command that hangs; a stopped command counts as failed.
+  @discardableResult static func run(
+    _ path: String, _ args: [String], timeout: TimeInterval? = nil
+  ) throws -> Data {
     let logged = path != "/usr/sbin/nvram"
     let log = logged ? CommandLog(path, args) : nil
     let process = Process()
@@ -136,13 +165,29 @@ enum RecoveryActions {
       log?.finish(status: -1, reason: "Could not launch: " + error.localizedDescription)
       throw error
     }
+    let stopped = CommandTimeout()
+    let timer = timeout.map { seconds in
+      let item = DispatchWorkItem {
+        if process.isRunning {
+          stopped.fire()
+          process.terminate()
+        }
+      }
+      DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+      return item
+    }
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
+    timer?.cancel()
+    let name = URL(fileURLWithPath: path).lastPathComponent
     log?.output(String(decoding: data, as: UTF8.self))
+    if stopped.fired, let timeout {
+      log?.finish(status: process.terminationStatus, reason: "Stopped after \(Int(timeout)) s")
+      throw RecoveryFailure(message: "\(name) did not finish within \(Int(timeout)) seconds.")
+    }
     log?.finish(status: process.terminationStatus)
     try check(
-      process.terminationStatus == 0,
-      "\(URL(fileURLWithPath: path).lastPathComponent) failed (\(process.terminationStatus)).")
+      process.terminationStatus == 0, "\(name) failed (\(process.terminationStatus)).")
     return data
   }
   static func disk(_ path: String) throws -> [String: Any] {
@@ -375,10 +420,17 @@ enum RecoveryActions {
       }
     }
     let config = try configuration.get()
-    // The installer chose the mode for this Mac's chip; NV2 is never set here.
+    // The installer chose the mode for this Mac's chip.
     try check(
-      selection.mode.rawValue == config.bootMode && !selection.nestedVirtualization,
+      selection.mode.rawValue == config.bootMode,
       "This installation uses \(config.bootMode) boot mode only.")
+    guard let chip = chipID() else {
+      throw RecoveryFailure(message: "Could not read this Mac's chip, so nothing was changed.")
+    }
+    try check(
+      AuraBootMode.required(chipID: chip) == selection.mode,
+      "This Mac cannot start from the startup software in this installation's files. Run the Aurora installer again."
+    )
     try RecoveryOwnerResolver.verify(owner, current: resolveOwner())
     progress(0.05, "Verifying the installation files")
     let m = try manifest()
@@ -388,8 +440,11 @@ enum RecoveryActions {
     let stage1 = try asset(selection.mode.stage1Path, manifest: m)
     let stage2 = try asset(selection.mode.stage2Path, manifest: m)
     if selection.mode == .macho {
-      try verifyMachOStage1(
-        stage1, at: try payloadRoot().appendingPathComponent(selection.mode.stage1Path))
+      try verifyMachOStage1(stage1)
+      try check(
+        (try? Stage1Configuration.read(stage1).stage2Path) == config.stage2Path,
+        "The startup software in these files doesn't load this installation's Stage 2. Run the Aurora installer again."
+      )
     }
     // A successful setup must retain a usable per-device repair baseline.
     _ = try RecoveryBaseline.firmware(
@@ -426,6 +481,7 @@ enum RecoveryActions {
       try journal.validate(
         system: systemUUID, group: groupUUID, esp: espUUID,
         stage1: hash(stage1), stage2: hash(stage2))
+      journal.executeWindowSize = selection.mode.executeWindowSize
       operation = state.appendingPathComponent(journal.operation)
       transaction = try RecoveryFileTransaction.resume(
         directory: operation.appendingPathComponent("files"), files: files,
@@ -448,8 +504,10 @@ enum RecoveryActions {
         espUUID: espUUID, stage1SHA256: hash(stage1), stage2SHA256: hash(stage2),
         originalFiles: files.map(\.path),
         replacedISC: fm.fileExists(atPath: isc.appendingPathComponent("boot").path),
-        iscVarWasPresent: fm.fileExists(atPath: iscVar.path), phase: .prepared)
+        iscVarWasPresent: fm.fileExists(atPath: iscVar.path), phase: .prepared,
+        executeWindowSize: selection.mode.executeWindowSize)
     }
+    let executeWindow = selection.mode.executeWindowSize
     func record(_ phase: RecoveryInstallationPhase) throws {
       journal.phase = phase
       try RecoveryFileTransaction.write(try JSONEncoder().encode(journal), to: pendingInstallation)
@@ -457,10 +515,16 @@ enum RecoveryActions {
     try record(journal.phase)
     InstallerLog.shared.persist(to: operation.appendingPathComponent("installer.log"))
     let stage1Path = operation.appendingPathComponent("stage1")
-    try RecoveryFileTransaction.write(stage1, to: stage1Path)
+    if executeWindow == nil { try RecoveryFileTransaction.write(stage1, to: stage1Path) }
     do {
       try RecoveryInstallationCoordinator.run(
         phase: journal.phase, persist: record,
+        stage: {
+          // Inside this block so that a refusal restores the files and clears the journal.
+          if let executeWindow {
+            try stageExpandedStage1(stage1, window: executeWindow, at: stage1Path)
+          }
+        },
         authorizePolicy: {
           try transaction.clearImmutableFlags()
           progress(0.3, "Authorizing the boot environment")
@@ -492,7 +556,8 @@ enum RecoveryActions {
             "The pending startup bundle changed; its recovery record was preserved.")
         },
         enroll: {
-          progress(0.55, "Installing the startup software")
+          progress(
+            0.55, selection.mode == .macho ? slowEnrollment : "Installing the startup software")
           try authorized(
             "/usr/bin/kmutil",
             selection.mode.enrollmentArguments(stage1: stage1Path.path, volume: volume.path),
@@ -503,14 +568,17 @@ enum RecoveryActions {
           // Keep autolaunch until both version metadata and receipt are durable.
           try RecoveryVersionMetadata.showForStartupDisk(system: volume)
           try RecoveryFileTransaction.flushDirectory(core)
+          var installation: [String: Any] = [
+            "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
+            "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
+            "status": "installed", "recoveryAccountRequired": true, "operation": operation.path,
+          ]
+          // A raw installation's receipt keeps its shape.
+          if selection.mode == .raw { installation["nestedVirtualization"] = false }
+          if let executeWindow { installation["executeWindowSize"] = executeWindow }
           try RecoveryFileTransaction.write(
             try JSONSerialization.data(
-              withJSONObject: [
-                "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
-                "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
-                "nestedVirtualization": selection.nestedVirtualization, "status": "installed",
-                "recoveryAccountRequired": true, "operation": operation.path,
-              ], options: [.prettyPrinted, .sortedKeys]), to: receipt)
+              withJSONObject: installation, options: [.prettyPrinted, .sortedKeys]), to: receipt)
           if fm.fileExists(atPath: marker.path) {
             try RecoveryFileTransaction.write(Data(contentsOf: marker), to: disabledMarker)
             try fm.removeItem(at: marker)
@@ -554,6 +622,9 @@ enum RecoveryActions {
     }
     progress(1, "Installation complete")
   }
+  static let slowEnrollment =
+    "Installing the startup software. This can take several minutes."
+
   private static func replaceISC(
     _ journal: RecoveryInstallationJournal, source: URL, at target: URL
   ) throws {
@@ -792,7 +863,7 @@ extension RecoveryActions {
       let record = try installed()
       guard let name = record["mode"] as? String, let mode = AuraBootMode(rawValue: name),
         let path = record["stage2Path"] as? String,
-        path == RecoveryBaseline.stage2Path, path == (try configuration.get()).stage2Path
+        path == (try configuration.get()).stage2Path
       else {
         throw RecoveryFailure(message: "The installed boot mode is not recorded.")
       }
@@ -806,23 +877,12 @@ extension RecoveryActions {
       files[path] = bytes
       let destination = try esp()
       let backup = state.appendingPathComponent("recover-" + UUID().uuidString + ".before")
-      try RecoveryBaseline.restore(files: files, root: destination, backup: backup) {
+      try RecoveryBaseline.restore(
+        files: files, root: destination, backup: backup, stage2Path: path
+      ) {
         try atomic($0, to: $1)
       }
       print("Stage 2 and device firmware restored.")
-    case ["nv", "on"], ["nv", "off"]:
-      let record = try installed()
-      try check(
-        record["mode"] as? String == "macho",
-        "Nested virtualization needs the Mach-O startup software (M4 and later).")
-      let target = try esp().appendingPathComponent(try configuration.get().stage2Path)
-      let enabled = arguments[1] == "on"
-      let previous = try Data(contentsOf: target)
-      try atomic(previous, to: state.appendingPathComponent("nv-" + UUID().uuidString + ".before"))
-      try atomic(NestedVirtualizationSetting.stage2(previous, enabled: enabled), to: target)
-      print(
-        "Nested virtualization \(enabled ? "on" : "off") from the next boot. Linux sets it with "
-          + "chosen.aura,nv2 in /etc/m1n1.conf, which its next Stage 2 update applies instead.")
     case ["debug", "on"], ["debug", "off"], ["proxy", "on"], ["proxy", "off"]:
       let before = try readBootArguments()
       let after = bootArguments(before, flag: "aura-" + arguments[0], enabled: arguments[1] == "on")
@@ -834,7 +894,7 @@ extension RecoveryActions {
       print("Aura \(arguments[0]) \(arguments[1]) for the next boot.")
     default:
       throw RecoveryFailure(
-        message: "Usage: aura [recover | nv on/off | debug on/off | proxy on/off]")
+        message: "Usage: aura [recover | debug on/off | proxy on/off]")
     }
   }
   static func installCommand() throws {

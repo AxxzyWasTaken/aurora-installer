@@ -481,6 +481,8 @@ def evaluate(machine, mode, distro, dry, context):
     checks.append(check('published stage2', not published, 'payload Stage 2 is not aura %s: %s' % (
         context['pins']['aura_label'], '; '.join(published)) if published else 'payload Stage 2 is aura ' +
         context['pins']['aura_label'], scope='published'))
+    if sample.get('uses_macho_stage1'):
+        checks.extend(confined_stage2_checks(machine, dry, profiles, context['pins']['aura_label']))
 
     # 5. U-Boot and aura pins: the distro branch, and the published image's sources
     branch, built = context['branches'][distro], context['built'][distro]
@@ -533,16 +535,70 @@ def evaluate(machine, mode, distro, dry, context):
     # 9. One True Recovery step
     expected = ['-nca'] if machine['device_identifier'] == 'apple,j700' else ['-nc']
     selection = (MACOS / 'Recovery/Sources/BootSelection.swift').read_text()
-    raw = all(flag in selection for flag in ('"--raw"', '"--entry-point", "2048"', '"--lowest-virtual-address", "0"'))
+    enrollment, how = enrollment_check(selection, sample.get('uses_macho_stage1', False),
+                                       [dry[d].get('boot_chain') or {} for d in DESKTOPS])
     steps = [c.get('plan', {}).get('required_human_steps') for c in sample.get('candidates', [])]
     fresh_steps = all(s is None or 'enterOneTrueRecovery' in s for s in steps)
-    ok = sample['one_true_recovery_boot_policy'] == expected and raw and fresh_steps
-    checks.append(check('1tr', ok, 'bputil %s -v <group>, kmutil configure-boot --raw --entry-point 2048 '
-                                  '--lowest-virtual-address 0' % ' '.join(sample['one_true_recovery_boot_policy'])
-                        if ok else 'boot policy %s (expected %s), raw enrollment %s' % (
-                            sample['one_true_recovery_boot_policy'], expected, raw),
+    ok = sample['one_true_recovery_boot_policy'] == expected and enrollment and fresh_steps
+    checks.append(check('1tr', ok, 'bputil %s -v <group>, %s' % (' '.join(sample['one_true_recovery_boot_policy']), how)
+                        if ok else 'boot policy %s (expected %s), expected enrollment %s: %s' % (
+                            sample['one_true_recovery_boot_policy'], expected, how, enrollment),
                         'run the paired 1TR step on this machine'))
     return checks
+
+
+CONFINED_STAGE2 = 'm1n1/boot-ctxr.bin'
+CONFINED_MEMBER = re.compile(r'esp/m1n1/boot-ctxr(-[a-z0-9]+)?\.bin')
+
+
+def enrollment_check(selection, uses_macho, chains):
+    """What the Recovery enrollment does on this chip: the padded Mach-O Stage 1
+    with --compress loading the confined Stage 2, or the raw image as it always was."""
+    if uses_macho:
+        how = 'kmutil configure-boot --compress of the padded Mach-O Stage 1, which loads ' + CONFINED_STAGE2
+        return ('"--compress"' in selection and 'ExecuteWindow.size' in selection and all(
+            c.get('stage1_mode') == 'macho' and c.get('stage2_path') == CONFINED_STAGE2 for c in chains)), how
+    how = 'kmutil configure-boot --raw --entry-point 2048 --lowest-virtual-address 0'
+    return (all(flag in selection for flag in ('"--raw"', '"--entry-point", "2048"', '"--lowest-virtual-address", "0"'))
+            and all(c.get('stage1_mode', 'raw') == 'raw' and c.get('stage2_path', 'm1n1/boot.bin') == 'm1n1/boot.bin'
+                    for c in chains)), how
+
+
+def confined_stage2_checks(machine, dry, profiles, aura_label):
+    """The Stage 2 a padded Stage 1 loads holds this board's trees and U-Boot, at the pin.
+    Today's images may not carry one yet, which only a published-scope check reports."""
+    problems, published, checked = [], [], 0
+    for desktop in DESKTOPS:
+        chain = dry[desktop].get('boot_chain')
+        if not chain:
+            continue
+        if chain.get('confined_stage2_missing'):
+            published.append('%s has no %s' % (desktop, CONFINED_STAGE2))
+            continue
+        checked += 1
+        members = [k for k, v in chain['esp_layout'].items() if v == CONFINED_STAGE2]
+        contents = profiles[desktop]['payload'].get('confined_stage2', {}).get(members[0]) if members else None
+        if not contents:
+            problems.append('%s: no contents for %s' % (desktop, CONFINED_STAGE2))
+            continue
+        trees = {t.get('compatible') for t in contents['device_trees']}
+        if trees != {machine['device_identifier']}:
+            problems.append('%s: %s carries device trees %s' % (desktop, members[0], sorted(map(str, trees))))
+        if not contents['u_boot']:
+            problems.append('%s: %s carries no U-Boot' % (desktop, members[0]))
+        if not any(v.endswith('##' + aura_label) for v in contents['versions']):
+            published.append('%s %s is not aura %s' % (desktop, members[0], aura_label))
+    if problems:
+        confined = check('confined stage2', False, '; '.join(problems))
+    elif not checked:
+        # Nothing to read, so nothing proven: the published check reports the gap.
+        confined = check('confined stage2', None, '%s not present in any payload, so not checked' % CONFINED_STAGE2)
+    else:
+        confined = check('confined stage2', True, '%s carries only %s device trees and U-Boot' % (
+            CONFINED_STAGE2, machine['device_identifier']))
+    return [confined,
+            check('published confined stage2', not published, '; '.join(published) or
+                  'payload carries %s from aura %s' % (CONFINED_STAGE2, aura_label), scope='published')]
 
 
 CAUTION_RECOVERY = ('Always Use', 'Erase Linux', 'macOS needs to be reinstalled')
@@ -781,16 +837,19 @@ def main():
             if 'sha256:' + hashlib.sha256(metadata).hexdigest() != model['metadataDigest']:
                 raise SystemExit('metadata digest mismatch: ' + profile)
             # M4 and later Macs enroll the Mach-O Stage 1, which the dry run fills from
-            # stage1.bin, so it needs that object's real bytes too.
+            # stage1.bin, so it needs that object's real bytes too, and what it loads.
             wanted = {'esp/aurora/stage1.bin', 'esp/aurora/stage1.macho', 'aurora-volume.icns'} | {
-                'esp/m1n1/boot-%s.bin' % b for b in boards}
-            archive = Path(args.cache) / (profile + '-' + model['payloadDigest'][7:19] + '-esp-v2.zip')
+                'esp/m1n1/boot-%s.bin' % b for b in boards} | {
+                name for name in members if CONFINED_MEMBER.fullmatch(name)}
+            archive = Path(args.cache) / (profile + '-' + model['payloadDigest'][7:19] + '-esp-v3.zip')
             if not archive.exists():
                 esp_archive(remote, members, wanted, archive)
             with zipfile.ZipFile(archive) as z:
                 stage1 = z.read('esp/aurora/stage1.bin')
                 stage2 = {b + 'ap': stage2_contents(z.read('esp/m1n1/boot-%s.bin' % b)) for b in boards
                           if 'esp/m1n1/boot-%s.bin' % b in z.namelist()}
+                confined = {name: stage2_contents(z.read(name)) for name in z.namelist()
+                            if CONFINED_MEMBER.fullmatch(name)}
             public_state = {url: (lambda r: True if r[0] and r[1] in (size, -1) else r)(public(url)) for url, size in parts}
             digest = None
             if args.verify_digests:
@@ -808,7 +867,8 @@ def main():
             profiles[distro][desktop] = {
                 'enabled': enabled, 'verified': verified, 'metadata': metadata, 'digest_id': model['payloadDigest'],
                 'archive': archive, 'payload': {'stage1_versions': stage1_version(stage1), 'stage2': stage2,
-                                                'public': public_state, 'digest': digest},
+                                                'confined_stage2': confined, 'public': public_state,
+                                                'digest': digest},
                 'image_source': image.get('head_sha'), 'payload_name': artifact['fileName'],
             }
         sha = profiles[distro][DESKTOPS[0]]['image_source']

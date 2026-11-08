@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """The Macs every Aurora Mac catalog must enable, and the ones it must refuse.
 
-`supported-models.json` is the single list: every M1, M2 and M3 Mac the
-pinned engine can inspect, and the MacBook Neo, which the native installer
+`supported-models.json` is the single list: every M1, M2, M3 and M4 Mac
+Aurora has a device tree for, and the MacBook Neo, which the native installer
 inspects and prepares itself. A catalog that offers any Mac offers all of
 them, so a release or preview can never ship a subset by accident. A channel with no
 Mac release yet (an empty catalog) is the only exception. `refused` names each
 board that stays out and why. `developer` names each board only a developer
 build's sealed catalog may add, with its own image; channel catalogs never
 carry one, so check-catalog rejects it like any unknown board.
-`stage1_caution` names each supported board whose iBoot refuses, or may
-refuse, the common raw Stage 1 (the M1 Pro, M1 Max and M1 Ultra Macs). They
-stay supported and qualified: the installer warns the owner, with the
+`stage1_caution` names each supported board whose Stage 1 or board is
+untried (the M3 Ultra and the M4 boards the Aurora team has not started).
+They stay supported and qualified: the installer warns the owner, with the
 recovery steps, and lets them continue. The installer's Swift table
 (Sources/AuroraInstallerUXCore/Stage1Caution.swift) must name the same boards.
 

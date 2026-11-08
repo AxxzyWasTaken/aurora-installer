@@ -61,11 +61,29 @@ import Foundation
         preconditionFailure("accepted invalid bootstrap \(key)")
       } catch {}
     }
+    // A Mach-O Stage 1 is always padded and names the confined Stage 2; a raw one never does.
     var macho = value
     macho["bootMode"] = "macho"
-    let decoded = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
-    precondition(decoded.bootMode == "macho")
+    do {
+      _ = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
+      preconditionFailure("accepted a Mach-O installation that loads the standard Stage 2")
+    } catch {}
+    macho["stage2Path"] = "m1n1/boot-ctxr.bin"
+    let confined = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
+    precondition(confined.bootMode == "macho" && confined.stage2Path == "m1n1/boot-ctxr.bin")
+    var raw = value
+    raw["stage2Path"] = "m1n1/boot-ctxr.bin"
+    do {
+      _ = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: raw))
+      preconditionFailure("accepted a raw installation that loads the confined Stage 2")
+    } catch {}
+    macho["stage2Path"] = "m1n1/boot-other.bin"
+    do {
+      _ = try InstallConfiguration.decode(JSONSerialization.data(withJSONObject: macho))
+      preconditionFailure("accepted an unknown Stage 2 path")
+    } catch {}
     print(
-      "PASS strict per-install configuration, raw and Mach-O modes, IDs, paths and missing fields")
+      "PASS strict per-install configuration, raw and Mach-O modes, Stage 2 path per mode, IDs, paths and missing fields"
+    )
   }
 }

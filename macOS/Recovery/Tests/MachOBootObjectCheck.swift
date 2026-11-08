@@ -275,9 +275,14 @@ import Foundation
       original, window: UInt64.max - 0x3FFF, "a window that overflows the segment size")
     refusesExpansion(
       original, window: 0x4000, slot: UInt64.max - 0x3FFF, "a slot that overflows the segment size")
-    let repeating =
-      le(UInt32(0x8000_0035)) + le(UInt32(32 + 24)) + le(base) + le(UInt64(0)) + le(UInt32(32))
-      + le(UInt32(0)) + Array("com.apple.kernel".utf8) + [0, 0, 0, 0, 0, 0, 0, 0]
+    var repeating: [UInt8] = le(UInt32(0x8000_0035))
+    repeating += le(UInt32(32 + 24))
+    repeating += le(base)
+    repeating += le(UInt64(0))
+    repeating += le(UInt32(32))
+    repeating += le(UInt32(0))
+    repeating += Array("com.apple.kernel".utf8)
+    repeating += [0, 0, 0, 0, 0, 0, 0, 0]
     refusesExpansion(auraObject(raw: raw, extraCommand: repeating), "a member naming itself")
 
     // The default window is what reaches disk: a hole, not the whole window.

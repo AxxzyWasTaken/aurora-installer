@@ -63,7 +63,7 @@ jobs:
   macos:
     name: macOS checks
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
@@ -71,6 +71,13 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: aurora-silicon/aurora-distributions
+          ref: a4c8d984aae32487370ffee4d80ddc05c5cc3c55
+          path: packaging-delivery
+          sparse-checkout: site/installer/Profiles
           persist-credentials: false
       - name: Record source and tools
         run: |
@@ -121,6 +128,21 @@ jobs:
           arguments=(--package-path "$PWD" --configuration release)
           if [[ -n $NATIVE_TEST_FILTER ]]; then arguments+=(--filter "$NATIVE_TEST_FILTER"); fi
           xcodebuildmcp swift-package test "${arguments[@]}" 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-release.log"
+      - name: Build and measure the sealed nine-profile download app
+        env:
+          AURORA_DEVELOPER_BUILD: '1'
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-distribution-release.py \
+            --profiles "$GITHUB_WORKSPACE/packaging-delivery/site/installer/Profiles" \
+            --output "$RUNNER_TEMP/packaging-release" --sealed
+          bash Packaging/build-app.sh "$RUNNER_TEMP/packaging-release" "$RUNNER_TEMP/packaging-app" \
+            2>&1 | tee "$RUNNER_TEMP/installer-ci/packaging-smoke.log"
+          app="$RUNNER_TEMP/packaging-app/Aurora Installer.app"
+          bash Packaging/check-download-size.sh "$app" \
+            | tee "$RUNNER_TEMP/installer-ci/app-size.log"
+          python3 Packaging/check-local-payload-policy.py --expected disabled "$app"
+          codesign --verify --deep --strict "$app"
       - name: Verify local source in an opted-in test build
         env:
           AURORA_LOCAL_PAYLOAD_TEST_BUILD: '1'

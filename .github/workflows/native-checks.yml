@@ -65,6 +65,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 20
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
       NATIVE_TEST_FILTER: ${{ inputs.test-filter }}
     steps:
@@ -100,7 +101,12 @@ jobs:
           echo "$tool_bin" >> "$GITHUB_PATH"
           "$tool_bin/xcodebuildmcp" --version | tee -a "$RUNNER_TEMP/installer-ci/toolchain.txt"
       - name: Check Swift formatting
-        run: xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-format.log"
+        run: xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests Recovery/Package.swift Recovery/Sources Recovery/Tests 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-format.log"
+      - name: Run pure Recovery fixtures used by DMG qualification
+        run: |
+          set -euo pipefail
+          bash Recovery/test-all.sh "$RUNNER_TEMP/installer-ci/recovery-fixtures" \
+            2>&1 | tee "$RUNNER_TEMP/installer-ci/recovery-fixtures.log"
       - name: Run debug Swift tests
         run: |
           set -euo pipefail

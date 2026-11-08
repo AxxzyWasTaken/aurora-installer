@@ -627,9 +627,10 @@
           headline: "Recovery preparation didn’t finish",
           plainDetail: cause,
           technicalDetail: technicalDetail,
-          remedy: unchanged
-            ? "Update the installer and choose Check again."
-            : "Save the error details and check the verified installation record before trying again."
+          remedy: !unchanged
+            ? "Save the error details and check the verified installation record before trying again."
+            : PinnedAsahiEngineExecutor.isPrebootAdminListSummary(notice.summary)
+              ? prebootAdminListRemedy : "Update the installer and choose Check again."
         )
       case .reinstallRequired:
         return FailureDisplay(
@@ -682,6 +683,10 @@
     /// count purgeable space, such as iCloud files it can download again.
     static let purgeableSpaceNote =
       "Finder may count purgeable space that macOS hasn’t freed yet, so free a little more than the figure shown."
+    /// macOS writes its Preboot list of Recovery administrators from its
+    /// accounts, and rewrites it on request. Nothing of the installer's runs.
+    static let prebootAdminListRemedy =
+      "Have macOS rebuild that list: in Terminal, run sudo diskutil apfs updatePreboot / and enter your password, then choose Check again. If it still stops here, save the Installer Log (Command-L) and share it with the Aurora team."
 
     /// Planning found that macOS can't hold what the installation stages on
     /// it, before anything was approved.

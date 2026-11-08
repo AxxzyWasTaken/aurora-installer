@@ -215,6 +215,10 @@
           try validateSourceOwner(package, authorization)
         }
       } catch {
+        // The person's saved log keeps errors under every filter; the
+        // root-only diagnostics are out of their reach.
+        InstallerLog.record(
+          .error, "Owner check refused: \(error)", secrets: [authorization.password])
         throw preparationFailure(
           error, reason: .recoveryPreparation, operation: operation, journal: journal,
           package: package, password: authorization.password,
@@ -633,6 +637,22 @@
         "\(sourceOwnerSummaryPrefix): \(refusal.summary)"
       case is CancellationError: "\(sourceOwnerSummaryPrefix): the check was canceled."
       default: "\(sourceOwnerSummaryPrefix)."
+      }
+    }
+
+    /// Whether a shown summary is a refusal about macOS's Preboot list of
+    /// Recovery administrators: absent, unreadable or without the account.
+    /// macOS rebuilds that list from its accounts with `diskutil apfs
+    /// updatePreboot`, so the person can be told how before trying again.
+    public static func isPrebootAdminListSummary(_ summary: String) -> Bool {
+      let refusals: [NativeSourceOwnerRefusal] = [
+        .adminListMissing, .adminListUnreadable(detail: ""), .notInAdminList,
+      ]
+      return refusals.contains { refusal in
+        let shown = sourceOwnerSummary(for: refusal)
+        // The unreadable summary ends with its detail; match what precedes it.
+        let stem = shown.hasSuffix(": .") ? String(shown.dropLast(2)) : shown
+        return summary.hasPrefix(stem)
       }
     }
 

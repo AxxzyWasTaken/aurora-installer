@@ -24,9 +24,18 @@
         username: ProcessInfo.processInfo.environment["AURORA_LIVE_OWNER_PROBE_USER"]
           ?? NSUserName(),
         password: Data("unused-inspection-value".utf8))
+      // The lines a saved Installer Log would show, so the probe also
+      // records this Mac's Preboot layout.
+      let log = InstallerLogBuffer(capacity: 256)
+      defer {
+        for entry in log.snapshot() where entry.message.hasPrefix("Owner check: ") {
+          print("\(entry.level.label) \(entry.message)")
+        }
+      }
       do {
-        let result = try NativeSourceOwnerAdmission().check(
-          package: package, authorization: authorization)
+        let result = try InstallerLog.$taskBuffer.withValue(log) {
+          try NativeSourceOwnerAdmission().check(package: package, authorization: authorization)
+        }
         XCTAssertNotEqual(result.ownerUUID, "00000000-0000-0000-0000-000000000000")
         print("Live source-owner admission passed on \(identity.deviceIdentifier)")
       } catch {
@@ -256,7 +265,8 @@
       try fixture.writeAdmins(["mina", "other"])
       XCTAssertThrowsError(try fixture.admit()) {
         XCTAssertEqual(
-          $0 as? NativeSourceOwnerRefusal, .adminListUnreadable(detail: "not a dictionary"))
+          $0 as? NativeSourceOwnerRefusal,
+          .adminListUnreadable(detail: "the file is not a dictionary"))
       }
     }
 
@@ -340,6 +350,159 @@
           XCTAssertTrue(refusal.map(expected[fault]!) ?? false, "\(fault): \($0)")
         }
       }
+    }
+
+    /// Each Preboot layout in the fixture is admitted or refused as it
+    /// records, and a refusal names the component and the rule in its
+    /// summary. What was found at each component reaches the log at progress
+    /// level and the refusal at error level, so a log saved with the
+    /// default filter shows both.
+    func testPrebootAdminListLayoutsAreDecidedAndLoggedAsTheFixtureRecords() throws {
+      struct Fixture: Decodable {
+        struct Layout: Decodable {
+          let name: String, group: String, `var`: String, db: String, file: String
+          let content: String, extraLink: String?, expected: String
+        }
+        let layouts: [Layout]
+      }
+      let url = try XCTUnwrap(
+        Bundle.module.url(
+          forResource: "source-preboot-admin-layouts", withExtension: "json",
+          subdirectory: "Fixtures"))
+      let layouts = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url)).layouts
+      XCTAssertGreaterThanOrEqual(layouts.count, 18)
+      XCTAssertEqual(layouts.filter { $0.expected == "admit" }.count, 6)
+      for layout in layouts {
+        let fixture = try OwnerFixture()
+        defer { fixture.base.remove() }
+        let group = fixture.base.sourcePreboot.appendingPathComponent(fixture.group)
+        let variable = group.appendingPathComponent("var")
+        let db = variable.appendingPathComponent("db")
+        let content: Data =
+          switch layout.content {
+          case "xml":
+            try PropertyListSerialization.data(
+              fromPropertyList: [
+                "mina": ["GeneratedUID": fixture.owner, "RealName": "Mina"],
+                "other": ["GeneratedUID": UUID().uuidString, "RealName": "Other"],
+              ], format: .xml, options: 0)
+          case "binary":
+            try PropertyListSerialization.data(
+              fromPropertyList: ["mina": ["GeneratedUID": fixture.owner]], format: .binary,
+              options: 0)
+          case "empty": Data()
+          case "garbage": Data([0xFF, 0x00, 0x13, 0x37, 0xFE])
+          case "array":
+            try PropertyListSerialization.data(
+              fromPropertyList: ["mina"], format: .binary, options: 0)
+          case "oversize": Data(count: (1 << 20) + 1)
+          default: throw XCTSkip("unknown content \(layout.content)")
+          }
+        try content.write(to: fixture.admins)
+        if let folder = layout.extraLink {
+          let directory = folder == "group" ? group : db
+          XCTAssertEqual(
+            link(fixture.admins.path, directory.appendingPathComponent("second-name").path), 0,
+            layout.name)
+        }
+        func apply(_ value: String, to item: URL) throws {
+          switch value {
+          case "missing": try FileManager.default.removeItem(at: item)
+          case "symlink":
+            let moved = fixture.base.root.appendingPathComponent("moved-" + item.lastPathComponent)
+            try FileManager.default.moveItem(at: item, to: moved)
+            try FileManager.default.createSymbolicLink(at: item, withDestinationURL: moved)
+          default:
+            XCTAssertEqual(chmod(item.path, mode_t(value, radix: 8)!), 0, layout.name)
+          }
+        }
+        try apply(layout.file, to: fixture.admins)
+        try apply(layout.db, to: db)
+        try apply(layout.var, to: variable)
+        try apply(layout.group, to: group)
+        let log = InstallerLogBuffer(capacity: 256)
+        let outcome = InstallerLog.$taskBuffer.withValue(log) {
+          Result { try fixture.admit() }
+        }
+        let progress = log.snapshot().filter { $0.level == .progress }.map(\.message)
+        let errors = log.snapshot().filter { $0.level == .error }.map(\.message).filter {
+          $0.hasPrefix("Owner check: ")
+        }
+        switch (layout.expected, outcome) {
+        case ("admit", .success(let bootstrap)):
+          XCTAssertEqual(bootstrap.ownerUUID, fixture.owner, layout.name)
+          XCTAssertTrue(
+            progress.contains { $0.hasPrefix("Owner check: Preboot <group>: folder, owner ") },
+            "\(layout.name): \(progress)")
+          XCTAssertTrue(
+            progress.contains {
+              $0.hasPrefix("Owner check: Preboot AdminUserRecoveryInfo.plist: file, owner ")
+                && $0.contains("mode \(layout.file)")
+            }, "\(layout.name): \(progress)")
+          XCTAssertTrue(
+            progress.contains {
+              $0.hasPrefix("Owner check: Recovery administrator list: \(content.count) bytes")
+                && $0.hasSuffix("; this account's entry matches")
+            }, "\(layout.name): \(progress)")
+          XCTAssertEqual(errors, [], layout.name)
+        case ("missing", .failure(let error)):
+          XCTAssertEqual(error as? NativeSourceOwnerRefusal, .adminListMissing, layout.name)
+          XCTAssertEqual(
+            errors, ["Owner check: Recovery administrator list refused: var/db is missing"])
+        case (let reason, .failure(let error)):
+          XCTAssertEqual(
+            error as? NativeSourceOwnerRefusal, .adminListUnreadable(detail: reason), layout.name)
+          XCTAssertEqual(
+            errors, ["Owner check: Recovery administrator list refused: \(reason)"], layout.name)
+          let summary = PinnedAsahiEngineExecutor.sourceOwnerSummary(for: error)
+          XCTAssertTrue(summary.hasSuffix(": " + reason + "."), summary)
+          XCTAssertEqual(EngineFailureNotice.sanitizedSummary(summary), summary)
+          XCTAssertTrue(PinnedAsahiEngineExecutor.isPrebootAdminListSummary(summary), summary)
+        case (_, let outcome):
+          XCTFail("\(layout.name): expected \(layout.expected), got \(outcome)")
+        }
+        // No log line names the account, its GUID or the volume group.
+        for line in progress + errors {
+          XCTAssertFalse(line.contains("mina"), line)
+          XCTAssertFalse(line.contains(fixture.owner), line)
+          XCTAssertFalse(line.contains(fixture.group), line)
+        }
+      }
+    }
+
+    func testOnlyPrebootAdminListRefusalsAreGivenTheRebuildRemedy() {
+      let listed: [NativeSourceOwnerRefusal] = [
+        .adminListMissing, .adminListUnreadable(detail: "var/db is writable by other users"),
+        .notInAdminList,
+      ]
+      for refusal in listed {
+        XCTAssertTrue(
+          PinnedAsahiEngineExecutor.isPrebootAdminListSummary(
+            PinnedAsahiEngineExecutor.sourceOwnerSummary(for: refusal)), "\(refusal)")
+      }
+      let others: [NativeSourceOwnerRefusal] = [
+        .otherMac, .otherDisk, .runningSystem, .systemVolume, .unknownAccount, .notVolumeOwner,
+        .preboot(detail: "x"), .adminIdentityMismatch, .layoutChanged,
+        .diskQuery(step: "APFS volume users", detail: "x"),
+      ]
+      for refusal in others {
+        XCTAssertFalse(
+          PinnedAsahiEngineExecutor.isPrebootAdminListSummary(
+            PinnedAsahiEngineExecutor.sourceOwnerSummary(for: refusal)), "\(refusal)")
+      }
+      XCTAssertFalse(PinnedAsahiEngineExecutor.isPrebootAdminListSummary(""))
+    }
+
+    func testAPFSVolumeOwnersReachTheLogWithoutTheAccount() throws {
+      let fixture = try OwnerFixture()
+      defer { fixture.base.remove() }
+      fixture.fault = "touch-id-mac"
+      let log = InstallerLogBuffer(capacity: 64)
+      _ = try InstallerLog.$taskBuffer.withValue(log) { try fixture.admit() }
+      XCTAssertTrue(
+        log.snapshot().map(\.message).contains(
+          "Owner check: APFS lists 2 users of the System volume, 2 volume owners "
+            + "(types: LocalOpenDirectory, PersonalRecovery); this account is a volume owner"))
     }
 
     func testOnlyInspectionOwnedReadOnlyMountIsCleanedAfterSuccessOrFailure() throws {

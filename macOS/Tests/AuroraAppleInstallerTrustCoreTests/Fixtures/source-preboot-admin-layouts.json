@@ -1,0 +1,113 @@
+{
+  "about": "Layouts of macOS's Preboot list of Recovery administrators, <group>/var/db/AdminUserRecoveryInfo.plist, and what the source-owner proof decides for each. Modes are octal; 'symlink' replaces the item with a symbolic link to a copy; 'missing' removes it. extraLink names the folder that gets a second hard link to the file. content: xml, binary, empty, garbage, array, oversize. Measured layouts name their source; the others are synthetic. All values are synthetic test data; no account or volume identifier from any Mac is recorded.",
+  "layouts": [
+    {
+      "name": "macos-26-measured",
+      "source": "Measured read-only on macOS 26.6.2 (25G83), 2026-11-08: group 0777 root, var 0755, var/db 0755, file 0644, 1 link, XML",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0644", "content": "xml",
+      "expected": "admit"
+    },
+    {
+      "name": "before-macos-26",
+      "source": "Synthetic: the protected group folder older macOS versions create",
+      "group": "0755", "var": "0755", "db": "0755", "file": "0644", "content": "binary",
+      "expected": "admit"
+    },
+    {
+      "name": "sticky-group-folder",
+      "source": "Synthetic macOS 27.x candidate: the shared group folder with the sticky bit",
+      "group": "1777", "var": "0755", "db": "0755", "file": "0644", "content": "xml",
+      "expected": "admit"
+    },
+    {
+      "name": "sticky-db-folder",
+      "source": "Synthetic macOS 27.x candidate: var/db shared with the sticky bit",
+      "group": "0777", "var": "0755", "db": "1777", "file": "0644", "content": "xml",
+      "expected": "admit"
+    },
+    {
+      "name": "second-name-under-protected-folder",
+      "source": "Synthetic: another hard link to the file in the shared group folder; var/db stays root-only",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0644", "content": "xml",
+      "extraLink": "group", "expected": "admit"
+    },
+    {
+      "name": "owner-only-file",
+      "source": "Synthetic: the file readable by root alone",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0600", "content": "xml",
+      "expected": "admit"
+    },
+    {
+      "name": "second-name-under-shared-folder",
+      "source": "Synthetic refusal: a second name in a folder others can write could be a link to another root file",
+      "group": "0777", "var": "0755", "db": "1777", "file": "0644", "content": "xml",
+      "extraLink": "db", "expected": "the file has 2 hard links in a folder others can write"
+    },
+    {
+      "name": "shared-db-folder",
+      "source": "Synthetic refusal: var/db writable by others without the sticky bit",
+      "group": "0777", "var": "0755", "db": "0777", "file": "0644", "content": "xml",
+      "expected": "var/db is writable by other users (mode 0777)"
+    },
+    {
+      "name": "group-writable-var",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0775", "db": "0755", "file": "0644", "content": "xml",
+      "expected": "var is writable by other users (mode 0775)"
+    },
+    {
+      "name": "group-writable-group-folder",
+      "source": "Synthetic refusal: only 0777 exactly or the sticky bit is accepted for the group folder",
+      "group": "0775", "var": "0755", "db": "0755", "file": "0644", "content": "xml",
+      "expected": "<group> is writable by other users (mode 0775)"
+    },
+    {
+      "name": "writable-file",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0666", "content": "xml",
+      "expected": "the file is writable by other users (mode 0666)"
+    },
+    {
+      "name": "linked-file",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "0755", "file": "symlink", "content": "xml",
+      "expected": "the file is a symbolic link"
+    },
+    {
+      "name": "linked-db-folder",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "symlink", "file": "0644", "content": "xml",
+      "expected": "var/db is a symbolic link"
+    },
+    {
+      "name": "empty-file",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0644", "content": "empty",
+      "expected": "the file is empty"
+    },
+    {
+      "name": "not-a-property-list",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0644", "content": "garbage",
+      "expected": "the file is not a property list"
+    },
+    {
+      "name": "array-property-list",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0644", "content": "array",
+      "expected": "the file is not a dictionary"
+    },
+    {
+      "name": "oversize-file",
+      "source": "Synthetic refusal",
+      "group": "0777", "var": "0755", "db": "0755", "file": "0644", "content": "oversize",
+      "expected": "the file is larger than 1 MB (1048577 bytes)"
+    },
+    {
+      "name": "missing-db-folder",
+      "source": "Synthetic: the list is absent, which macOS recreates",
+      "group": "0777", "var": "0755", "db": "missing", "file": "0644", "content": "xml",
+      "expected": "missing"
+    }
+  ]
+}

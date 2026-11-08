@@ -384,6 +384,43 @@
       }
     }
 
+    func testAPrebootAdminListRefusalTellsHowMacOSRebuildsTheList() throws {
+      let prefix = "The current macOS volume owner could not be verified: "
+      for summary in [
+        prefix + "the Recovery administrator list on Preboot could not be read safely: "
+          + "var/db is writable by other users (mode 0777).",
+        prefix + "the Preboot volume has no list of Recovery administrators.",
+        prefix + "the Recovery administrator list on Preboot does not include this account.",
+      ] {
+        let display = PlainLanguage.engineFailure(
+          EngineFailureNotice(
+            reason: .recoveryPreparation, exitStatus: 1, diskUnchanged: true, summary: summary),
+          technicalDetail: "detail")
+        XCTAssertEqual(display.plainDetail, summary + " No disk changes were made.")
+        let remedy = try XCTUnwrap(display.remedy)
+        XCTAssertTrue(remedy.contains("sudo diskutil apfs updatePreboot /"), remedy)
+        XCTAssertTrue(remedy.contains("Check again"), remedy)
+      }
+      for summary in [
+        prefix + "APFS does not list this account as a volume owner. Use the account that set up "
+          + "this Mac.",
+        "Native Recovery resources could not be verified.",
+      ] {
+        let display = PlainLanguage.engineFailure(
+          EngineFailureNotice(
+            reason: .recoveryPreparation, exitStatus: 1, diskUnchanged: true, summary: summary),
+          technicalDetail: "detail")
+        XCTAssertEqual(display.remedy, "Update the installer and choose Check again.")
+      }
+      // A run that may have changed the disk keeps the careful remedy.
+      let changed = PlainLanguage.engineFailure(
+        EngineFailureNotice(
+          reason: .recoveryPreparation, exitStatus: 1, diskUnchanged: false,
+          summary: prefix + "the Preboot volume has no list of Recovery administrators."),
+        technicalDetail: "detail")
+      XCTAssertFalse(try XCTUnwrap(changed.remedy).contains("updatePreboot"))
+    }
+
     func testPlanningRefusesWhatTheInstallCouldNotFinishWithAnAction() throws {
       let space = PlainLanguage.failure(
         for: MacOSFreeSpaceShortfall(requiredBytes: 12_557_937_290, availableBytes: 8_944_269_393))

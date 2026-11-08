@@ -30,7 +30,8 @@ DISTRIBUTION_ICONS = {
 
 # The M4 and later Macs the payload must carry a board Stage 2 for, besides the Neo.
 BOARD_STAGE2_REQUIRED = ('j604', 'j623', 'j624', 'j713', 'j715', 'j773g', 'j614s', 'j614c',
-                         'j616s', 'j616c', 'j773s', 'j575c', 'j813', 'j873g')
+                         'j616s', 'j616c', 'j773s', 'j575c', 'j813', 'j873g', 'j704', 'j815',
+                         'j804', 'j833ct')
 
 
 def digest(path):
@@ -284,7 +285,7 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     # installer warns their owners, with the recovery steps, before installing.
     supported_models.stage1_caution()
     template['aurora_stage1'] = {'kind': 'common-raw-v1', 'qualified_machines': {
-        identifier.removeprefix('apple,') + 'ap': ['13.5', '14.8.3', '26.6', '26.6.2', '27.0']
+        identifier.removeprefix('apple,') + 'ap': ['13.5', '14.8.3', '26.6', '26.6.2', '27.0', '27.2']
         for identifier in identifiers
     }}
     if stage2_members:

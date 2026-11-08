@@ -23,6 +23,7 @@ import supported_models  # noqa: E402  (on the path the payload module adds)
 CHIPS = {'j604': 't8132', 'j623': 't8132', 'j624': 't8132', 'j713': 't8132', 'j715': 't8132',
          'j773g': 't8132', 'j614s': 't6040', 'j616s': 't6040', 'j773s': 't6040', 'j614c': 't6041',
          'j616c': 't6041', 'j575c': 't6041', 'j813': 't8142', 'j873g': 't8152', 'j700': 't8140',
+         'j704': 't8142', 'j815': 't8142', 'j804': 't8152', 'j833ct': 't8152',
          'j274': 't8103', 'j714s': 't6050'}
 COMPATIBLES = {board: ['apple,' + board, 'apple,' + chip, 'apple,arm-platform']
                for board, chip in CHIPS.items()}
@@ -238,7 +239,8 @@ class DistributionPayloadTests(unittest.TestCase):
         caution = supported_models.stage1_caution()
         self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
                                         'apple,j624', 'apple,j715', 'apple,j773g', 'apple,j614c',
-                                        'apple,j773s', 'apple,j575c', 'apple,j813', 'apple,j873g'})
+                                        'apple,j773s', 'apple,j575c', 'apple,j813', 'apple,j873g',
+                                        'apple,j704', 'apple,j815', 'apple,j804', 'apple,j833ct'})
         for identifier in list(caution) + ['apple,j314s', 'apple,j316s', 'apple,j314c', 'apple,j316c',
                                            'apple,j375c', 'apple,j375d']:
             self.assertIn(identifier.removeprefix('apple,') + 'ap', qualified)
@@ -249,6 +251,11 @@ class DistributionPayloadTests(unittest.TestCase):
         # The M6 Mac mini's stub is macOS 27.0, the firmware aura was brought up on.
         self.assertIn('27.0', qualified['j873gap'])
         self.assertIn('26.6.2', qualified['j813ap'])
+        # The M6 MacBook Pro and iMac shipped with macOS 27.2 (26B7124), their only firmware.
+        self.assertIn('27.2', qualified['j804ap'])
+        self.assertIn('27.2', qualified['j833ctap'])
+        self.assertIn('26.6.2', qualified['j704ap'])
+        self.assertIn('26.6.2', qualified['j815ap'])
 
     def test_public_payload_without_required_m4_stage_two_is_refused(self):
         self.write_neo_stage_two(boards=('j700',) + tuple(b for b in payload.BOARD_STAGE2_REQUIRED if b != 'j614s'))

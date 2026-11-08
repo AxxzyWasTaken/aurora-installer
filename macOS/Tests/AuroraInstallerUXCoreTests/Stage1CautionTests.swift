@@ -7,7 +7,7 @@
     func testOnlyTheUntriedM3UltraAndM4BoardsAreWarnedAndNotBlocked() {
       let untried = [
         "j575d", "j614s", "j604", "j623", "j624", "j715", "j773g", "j614c", "j773s", "j575c",
-        "j813", "j873g",
+        "j813", "j873g", "j704", "j815", "j804", "j833ct",
       ]
       for board in untried {
         XCTAssertNotNil(Stage1Caution.reason(for: "apple," + board), board)

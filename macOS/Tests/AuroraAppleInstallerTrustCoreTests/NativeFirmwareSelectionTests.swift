@@ -193,6 +193,48 @@
         try choose("apple,j700", neo, supported: ["26.6.2"], policy: expert))
     }
 
+    func testTheNewM5AndM6BoardsTakeTheFirmwareTheirBoardsShippedWith() throws {
+      let policy = try NativeInspectionPolicy.sealed()
+      func choose(_ device: String, _ hardware: NativeInspectionHardware) throws
+        -> NativeFirmwareSelection
+      {
+        try NativeFirmwareSelection.choose(
+          deviceIdentifier: device, facts: .init(deviceIdentifier: device, hardware: hardware),
+          metadata: NativeInstallationMetadata(
+            data: JSONSerialization.data(withJSONObject: [
+              "os_list": [
+                [
+                  "omarchy_target": "apple-silicon-full-os", "default_os_name": "Fixture",
+                  "partitions": [["size": "1GiB"]],
+                ]
+              ]
+            ])),
+          policy: policy)
+      }
+      // The M6 MacBook Pro (J804) and iMac (J833ct) are only in 27.2 (26B7124).
+      let m6 = NativeInspectionHardware(
+        chipID: 0x8152, bootVersion: "mBoot-20457.1.29", macOSVersion: "27.2",
+        recoveryVersion: "26.2.7124.0.0,0")
+      for device in ["apple,j804", "apple,j833ct"] {
+        XCTAssertTrue(policy.supports(device, hardware: m6), device)
+        let selection = try choose(device, m6)
+        XCTAssertEqual(selection.version, "27.2", device)
+        XCTAssertEqual(
+          selection.sourceURL.lastPathComponent, "UniversalMac_27.2_26B7124_Restore.ipsw", device)
+      }
+      // The 27.2 entry is theirs alone: the M6 Mac mini keeps its 27.0 stub.
+      XCTAssertEqual(try choose("apple,j873g", m6).version, "27.0")
+      // The 14-inch M5 MacBook Pro (J704) and 15-inch M5 MacBook Air (J815)
+      // are in the universal 26.6.2 (25G83) image, like the 13-inch J813.
+      let m5 = NativeInspectionHardware(
+        chipID: 0x8142, bootVersion: "mBoot-18000.161.10", macOSVersion: "26.6.2",
+        recoveryVersion: "25.7.83.0.0,0")
+      for device in ["apple,j704", "apple,j815"] {
+        XCTAssertTrue(policy.supports(device, hardware: m5), device)
+        XCTAssertEqual(try choose(device, m5).version, "26.6.2", device)
+      }
+    }
+
     func testBoardBootObjectsAndESPLayoutMatchTheLockedBackend() async throws {
       let fixture = try fixture()
       XCTAssertEqual(fixture.boot.count, 56)

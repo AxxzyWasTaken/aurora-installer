@@ -187,6 +187,7 @@
       "apple,j623", "apple,j624", "apple,j713", "apple,j715", "apple,j773g", "apple,j614s",
       "apple,j614c", "apple,j616s", "apple,j616c", "apple,j773s", "apple,j575c", "apple,j813",
       "apple,j873g", "apple,j700", "apple,j704", "apple,j815", "apple,j804", "apple,j833ct",
+      "apple,k114c", "apple,k114s", "apple,k116c", "apple,k116s",
     ]
 
     private var refusedOnce: Bool {

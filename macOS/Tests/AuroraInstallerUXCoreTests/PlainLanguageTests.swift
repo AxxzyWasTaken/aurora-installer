@@ -486,7 +486,7 @@
       for name in ["release-inputs.template.json", "release-inputs-aurora.template.json"] {
         let text = try String(
           contentsOf: scripts.appendingPathComponent(name), encoding: .utf8)
-        for match in text.matches(of: /"(apple,j[0-9a-z]+)"/) {
+        for match in text.matches(of: /"(apple,[jk][0-9a-z]+)"/) {
           identifiers.insert(String(match.1))
         }
       }
@@ -497,6 +497,7 @@
         "j514m", "j516s", "j516c", "j516m", "j575d", "j604", "j623", "j624", "j713", "j715",
         "j773g", "j614s", "j614c", "j616s", "j616c", "j773s", "j575c", "j813", "j873g", "j700",
         "j704", "j815", "j804", "j833ct",
+        "k114c", "k114s", "k116c", "k116s",
       ].map { "apple,\($0)" }
       XCTAssertEqual(identifiers, Set(everySupportedMac))
       let manifest = try JSONSerialization.jsonObject(

@@ -237,7 +237,8 @@ class DistributionPayloadTests(unittest.TestCase):
         qualified = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0][
             'aurora_stage1']['qualified_machines']
         caution = supported_models.stage1_caution()
-        self.assertEqual(set(caution), {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
+        oled = {'apple,k114c', 'apple,k114s', 'apple,k116c', 'apple,k116s'}
+        self.assertEqual(set(caution), oled | {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
                                         'apple,j624', 'apple,j715', 'apple,j773g', 'apple,j614c',
                                         'apple,j773s', 'apple,j575c', 'apple,j813', 'apple,j873g',
                                         'apple,j704', 'apple,j815', 'apple,j804', 'apple,j833ct'})
@@ -256,6 +257,9 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertIn('27.2', qualified['j833ctap'])
         self.assertIn('26.6.2', qualified['j704ap'])
         self.assertIn('26.6.2', qualified['j815ap'])
+        # The OLED MacBook Pros shipped with macOS 27.2 and have no older firmware.
+        for identifier in oled:
+            self.assertEqual(qualified[identifier.removeprefix('apple,') + 'ap'], ['27.2'])
 
     def test_public_payload_without_required_m4_stage_two_is_refused(self):
         self.write_neo_stage_two(boards=('j700',) + tuple(b for b in payload.BOARD_STAGE2_REQUIRED if b != 'j614s'))
@@ -267,7 +271,7 @@ class DistributionPayloadTests(unittest.TestCase):
     def test_the_installer_warns_about_exactly_the_caution_boards(self):
         source = (SCRIPT.parents[1] / 'Sources/AuroraInstallerUXCore/Stage1Caution.swift').read_text()
         table = source[source.index('static let reasons'):]
-        swift = set(re.findall(r'"(apple,j[0-9]+[a-z]*)":', table))
+        swift = set(re.findall(r'"(apple,[jk][0-9]+[a-z]*)":', table))
         self.assertEqual(swift, set(supported_models.stage1_caution()))
 
     def test_public_payload_without_the_neo_stage_two_is_refused(self):

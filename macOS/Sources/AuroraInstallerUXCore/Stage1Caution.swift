@@ -24,6 +24,9 @@
     private static let describedOnly =
       "Support for this Mac is experimental and untested: nobody on the Aurora team has one yet. Its Linux device tree is new and only describes the hardware, most of which is not enabled yet, and neither aura nor this installer has run on it, so Aurora may not start."
 
+    private static let preliminaryOLED =
+      "Support for this MacBook Pro with the OLED touchscreen is preliminary and untested on hardware. Nobody on the Aurora team has one yet. Its Linux device tree is new and untested, the touchscreen does not work yet, the glowing Apple logo is untested, and the built-in display works only as a simple boot screen until the display driver supports it. Aurora may not start."
+
     static let reasons: [String: String] = [
       "apple,j575d": untriedChip,
       "apple,j614s": untriedBoard,
@@ -41,6 +44,10 @@
       "apple,j815": describedOnly,
       "apple,j804": describedOnly,
       "apple,j833ct": describedOnly,
+      "apple,k114c": preliminaryOLED,
+      "apple,k114s": preliminaryOLED,
+      "apple,k116c": preliminaryOLED,
+      "apple,k116s": preliminaryOLED,
     ]
 
     public static func reason(for deviceIdentifier: String) -> String? {

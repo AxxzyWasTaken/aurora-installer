@@ -54,7 +54,11 @@
     "apple,j873g",
     "apple,j804",
     "apple,j833ct",
-    "apple,j700"
+    "apple,j700",
+    "apple,k114c",
+    "apple,k114s",
+    "apple,k116c",
+    "apple,k116s"
   ],
   "refused": {},
   "developer": {},
@@ -74,6 +78,10 @@
     "apple,j704": "MacBook Pro (14-inch, M5) (J704, T8142): experimental and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is new (aurora-silicon/linux#1153) and only describes the hardware, most of which stays disabled for now. aura and this installer have not run on it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
     "apple,j815": "MacBook Air (15-inch, M5) (J815, T8142): experimental and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is new (aurora-silicon/linux#1153) and only describes the hardware, most of which stays disabled for now. aura and this installer have not run on it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
     "apple,j804": "MacBook Pro (14-inch, M6) (J804, T8152): experimental and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is new (aurora-silicon/linux#1154) and only describes the hardware, most of which stays disabled for now. aura and this installer have not run on it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
-    "apple,j833ct": "iMac (24-inch, M6) (J833ct, T8152): experimental and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is new (aurora-silicon/linux#1154) and only describes the hardware, most of which stays disabled for now. aura and this installer have not run on it. Installs go ahead only after the owner acknowledges the warning and the recovery steps."
+    "apple,j833ct": "iMac (24-inch, M6) (J833ct, T8152): experimental and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is new (aurora-silicon/linux#1154) and only describes the hardware, most of which stays disabled for now. aura and this installer have not run on it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
+    "apple,k114c": "MacBook Pro 14-inch M5 Max with the OLED touchscreen (K114c, T6050): preliminary and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is preliminary and untested (aurora-silicon/linux#1025). The touchscreen does not work yet and the glowing Apple logo is untested, and the internal OLED panel works only as the boot framebuffer until the display driver covers it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
+    "apple,k114s": "MacBook Pro 14-inch M5 Pro with the OLED touchscreen (K114s, T6050): preliminary and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is preliminary and untested (aurora-silicon/linux#1025). The touchscreen does not work yet and the glowing Apple logo is untested, and the internal OLED panel works only as the boot framebuffer until the display driver covers it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
+    "apple,k116c": "MacBook Pro 16-inch M5 Max with the OLED touchscreen (K116c, T6050): preliminary and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is preliminary and untested (aurora-silicon/linux#1025). The touchscreen does not work yet and the glowing Apple logo is untested, and the internal OLED panel works only as the boot framebuffer until the display driver covers it. Installs go ahead only after the owner acknowledges the warning and the recovery steps.",
+    "apple,k116s": "MacBook Pro 16-inch M5 Pro with the OLED touchscreen (K116s, T6050): preliminary and untested on hardware, nobody on the Aurora team has one yet. Its kernel device tree is preliminary and untested (aurora-silicon/linux#1025). The touchscreen does not work yet and the glowing Apple logo is untested, and the internal OLED panel works only as the boot framebuffer until the display driver covers it. Installs go ahead only after the owner acknowledges the warning and the recovery steps."
   }
 }

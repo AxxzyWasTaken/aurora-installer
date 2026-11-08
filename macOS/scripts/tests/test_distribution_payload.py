@@ -1,5 +1,6 @@
 """Small filesystem fixtures test packaging integrity without mounting disks."""
 import hashlib
+import gzip
 import importlib.util
 import json
 import re
@@ -24,7 +25,8 @@ CHIPS = {'j604': 't8132', 'j623': 't8132', 'j624': 't8132', 'j713': 't8132', 'j7
          'j773g': 't8132', 'j614s': 't6040', 'j616s': 't6040', 'j773s': 't6040', 'j614c': 't6041',
          'j616c': 't6041', 'j575c': 't6041', 'j813': 't8142', 'j873g': 't8152', 'j700': 't8140',
          'j704': 't8142', 'j815': 't8142', 'j804': 't8152', 'j833ct': 't8152',
-         'j274': 't8103', 'j714s': 't6050'}
+         'j274': 't8103', 'j714s': 't6050',
+         'k114c': 't6050', 'k114s': 't6050', 'k116c': 't6050', 'k116s': 't6050'}
 COMPATIBLES = {board: ['apple,' + board, 'apple,' + chip, 'apple,arm-platform']
                for board, chip in CHIPS.items()}
 COMPATIBLES['j71'] = ['apple,j71', 'apple,s5l8960x', 'apple,arm-platform']
@@ -105,6 +107,99 @@ class DistributionPayloadTests(unittest.TestCase):
         output = self.root / name
         payload.assemble(self.bundle, self.app, output, release_id='fixture')
         return json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0], output
+
+    def common_with_missing_oled(self, omit_tree=None, wrong_chip=None):
+        aura = b'authenticated-aura-fixture'
+        trailer = gzip.compress(b'authenticated-u-boot-fixture', mtime=0)
+        boards = M4_OR_LATER + ('j71', 'j714s')
+        trees = {}
+        for board in boards:
+            if board == omit_tree:
+                continue
+            compatible = COMPATIBLES[board]
+            if board == wrong_chip:
+                compatible = ['apple,' + board, 'apple,t8103', 'apple,arm-platform']
+            trees[board] = device_tree(compatible)
+        combined = aura + b''.join(trees.values()) + trailer
+        (self.bundle / 'esp/m1n1/boot.bin').write_bytes(combined)
+        (self.bundle / 'esp/m1n1/boot-ctxr.bin').write_bytes(combined)
+        records = {}
+        for board in boards:
+            path = self.bundle / f'esp/m1n1/boot-{board}.bin'
+            if board in payload.OLED_STAGE2_REQUIRED:
+                path.unlink(missing_ok=True)
+                continue
+            data = aura + trees[board] + trailer
+            path.write_bytes(data)
+            records[board + 'ap'] = {'member': f'esp/m1n1/boot-{board}.bin',
+                                     'bytes': len(data), 'sha256': payload.digest(path),
+                                     'deviceTrees': 1}
+        manifest = {'schema': 1, 'sourceSha256': hashlib.sha256(combined).hexdigest(),
+                    'auraSha256': hashlib.sha256(aura).hexdigest(),
+                    'nextStageSha256': hashlib.sha256(trailer).hexdigest(),
+                    'deviceTreeCount': len(trees), 'boards': records}
+        (self.bundle / 'stage2.json').write_text(json.dumps(manifest))
+        return manifest
+
+    def test_completes_oled_from_common_without_changing_existing_members(self):
+        self.common_with_missing_oled()
+        before = {str(p.relative_to(self.bundle)): p.read_bytes()
+                  for p in self.bundle.rglob('*') if p.is_file() and p.name != 'stage2.json'}
+        metadata, _ = self.assembled('oled')
+        for name, data in before.items():
+            self.assertEqual((self.bundle / name).read_bytes(), data, name)
+        for board in payload.OLED_STAGE2_REQUIRED:
+            member = f'esp/m1n1/boot-{board}.bin'
+            self.assertEqual(metadata['aurora_stage2']['board_members'][board + 'ap'], member)
+            data = (self.bundle / member).read_bytes()
+            self.assertEqual(payload.board_chip(self.bundle / member, board), 0x6050)
+            self.assertEqual((self.bundle / f'esp/m1n1/boot-ctxr-{board}.bin').read_bytes(), data)
+            self.assertIn(f'esp/m1n1/boot-ctxr-{board}.bin',
+                          metadata['aurora_macho_boot']['confined_members'])
+            self.assertEqual(metadata['aurora_stage1']['qualified_machines'][board + 'ap'], ['27.2'])
+        manifest = (self.bundle / 'stage2.json').read_bytes()
+        self.assembled('oled-again')
+        self.assertEqual((self.bundle / 'stage2.json').read_bytes(), manifest)
+
+    def test_missing_oled_tree_fails_without_writing_partial_members(self):
+        self.common_with_missing_oled(omit_tree='k116s')
+        with self.assertRaisesRegex(ValueError, 'no device tree for k116s'):
+            self.assembled('missing-oled')
+        self.assertFalse(list((self.bundle / 'esp/m1n1').glob('boot-k*.bin')))
+
+    def test_oled_cannot_use_a_different_existing_board_build(self):
+        manifest = self.common_with_missing_oled()
+        path = self.bundle / 'esp/m1n1/boot-j614s.bin'
+        path.write_bytes(path.read_bytes() + b'different-build')
+        manifest['boards']['j614sap'].update(bytes=path.stat().st_size, sha256=payload.digest(path))
+        (self.bundle / 'stage2.json').write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, 'authenticated OLED Stage 2 components'):
+            self.assembled('wrong-oled-source')
+        self.assertFalse(list((self.bundle / 'esp/m1n1').glob('boot-k*.bin')))
+
+    def test_oled_rejects_a_non_mach_o_chip(self):
+        self.common_with_missing_oled(wrong_chip='k114c')
+        with self.assertRaisesRegex(ValueError, 'Mach-O Mac chip'):
+            self.assembled('wrong-oled-chip')
+
+    def test_oled_rejects_a_stage_two_that_exceeds_its_slot(self):
+        self.common_with_missing_oled()
+        with patch.object(payload, 'MAX_CONFINED_STAGE2_BYTES', 64):
+            with self.assertRaisesRegex(ValueError, '16 MiB slot'):
+                self.assembled('large-oled')
+
+    def test_reuse_cannot_label_an_old_archive_as_oled_complete(self):
+        self.common_with_missing_oled()
+        metadata, output = self.assembled('old-archive')
+        path = output / metadata['package']
+        replacement = path.with_suffix('.replacement.zip')
+        with zipfile.ZipFile(path) as original, zipfile.ZipFile(replacement, 'w') as changed:
+            for info in original.infolist():
+                if '/boot-k' not in info.filename and '/boot-ctxr-k' not in info.filename:
+                    changed.writestr(info, original.read(info.filename))
+        replacement.replace(path)
+        with self.assertRaisesRegex(ValueError, 'existing payload member inventory differs'):
+            payload.assemble(self.bundle, self.app, output, reuse_payload=True, release_id='fixture')
 
     def test_a_payload_without_the_mach_o_files_still_serves_every_other_mac(self):
         # One payload serves every Mac; the native installer refuses M4 and later on it.

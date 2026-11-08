@@ -3,7 +3,7 @@
   import Darwin
   import Foundation
 
-  public enum PinnedAsahiEngineExecutionError:
+  public enum NativeInstallerExecutionError:
     Error, Equatable, Sendable
   {
     case privilegeRequired
@@ -21,7 +21,7 @@
   /// native engine. Nothing here launches an interpreter or an engine archive:
   /// fresh installation, Recovery handoff and its retry, and preserved
   /// reinstallation are all compiled into the helper.
-  public struct PinnedAsahiEngineExecutor:
+  public struct NativeInstallerExecutor:
     ImportedEngineHandoffExecuting, Sendable
   {
     public static let maximumTranscriptBytes: Int64 = 8_388_608
@@ -143,7 +143,7 @@
       installConf: InstallConf?
     ) async throws -> Data {
       guard effectiveUserID() == 0 else {
-        throw PinnedAsahiEngineExecutionError.privilegeRequired
+        throw NativeInstallerExecutionError.privilegeRequired
       }
       // A Stage 1 update keeps no execution journal: it never touches the
       // partitions, and the stub records its own state for Recovery.
@@ -164,7 +164,7 @@
         guard let installConf,
           operation == .install || operation == .retryRecoveryAuthorization
         else {
-          throw PinnedAsahiEngineExecutionError.nativeReinstallUnavailable
+          throw NativeInstallerExecutionError.nativeReinstallUnavailable
         }
         do {
           return try await InstallerPerformance.measuring("preserved_reinstall") {
@@ -172,7 +172,7 @@
               package, journal: journal, authorization: authorization,
               installConf: installConf)
           }
-        } catch let error as PinnedAsahiEngineExecutionError {
+        } catch let error as NativeInstallerExecutionError {
           throw error
         } catch {
           let update = Self.macOSUpdateSummary(for: error)
@@ -208,7 +208,7 @@
       }
       do {
         guard let restoreImageRequirement, let restoreImage = package.restoreImageURL else {
-          throw PinnedAsahiEngineExecutionError.restoreImageUnavailable
+          throw NativeInstallerExecutionError.restoreImageUnavailable
         }
         try InstallerPerformance.measure("restore_helper_check") {
           try verifyRestoreImage(restoreImage, restoreImageRequirement)
@@ -261,7 +261,7 @@
         }
       } catch {
         let network = TransientTransport.isTransient(error)
-        throw PinnedAsahiEngineExecutionError.engineFailed(
+        throw NativeInstallerExecutionError.engineFailed(
           EngineFailureReport(
             notice: EngineFailureNotice(
               reason: network ? .networkUnavailable : .firmwarePreparation, exitStatus: 1,
@@ -369,7 +369,7 @@
         } catch {
           let network = TransientTransport.isTransient(error)
           let (reason, summary) = Self.executionFailure(error)
-          throw PinnedAsahiEngineExecutionError.engineFailed(
+          throw NativeInstallerExecutionError.engineFailed(
             EngineFailureReport(
               notice: EngineFailureNotice(
                 reason: network ? .networkUnavailable : reason,
@@ -411,8 +411,8 @@
             package: package, journal: journal,
             authorization: authorization, requirement: requirement, fullReadback: fullReadback)
         }
-      } catch let error as PinnedAsahiEngineExecutionError { throw error } catch {
-        throw PinnedAsahiEngineExecutionError.engineFailed(
+      } catch let error as NativeInstallerExecutionError { throw error } catch {
+        throw NativeInstallerExecutionError.engineFailed(
           EngineFailureReport(
             notice: EngineFailureNotice(
               reason: .recoveryPreparation, exitStatus: 1,
@@ -563,7 +563,7 @@
         NativeInspectionError.invalidMetadata, NativeInspectionError.metadataChanged,
         NativeInspectionError.invalidPolicy, NativeRawImageError.invalidImage,
         NativeInstallAdmissionError.invalidJournal,
-        PinnedAsahiEngineExecutionError.unsafeTranscript:
+        NativeInstallerExecutionError.unsafeTranscript:
         true
       default: false
       }
@@ -619,7 +619,7 @@
       _ package: ImportedEngineHandoffPackage, authorization: MachineOwnerAuthorization
     ) async throws -> Data {
       guard package.installationIntent == .reinstall else {
-        throw PinnedAsahiEngineExecutionError.nativeReinstallUnavailable
+        throw NativeInstallerExecutionError.nativeReinstallUnavailable
       }
       do {
         return try await InstallerPerformance.measuring("stage1_update") {
@@ -633,7 +633,7 @@
         let summary =
           network
           ? Self.networkSummary : update ?? Self.stage1UpdateSummary(for: underlying)
-        throw PinnedAsahiEngineExecutionError.engineFailed(
+        throw NativeInstallerExecutionError.engineFailed(
           EngineFailureReport(
             notice: EngineFailureNotice(
               reason: network
@@ -718,7 +718,7 @@
       _ error: any Error, reason: EngineFailureReason, operation: EngineHandoffOperation,
       journal: URL, package: ImportedEngineHandoffPackage, password: Data,
       summary: String = "Native Recovery resources could not be verified."
-    ) -> PinnedAsahiEngineExecutionError {
+    ) -> NativeInstallerExecutionError {
       let network = TransientTransport.isTransient(error)
       return .engineFailed(
         EngineFailureReport(
@@ -756,7 +756,7 @@
         journal.path,
         O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
       )
-      guard descriptor >= 0 else { throw PinnedAsahiEngineExecutionError.unsafeTranscript }
+      guard descriptor >= 0 else { throw NativeInstallerExecutionError.unsafeTranscript }
       defer { Darwin.close(descriptor) }
       var status = stat()
       guard fstat(descriptor, &status) == 0,
@@ -766,7 +766,7 @@
         status.st_size >= 0,
         status.st_size <= Self.maximumTranscriptBytes
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       if status.st_size == 0 { return Data() }
       let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
@@ -774,7 +774,7 @@
         data.count == Int(status.st_size),
         data.last == 0x0A
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       return data
     }
@@ -972,7 +972,7 @@
         O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
       )
       guard descriptor >= 0 else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       defer { Darwin.close(descriptor) }
 
@@ -984,7 +984,7 @@
         status.st_size > 0,
         status.st_size <= 1_048_576
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       let handle = FileHandle(
         fileDescriptor: descriptor,
@@ -993,7 +993,7 @@
       guard let data = try handle.readToEnd(),
         data.count == Int(status.st_size)
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       return data
     }
@@ -1006,7 +1006,7 @@
           rawValue: package.bindingDigest
         )
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       let identifier = bindingDigest.hexadecimal
 
@@ -1029,7 +1029,7 @@
         S_IRUSR | S_IWUSR
       )
       guard descriptor >= 0 else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       var status = stat()
       guard fstat(descriptor, &status) == 0,
@@ -1039,7 +1039,7 @@
         status.st_size <= Self.maximumTranscriptBytes
       else {
         Darwin.close(descriptor)
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       Darwin.close(descriptor)
       return journal
@@ -1052,7 +1052,7 @@
         status.st_mode & 0o077 == 0,
         status.st_uid == expectedFileOwnerID()
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
     }
 
@@ -1062,7 +1062,7 @@
         O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
       )
       guard descriptor >= 0 else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       defer { Darwin.close(descriptor) }
 
@@ -1074,7 +1074,7 @@
         status.st_size > 0,
         status.st_size <= Self.maximumTranscriptBytes
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       let handle = FileHandle(
         fileDescriptor: descriptor,
@@ -1084,7 +1084,7 @@
         data.count == Int(status.st_size),
         data.last == 0x0A
       else {
-        throw PinnedAsahiEngineExecutionError.unsafeTranscript
+        throw NativeInstallerExecutionError.unsafeTranscript
       }
       return data
     }

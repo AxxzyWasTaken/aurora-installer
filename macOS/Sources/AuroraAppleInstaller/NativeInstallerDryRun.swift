@@ -69,7 +69,7 @@
       guard let inventory = inspection.inventory else {
         throw NativeInspectionError.invalidLayout
       }
-      let identity = try PinnedAsahiPlanIdentity(
+      let identity = try NativePlanIdentity(
         engineVersion: "native-v1", engineDigest: SHA256Digest(hashing: Data()).rawValue,
         metadataDigest: SHA256Digest(hashing: metadata).rawValue, payloadDigest: payloadDigest)
       var candidates = [[String: Any]]()
@@ -85,7 +85,7 @@
         }
         do {
           let length = try requestedLength(candidate)
-          let request = try PinnedAsahiPlanRequest(
+          let request = try NativePlanRequest(
             inventory: inventory, candidate: candidate, requestedLengthBytes: length)
           let planned = try NativeInstallerPlanner.transcript(
             inspection: inspection, request: request, identity: identity)
@@ -178,7 +178,7 @@
     /// The installer offers the recommended size when it fits and otherwise
     /// the smallest admissible one, rounded to the plan's allocation unit.
     static func requestedLength(_ candidate: ValidatedEngineCandidate) throws -> UInt64 {
-      let unit = PinnedAsahiPlanRequest.allocationUnitBytes
+      let unit = NativePlanRequest.allocationUnitBytes
       if ["repair", "replace", "reinstall"].contains(candidate.kind) {
         return candidate.lengthBytes
       }

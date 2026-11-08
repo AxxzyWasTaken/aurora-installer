@@ -276,7 +276,7 @@
         scenario == .allocationClamped && auroraBytes != nil
         ? initial : (refusedOnce ? 133_000_000_000 : 700_000_000_000)
       let requested = min(maximum, max(80_000_000_000, auroraBytes ?? initial))
-      let unit = PinnedAsahiPlanRequest.allocationUnitBytes
+      let unit = NativePlanRequest.allocationUnitBytes
       let length = scenario == .allocationAligned ? requested - requested % unit : requested
       SimulatedLog.line(
         .progress, "Installer",

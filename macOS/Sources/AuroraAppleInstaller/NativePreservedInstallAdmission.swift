@@ -107,10 +107,10 @@
         }),
         candidate.identityDigest == identityDigest
       else { throw NativePreservedInstallError.changedLayout }
-      let request = try PinnedAsahiPlanRequest(
+      let request = try NativePlanRequest(
         inventory: inventory, candidate: candidate,
         requestedLengthBytes: approved.lengthBytes)
-      let identity = try PinnedAsahiPlanIdentity(
+      let identity = try NativePlanIdentity(
         engineVersion: approved.engineVersion, engineDigest: approved.engineDigest,
         metadataDigest: approved.metadataDigest, payloadDigest: approved.payloadDigest)
       let transcript = try NativeInstallerPlanner.transcript(

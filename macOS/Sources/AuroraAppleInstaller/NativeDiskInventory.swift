@@ -126,7 +126,7 @@
             collected, sourceIdentifier: known.sourceIdentifier)
         else { continue }
         let length = preserved.root.end - preserved.stub.offset
-        guard length > 0, length % PinnedAsahiPlanRequest.allocationUnitBytes == 0 else {
+        guard length > 0, length % NativePlanRequest.allocationUnitBytes == 0 else {
           continue
         }
         candidates.append(

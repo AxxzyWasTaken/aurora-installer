@@ -41,7 +41,7 @@
       } catch {
         XCTFail(
           "Live source-owner admission refused on \(identity.deviceIdentifier): "
-            + "\(PinnedAsahiEngineExecutor.sourceOwnerSummary(for: error)) [\(error)]")
+            + "\(NativeInstallerExecutor.sourceOwnerSummary(for: error)) [\(error)]")
       }
     }
 
@@ -204,9 +204,9 @@
       ]
       XCTAssertEqual(Set(refusals.map(\.summary)).count, refusals.count)
       for refusal in refusals {
-        let summary = PinnedAsahiEngineExecutor.sourceOwnerSummary(for: refusal)
+        let summary = NativeInstallerExecutor.sourceOwnerSummary(for: refusal)
         XCTAssertTrue(
-          summary.hasPrefix(PinnedAsahiEngineExecutor.sourceOwnerSummaryPrefix + ": "), summary)
+          summary.hasPrefix(NativeInstallerExecutor.sourceOwnerSummaryPrefix + ": "), summary)
         // The notice keeps printable ASCII up to its limit and drops the rest.
         XCTAssertEqual(EngineFailureNotice.sanitizedSummary(summary), summary)
         XCTAssertFalse(String(describing: refusal).isEmpty)
@@ -454,10 +454,10 @@
             error as? NativeSourceOwnerRefusal, .adminListUnreadable(detail: reason), layout.name)
           XCTAssertEqual(
             errors, ["Owner check: Recovery administrator list refused: \(reason)"], layout.name)
-          let summary = PinnedAsahiEngineExecutor.sourceOwnerSummary(for: error)
+          let summary = NativeInstallerExecutor.sourceOwnerSummary(for: error)
           XCTAssertTrue(summary.hasSuffix(": " + reason + "."), summary)
           XCTAssertEqual(EngineFailureNotice.sanitizedSummary(summary), summary)
-          XCTAssertTrue(PinnedAsahiEngineExecutor.isPrebootAdminListSummary(summary), summary)
+          XCTAssertTrue(NativeInstallerExecutor.isPrebootAdminListSummary(summary), summary)
         case (_, let outcome):
           XCTFail("\(layout.name): expected \(layout.expected), got \(outcome)")
         }
@@ -477,8 +477,8 @@
       ]
       for refusal in listed {
         XCTAssertTrue(
-          PinnedAsahiEngineExecutor.isPrebootAdminListSummary(
-            PinnedAsahiEngineExecutor.sourceOwnerSummary(for: refusal)), "\(refusal)")
+          NativeInstallerExecutor.isPrebootAdminListSummary(
+            NativeInstallerExecutor.sourceOwnerSummary(for: refusal)), "\(refusal)")
       }
       let others: [NativeSourceOwnerRefusal] = [
         .otherMac, .otherDisk, .runningSystem, .systemVolume, .unknownAccount, .notVolumeOwner,
@@ -487,10 +487,10 @@
       ]
       for refusal in others {
         XCTAssertFalse(
-          PinnedAsahiEngineExecutor.isPrebootAdminListSummary(
-            PinnedAsahiEngineExecutor.sourceOwnerSummary(for: refusal)), "\(refusal)")
+          NativeInstallerExecutor.isPrebootAdminListSummary(
+            NativeInstallerExecutor.sourceOwnerSummary(for: refusal)), "\(refusal)")
       }
-      XCTAssertFalse(PinnedAsahiEngineExecutor.isPrebootAdminListSummary(""))
+      XCTAssertFalse(NativeInstallerExecutor.isPrebootAdminListSummary(""))
     }
 
     func testAPFSVolumeOwnersReachTheLogWithoutTheAccount() throws {

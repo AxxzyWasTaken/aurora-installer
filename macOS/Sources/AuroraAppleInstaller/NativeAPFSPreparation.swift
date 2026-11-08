@@ -342,10 +342,10 @@
           $0.kind == approved.candidateKind && $0.sourceIdentifier == approved.sourceIdentifier
         })
       else { throw NativeAPFSError.changedLayout }
-      let request = try PinnedAsahiPlanRequest(
+      let request = try NativePlanRequest(
         inventory: inventory, candidate: candidate,
         requestedLengthBytes: approved.lengthBytes)
-      let identity = try PinnedAsahiPlanIdentity(
+      let identity = try NativePlanIdentity(
         engineVersion: approved.engineVersion,
         engineDigest: approved.engineDigest, metadataDigest: approved.metadataDigest,
         payloadDigest: approved.payloadDigest)

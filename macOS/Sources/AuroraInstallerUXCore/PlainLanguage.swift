@@ -676,7 +676,7 @@
           technicalDetail: technicalDetail,
           remedy: !unchanged
             ? "Save the error details and check the verified installation record before trying again."
-            : PinnedAsahiEngineExecutor.isPrebootAdminListSummary(notice.summary)
+            : NativeInstallerExecutor.isPrebootAdminListSummary(notice.summary)
               ? prebootAdminListRemedy : "Update the installer and choose Check again."
         )
       case .reinstallRequired:

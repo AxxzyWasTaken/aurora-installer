@@ -343,7 +343,7 @@
       XCTAssertThrowsError(
         try NativeEnrollmentSpace.require(
           stubBytes: .max, restoredBytes: .max, expandedStage1: expanded))
-      let (reason, summary) = PinnedAsahiEngineExecutor.preflightFailure(
+      let (reason, summary) = NativeInstallerExecutor.preflightFailure(
         stage: .stubFiles,
         error: NativeStubFileError.noRoomForStage1(requiredBytes: 2, stubBytes: 1))
       XCTAssertEqual(reason, .planIntegrity)
@@ -413,24 +413,24 @@
         NativeBootChainError.missingMachOStage1, .missingConfinedStage2, .confinedStage2TooLarge,
       ] {
         for (reason, summary) in [
-          PinnedAsahiEngineExecutor.payloadFailure(error),
-          PinnedAsahiEngineExecutor.preflightFailure(stage: .espFiles, error: error),
+          NativeInstallerExecutor.payloadFailure(error),
+          NativeInstallerExecutor.preflightFailure(stage: .espFiles, error: error),
         ] {
           XCTAssertEqual(reason, .deviceUnsupported)
           XCTAssertEqual(summary, NativeBootChainError.releaseLacksMachOSummary)
           XCTAssertFalse(summary.contains(String(describing: error)), summary)
         }
         XCTAssertEqual(
-          PinnedAsahiEngineExecutor.preservedSummary(for: error),
+          NativeInstallerExecutor.preservedSummary(for: error),
           NativeBootChainError.releaseLacksMachOSummary)
         // A reset shows the same unsupported-Mac screen.
-        XCTAssertEqual(PinnedAsahiEngineExecutor.preservedReason(for: error), .deviceUnsupported)
+        XCTAssertEqual(NativeInstallerExecutor.preservedReason(for: error), .deviceUnsupported)
       }
       XCTAssertTrue(
         NativeBootChainError.releaseLacksMachOSummary.contains("doesn't support this Mac yet"))
       // A file that failed a check still reads as one.
       XCTAssertEqual(
-        PinnedAsahiEngineExecutor.payloadFailure(NativeBootChainError.invalidStage1).0,
+        NativeInstallerExecutor.payloadFailure(NativeBootChainError.invalidStage1).0,
         .planIntegrity)
     }
 

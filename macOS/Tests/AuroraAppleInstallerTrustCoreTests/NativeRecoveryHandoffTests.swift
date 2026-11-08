@@ -202,7 +202,7 @@
           authorization: fixture.authorization(), requirement: "fixture", fullReadback: false)
         XCTFail("Expected authorization failure")
       } catch {
-        XCTAssertEqual(error as? PinnedAsahiEngineExecutionError, .recoveryAuthorizationFailed)
+        XCTAssertEqual(error as? NativeInstallerExecutionError, .recoveryAuthorizationFailed)
       }
       XCTAssertEqual(try fixture.journalSnapshot().state, .started)
       XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.activeVersion.path))
@@ -220,7 +220,7 @@
     func testReadyStartedAndPreparedStatesCanResumeButCompletionIsNeverReauthorized() async throws {
       let fixture = try NativeRecoveryHandoffFixture()
       defer { fixture.remove() }
-      let checker = PinnedAsahiEngineExecutor(effectiveUserID: { 0 })
+      let checker = NativeInstallerExecutor(effectiveUserID: { 0 })
       let identity = InstallerJobPlanIdentity(package: fixture.package)
       XCTAssertTrue(checker.canRetryRecoveryAuthorization(identity, in: fixture.root))
       var journal: NativeRecoveryJournal? = try NativeRecoveryJournal(
@@ -255,7 +255,7 @@
         package: fixture.package, owner: geteuid())
       try journal?.beginHandoff()
       journal = nil
-      let pinned = PinnedAsahiEngineExecutor(
+      let pinned = NativeInstallerExecutor(
         effectiveUserID: { 0 },
         verifyRestoreImage: { _, _ in throw NativeHandoffValidationError.invalidTarget },
         firmwarePreparer: ForbiddenFirmwarePreparation(), nativeHandoff: fixture.executor(),

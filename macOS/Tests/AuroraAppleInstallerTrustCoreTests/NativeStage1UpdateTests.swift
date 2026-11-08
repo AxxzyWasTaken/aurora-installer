@@ -482,7 +482,7 @@
     }
 
     func notice(_ failure: NativeStage1UpdateFailure) async throws -> EngineFailureNotice {
-      let executor = PinnedAsahiEngineExecutor(
+      let executor = NativeInstallerExecutor(
         effectiveUserID: { 0 }, stage1Update: FakeUpdate(result: .failure(failure)))
       do {
         _ = try await executor.execute(
@@ -490,7 +490,7 @@
           authorization: MachineOwnerAuthorization(
             username: "owner", password: Data("secret".utf8)),
           operation: .updateStage1, installConf: nil)
-      } catch PinnedAsahiEngineExecutionError.engineFailed(let report) {
+      } catch NativeInstallerExecutionError.engineFailed(let report) {
         XCTAssertFalse(report.redactedStandardErrorTail.contains("secret"))
         return report.notice
       }
@@ -498,7 +498,7 @@
     }
 
     func testTheExecutorRunsOnlyTheUpdateAndSaysWhyItStopped() async throws {
-      let executor = PinnedAsahiEngineExecutor(
+      let executor = NativeInstallerExecutor(
         effectiveUserID: { 0 }, stage1Update: FakeUpdate(result: .success(Data("done".utf8))))
       let authorization = try MachineOwnerAuthorization(
         username: "owner", password: Data("pw".utf8))
@@ -512,7 +512,7 @@
           installConf: nil)
         XCTFail("a fresh installation's package updated Stage 1")
       } catch {
-        XCTAssertEqual(error as? PinnedAsahiEngineExecutionError, .nativeReinstallUnavailable)
+        XCTAssertEqual(error as? NativeInstallerExecutionError, .nativeReinstallUnavailable)
       }
 
       let before = try await notice(

@@ -292,8 +292,8 @@
         throw NativeSourceOwnerRefusal.preboot(detail: String(describing: error))
       }
       // What was found at each component goes to the log at progress level,
-      // so a saved log shows the layout whatever its filter; the read below
-      // alone decides.
+      // which the default filter keeps, so a saved log shows the layout. The
+      // read alone decides; the lines only describe it.
       Self.log(.progress, "Reading Recovery administrators from Preboot \(preboot.identifier)")
       let metadata: Data
       do {

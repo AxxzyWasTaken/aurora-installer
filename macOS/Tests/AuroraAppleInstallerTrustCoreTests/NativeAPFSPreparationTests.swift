@@ -392,14 +392,14 @@
             containers: disk.containers, metadata: metadata, stubBytes: firmware.stubBytes))
         let inventory = try XCTUnwrap(inspection.inventory)
         let candidate = try XCTUnwrap(inventory.candidates.first { $0.kind == kind })
-        let identity = try PinnedAsahiPlanIdentity(
+        let identity = try NativePlanIdentity(
           engineVersion: "native-test",
           engineDigest: SHA256Digest(hashing: Data("engine".utf8)).rawValue,
           metadataDigest: SHA256Digest(hashing: metadataBytes).rawValue,
           payloadDigest: SHA256Digest(hashing: Data("payload".utf8)).rawValue)
         transcript = try NativeInstallerPlanner.transcript(
           inspection: inspection,
-          request: PinnedAsahiPlanRequest(
+          request: NativePlanRequest(
             inventory: inventory, candidate: candidate,
             requestedLengthBytes: UInt64(kind == "resize" ? 40 : 80) << 30), identity: identity)
         approved = try XCTUnwrap(

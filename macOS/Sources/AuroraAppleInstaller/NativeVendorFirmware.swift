@@ -32,6 +32,10 @@
     var systemWiFi: @Sendable (uid_t) throws -> NativeFirmwareInputFiles.Snapshot = {
       try NativeSystemWiFiFirmware.live(owner: $0)
     }
+    /// This Mac's own speaker tuning (`AID<n>` and `speaker-thiele-small`).
+    var audioTuning: @Sendable (uid_t) throws -> NativeAudioTuningInputs.Snapshot? = {
+      try NativeAudioTuningInputs.live(owner: $0)
+    }
 
     func prepare(
       journal: URL, authorization: MachineOwnerAuthorization, bootstrap: NativeSourceBootstrap
@@ -138,6 +142,12 @@
             guard !converted.isEmpty else { throw NativeFirmwareInputFailure.invalidSource }
             try merge(converted, into: &outputs)
           }
+          // The touchscreen firmware of the OLED MacBook Pros (K114/K116).
+          // How Linux loads it is not specified yet, so the package keeps
+          // this Mac's own copy as macOS ships it, for a later converter.
+          if item.component == "Ap,TouchASICFW", source.machine.hasPrefix("k") {
+            try merge(["apple/kiwi/" + source.machine + ".im4p": data], into: &outputs)
+          }
         }
         if source.machine == "j700" {
           guard let trackpad = outputs[NeoFirmwareConversions.trackpadName], !trackpad.isEmpty
@@ -225,11 +235,14 @@
           try merge(wifi, into: &outputs)
           try merge(bluetooth, into: &outputs)
           try InstallerPerformance.measure("vendor_cameras") {
-            for name in ["appleh13camerad", "appleh16camerad"] {
-              let path = "usr/sbin/" + name
+            for path in [
+              "usr/sbin/appleh13camerad", "usr/sbin/appleh16camerad",
+              "usr/libexec/appleh13camerad", "usr/libexec/appleh16camerad",
+            ] {
               if try !imageTree.isAbsent(path) {
                 let data = try imageTree.read(path, maximum: 16 << 20)
-                fallback[name] = data
+                let name = String(path.split(separator: "/").last!)
+                try merge([name: data], into: &fallback)
                 if package.deviceIdentifier != "apple,j700" {
                   try merge(
                     NeoFirmwareConversions.camera(data, requireNeoSet: false), into: &outputs)
@@ -253,6 +266,13 @@
           try merge(calibration, into: &outputs)
           try merge(calibration, into: &fallback)
         }
+        // The speaker protection's parameters: this Mac's own Apple tuning,
+        // stored like the other per-machine firmware and never shipped.
+        let tuning = try InstallerPerformance.measure("vendor_audio_tuning") {
+          try NativeAudioTuningInputs.collect(audioTuning, owner: owner)
+        }
+        try merge(tuning.package, into: &outputs)
+        try merge(tuning.fallback, into: &fallback)
         let archives = try InstallerPerformance.measure("vendor_package") {
           try FirmwarePackageBuilder.build(
             outputs.keys.sorted().map { FirmwarePackageInput(name: $0, bytes: outputs[$0]!) })

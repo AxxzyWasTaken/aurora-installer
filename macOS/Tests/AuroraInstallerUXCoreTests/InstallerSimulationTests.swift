@@ -139,10 +139,15 @@
             XCTAssertTrue(failure.isBlockedModel)
             XCTAssertTrue(failure.plainDetail.contains("apple,j999"), failure.plainDetail)
             let remedy = try XCTUnwrap(failure.remedy)
-            XCTAssertTrue(remedy.contains("(38 models)"), remedy)
+            XCTAssertTrue(remedy.contains("(58 models)"), remedy)
+            XCTAssertTrue(remedy.contains("M5: MacBook Air, MacBook Pro."), remedy)
             XCTAssertTrue(remedy.contains("A18 Pro: MacBook Neo"), remedy)
             XCTAssertTrue(remedy.contains("M3: iMac, Mac Studio, MacBook Air, MacBook Pro"), remedy)
-            XCTAssertTrue(remedy.contains("M4: MacBook Pro"), remedy)
+            XCTAssertTrue(
+              remedy.contains("M4: iMac, Mac mini, Mac Studio, MacBook Air, MacBook Pro"), remedy)
+            XCTAssertTrue(
+              remedy.contains("M5: MacBook Air, MacBook Pro. M6: iMac, Mac mini, MacBook Pro"),
+              remedy)
           }
           XCTAssertFalse(session.canStartInstallation)
           continue

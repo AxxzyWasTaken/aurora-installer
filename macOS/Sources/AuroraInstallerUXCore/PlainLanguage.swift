@@ -349,6 +349,53 @@
       return steps
     }
 
+    // MARK: Boot loader update
+
+    public static let bootLoaderUpdateAction = "Update Boot Loader"
+    public static let bootLoaderUpdateMenuItem = "Update Boot Loader…"
+    public static let bootLoaderUpdateRemedy =
+      "On the Partitions screen, choose Update Boot Loader… in this installation’s ⋯ menu and finish the update in Recovery. Then reset it."
+    /// Shaped like `resetSteps`: the two checks, then one stage for Recovery.
+    public static let bootLoaderUpdateSteps = [
+      "Getting ready", "Checking your Mac", "Preparing the boot loader",
+    ]
+    public static let bootLoaderUpdateReviewTitle = "Review the boot loader update"
+    public static let bootLoaderUpdateReviewDetail =
+      "Installs this release’s boot loader (Stage 1) for this installation. Linux, its files, its partitions and the EFI partition stay as they are. You finish the update in Recovery with your macOS password."
+    public static let bootLoaderUpdateAcknowledgement =
+      "I’ll finish the update in this installation’s Recovery"
+    public static let bootLoaderUpdateHeadline = "Finish the update in Recovery"
+    public static let bootLoaderUpToDateHeadline = "The boot loader is up to date"
+    public static let bootLoaderUpToDateMessage =
+      "This installation already has this release’s boot loader. Nothing was changed."
+    public static let bootLoaderShutdownBody =
+      "Save your work first. When this Mac is off, press and hold the power button until “Loading startup options” appears. Choose Aurora, then enter your macOS password in Aurora Installer."
+
+    /// Steps after the update is staged. Recovery enrolls the boot loader.
+    public static func bootLoaderUpdateRecoverySteps(volumeName: String = "Aurora")
+      -> [RecoveryStep]
+    {
+      [
+        RecoveryStep(number: 1, title: "Shut down this Mac", detail: "Save your work first."),
+        RecoveryStep(
+          number: 2, title: "Hold the power button",
+          detail:
+            "When this Mac is off, press and hold the power button until “Loading startup options” appears."
+        ),
+        RecoveryStep(
+          number: 3, title: "Update the boot loader",
+          detail:
+            "Choose \(volumeName). In Aurora Installer, click Update and enter your macOS password. Then restart."
+        ),
+      ]
+    }
+
+    static func bootLoaderUpdateState(unchanged: Bool) -> String {
+      unchanged
+        ? "No disk changes were made."
+        : "Linux, its partitions and the EFI partition weren’t changed, but the installation’s Recovery files may have been."
+    }
+
     // MARK: Screen F — Boot / completion
 
     public static let doneHeadline = "Aurora is installed"
@@ -627,9 +674,29 @@
           headline: "Recovery preparation didn’t finish",
           plainDetail: cause,
           technicalDetail: technicalDetail,
+          remedy: !unchanged
+            ? "Save the error details and check the verified installation record before trying again."
+            : NativeInstallerExecutor.isPrebootAdminListSummary(notice.summary)
+              ? prebootAdminListRemedy : "Update the installer and choose Check again."
+        )
+      case .reinstallRequired:
+        return FailureDisplay(
+          headline: "Update this installation’s boot loader first",
+          plainDetail: cause,
+          technicalDetail: technicalDetail,
+          remedy:
+            "\(bootLoaderUpdateRemedy) To start over instead, choose Erase Linux, then install Aurora again. \(engineDiagnosticsLocation)"
+        )
+      case .bootLoaderUpdateRefused:
+        return FailureDisplay(
+          headline: "The boot loader wasn’t updated",
+          plainDetail: notice.summary.isEmpty
+            ? bootLoaderUpdateState(unchanged: unchanged)
+            : "\(notice.summary) \(bootLoaderUpdateState(unchanged: unchanged))",
+          technicalDetail: technicalDetail,
           remedy: unchanged
-            ? "Update the installer and choose Check again."
-            : "Save the error details and check the verified installation record before trying again."
+            ? "Choose Check again, then Update Boot Loader once what’s described is fixed. \(engineDiagnosticsLocation)"
+            : "Choose Check again, then Update Boot Loader again to finish. \(engineDiagnosticsLocation)"
         )
       case .startOverRequired:
         return FailureDisplay(
@@ -674,6 +741,10 @@
     /// count purgeable space, such as iCloud files it can download again.
     static let purgeableSpaceNote =
       "Finder may count purgeable space that macOS hasn’t freed yet, so free a little more than the figure shown."
+    /// macOS writes its Preboot list of Recovery administrators from its
+    /// accounts, and rewrites it on request. Nothing of the installer's runs.
+    static let prebootAdminListRemedy =
+      "Have macOS rebuild that list: in Terminal, run sudo diskutil apfs updatePreboot / and enter your password, then choose Check again. If it still stops here, save the Installer Log (Command-L) and share it with the Aurora team."
 
     /// Planning found that macOS can't hold what the installation stages on
     /// it, before anything was approved.
@@ -970,6 +1041,16 @@
             technicalDetail: technical,
             remedy:
               "Update macOS, then choose Check again. If this keeps happening, save the error details."
+          )
+        case .releaseLacksMachOStartup:
+          return FailureDisplay(
+            headline: blockedHeadline,
+            plainDetail:
+              "Macs with an M4-generation chip or later need startup software that this release’s images don’t include yet. The disk has not been changed.",
+            technicalDetail: technical,
+            remedy:
+              "Check for a newer \(windowTitle) release. Nothing on this Mac needs to change.",
+            isBlockedModel: true
           )
         case .firmwareArchiveUnsupported(let version):
           return FailureDisplay(

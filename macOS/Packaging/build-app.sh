@@ -31,6 +31,17 @@ build_jobs="${AURORA_BUILD_JOBS:-10}"
   || fail "AURORA_BUILD_JOBS must be a positive integer"
 export CARGO_BUILD_JOBS="$build_jobs"
 
+# Local payload support is compiled only in an explicitly requested debug test
+# build. Release configuration always compiles it out.
+build_configuration=release
+swift_test_arguments=()
+if [[ ${AURORA_LOCAL_PAYLOAD_TEST_BUILD:-0} == "1" ]]; then
+  [[ ${AURORA_DEVELOPER_BUILD:-0} == "1" ]] \
+    || fail "local payload test builds require a sealed developer build"
+  build_configuration=debug
+  swift_test_arguments=(-Xswiftc -O -Xswiftc -gnone)
+fi
+
 marketing_version="${AURORA_APP_VERSION:-0.1.0}"
 # SMJobBless never replaces a helper with a lower build, so a developer build
 # defaults to its UTC build minute (YYMMDDHHMM): each one installs over the
@@ -196,12 +207,13 @@ swift_tool="$(xcrun --find swift)"
 (
   cd "$package_directory"
   "$swift_tool" build \
-    --configuration release \
+    --configuration "$build_configuration" \
+    "${swift_test_arguments[@]}" \
     --jobs "$build_jobs"
 )
 binary_directory="$({
   cd "$package_directory"
-  "$swift_tool" build --configuration release --show-bin-path
+  "$swift_tool" build --configuration "$build_configuration" --show-bin-path
 })"
 
 assembly_root="$(mktemp -d "$output_directory/.aurora-app.XXXXXX")"
@@ -231,7 +243,8 @@ fi
 (
   cd "$package_directory"
   "$swift_tool" build \
-    --configuration release \
+    --configuration "$build_configuration" \
+    "${swift_test_arguments[@]}" \
     --jobs "$build_jobs" \
     --product AuroraAppleInstallerHelper \
     "${helper_link_arguments[@]}"
@@ -263,6 +276,17 @@ python3 "$package_directory/RestoreImage/verify-build.py" "$restore_image_path" 
 install -m 0444 "$package_directory/RestoreImage/LICENSE" "$resources/omarchy-restore-image.LICENSE"
 install -m 0755 "$app_binary" "$contents/MacOS/$packaged_executable_name"
 install -m 0755 "$helper_binary" "$helper_path"
+# Strip only installed Swift executables, before any final signature or cdhash.
+# Keep globals and runtime sections; the original build outputs stay intact.
+strip_installed_swift() {
+  local path=$1 before after
+  before=$(stat -f %z "$path")
+  xcrun strip -S -x "$path"
+  after=$(stat -f %z "$path")
+  printf 'Packaged Swift executable: %s: %s -> %s bytes\n' "$path" "$before" "$after"
+}
+strip_installed_swift "$contents/MacOS/$packaged_executable_name"
+strip_installed_swift "$helper_path"
 install -m 0444 "$release_descriptor" "$resources/Release/release.json"
 install -m 0444 "$trust_root" "$resources/Release/trust-root.ed25519.pub"
 for asset in "$package_directory"/Resources/*.png; do
@@ -273,8 +297,11 @@ install -m 0444 "$package_directory/Design/Assets/MacBookPowerButton.png" "$reso
 install -m 0444 "$package_directory/Design/Assets/MacDesktopPowerButton.png" "$resources/MacDesktopPowerButton.png"
 mkdir -p "$resources/RecoveryTemplate"
 /usr/bin/ditto "$recovery_template" "$resources/RecoveryTemplate/Aurora Installer.app"
+strip_installed_swift "$resources/RecoveryTemplate/Aurora Installer.app/Contents/MacOS/OmarchyRecovery"
 codesign --force --sign "$signing_identity" "${timestamp_arguments[@]}" \
   --options runtime "$resources/RecoveryTemplate/Aurora Installer.app"
+[[ $("$resources/RecoveryTemplate/Aurora Installer.app/Contents/MacOS/OmarchyRecovery" --build-mode) == recovery ]] \
+  || fail "stripped Recovery template no longer reports Recovery mode"
 if [[ $sealed_catalog_available == "true" ]]; then
   install -m 0444 "$sealed_catalog" "$resources/Release/catalog.json"
   install -m 0444 \
@@ -413,6 +440,10 @@ fi
 codesign --force --sign "$signing_identity" \
   "${timestamp_arguments[@]}" \
   --options runtime \
+  "$assembled_app"
+
+python3 "$script_directory/check-local-payload-policy.py" \
+  --expected "$([[ $build_configuration == debug ]] && echo enabled || echo disabled)" \
   "$assembled_app"
 
 codesign --verify --deep --strict --verbose=2 "$assembled_app"

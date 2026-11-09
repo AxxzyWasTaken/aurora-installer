@@ -155,6 +155,21 @@ import Foundation
         with: Data(contentsOf: rollbackBackup.appendingPathComponent("restore.json")))
       as! [String: Any]
     precondition(rollbackRecord["status"] as? String == "rollback-failed")
+    // A padded Stage 1's installation restores the Stage 2 it loads, and only that one.
+    let confined = root.appendingPathComponent("confined")
+    var confinedFiles = files
+    confinedFiles["m1n1/boot-ctxr.bin"] = confinedFiles.removeValue(
+      forKey: RecoveryBaseline.stage2Path)
+    try RecoveryBaseline.restore(
+      files: confinedFiles, root: confined, backup: root.appendingPathComponent("confined-before"),
+      stage2Path: "m1n1/boot-ctxr.bin", write: write)
+    precondition(fm.fileExists(atPath: confined.appendingPathComponent("m1n1/boot-ctxr.bin").path))
+    precondition(!fm.fileExists(atPath: confined.appendingPathComponent("m1n1/boot.bin").path))
+    refused {
+      try RecoveryBaseline.restore(
+        files: confinedFiles, root: confined, backup: root.appendingPathComponent("not-standard"),
+        write: write)
+    }
     var replacement = files
     replacement["vendorfw/unrelated.bin"] = Data([1])
     refused {

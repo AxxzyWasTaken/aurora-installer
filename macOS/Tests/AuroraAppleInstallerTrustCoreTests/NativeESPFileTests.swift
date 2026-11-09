@@ -2,6 +2,7 @@
   import AuroraFirmware
   import Darwin
   import Foundation
+  import RecoveryAccountCore
   import XCTest
   @testable import AuroraAppleInstallerTrustCore
 
@@ -255,6 +256,42 @@
       XCTAssertEqual(try store.identity(path), receipt.installed)
     }
 
+    /// FSKit's msdos returns ENOTSUP for RENAME_EXCL onto an absent name.
+    func testExclusiveRenameFallsBackWhereTheFilesystemRefusesTheFlag() throws {
+      let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "aurora-esp-rename-" + UUID().uuidString)
+      try FileManager.default.createDirectory(
+        at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+      defer { try? FileManager.default.removeItem(at: root) }
+      try Data("staged".utf8).write(to: root.appendingPathComponent("staged"))
+      try Data("taken".utf8).write(to: root.appendingPathComponent("taken"))
+      let parent = open(root.path, O_RDONLY | O_DIRECTORY)
+      XCTAssertGreaterThanOrEqual(parent, 0)
+      defer { close(parent) }
+      let unsupported: (Int32, String, Int32, String) -> Int32 = { _, _, _, _ in
+        errno = ENOTSUP
+        return -1
+      }
+      XCTAssertEqual(
+        NativeESPFileStore.renameExclusive(parent, "staged", "taken", exclusive: unsupported), -1)
+      XCTAssertEqual(errno, EEXIST)
+      XCTAssertEqual(
+        try Data(contentsOf: root.appendingPathComponent("taken")), Data("taken".utf8))
+      XCTAssertEqual(
+        NativeESPFileStore.renameExclusive(parent, "staged", "final", exclusive: unsupported), 0)
+      XCTAssertEqual(
+        try Data(contentsOf: root.appendingPathComponent("final")), Data("staged".utf8))
+      XCTAssertFalse(
+        FileManager.default.fileExists(atPath: root.appendingPathComponent("staged").path))
+      let failing: (Int32, String, Int32, String) -> Int32 = { _, _, _, _ in
+        errno = EIO
+        return -1
+      }
+      XCTAssertEqual(
+        NativeESPFileStore.renameExclusive(parent, "final", "other", exclusive: failing), -1)
+      XCTAssertEqual(errno, EIO)
+    }
+
     final class Fixture: @unchecked Sendable {
       let images: NativePayloadImageTests.Fixture
       let plan: NativeESPPayloadPlan
@@ -274,6 +311,10 @@
         if machO || machOSource != nil {
           plan.stage1MachO = NativeMachOStage1Tests.object(
             wrapping: machOSource?(plan.stage1) ?? plan.stage1)
+          // A real payload carries its own file; any member not otherwise installed stands in.
+          if let member = plan.archive.members.first(where: { $0.name == "esp/m1n1/boot.bin" }) {
+            plan.entries.append(.init(member: member, path: AuraStage1Format.confinedStage2Path))
+          }
         }
         self.plan = plan
         esp = images.base.mounts.appendingPathComponent("disk0s5")

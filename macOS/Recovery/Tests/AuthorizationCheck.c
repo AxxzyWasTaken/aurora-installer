@@ -1,4 +1,5 @@
 #define AUTHORIZATION_TIMEOUT_SECONDS 2
+#define AUTHORIZATION_COMPRESS_TIMEOUT_SECONDS 5
 #include "../Native/Authorization.c"
 #include <assert.h>
 #include <stdio.h>
@@ -30,6 +31,11 @@ int main(int argc, char **argv)
             return 0;
         }
         if (!strcmp(argv[1], "--timeout")) { sleep(20);return 32; }
+        if (!strcmp(argv[1], "--slow")) { sleep(3);return 0; }
+        if (!strcmp(argv[1], "configure-boot")) {
+            if (!strcmp(argv[2], "--slow")) { sleep(3);return 0; }
+            sleep(20);return 34;
+        }
         if (!strcmp(argv[1], "--fd-check")) {
             for(int fd=3;fd<64;fd++)if(fcntl(fd,F_GETFD)>=0)return 33;
             return 0;
@@ -136,6 +142,20 @@ int main(int argc, char **argv)
 #endif
     char *timeout_args[]={argv[0],"--timeout",NULL};
     assert(authorization_run_logged(argv[0],timeout_args,"fixture-user","fixture-password",false,capture,NULL)==TIMED_OUT);
+    /* Only kmutil configure-boot --compress gets longer, and it still has a limit. */
+    char *slow_args[]={argv[0],"configure-boot","--slow","--compress",NULL};
+    assert(authorization_timeout("/usr/bin/kmutil",slow_args)==AUTHORIZATION_COMPRESS_TIMEOUT_SECONDS);
+    assert(authorization_timeout("/usr/bin/bputil",slow_args)==AUTHORIZATION_TIMEOUT_SECONDS);
+    assert(authorization_run_logged(argv[0],slow_args,"fixture-user","fixture-password",true,capture,NULL)==TIMED_OUT);
+    authorization_kmutil=argv[0];
+    assert(authorization_run_logged(argv[0],slow_args,"fixture-user","fixture-password",true,capture,NULL)==0);
+    char *raw_args[]={argv[0],"configure-boot","--slow",NULL};
+    assert(authorization_run_logged(argv[0],raw_args,"fixture-user","fixture-password",true,capture,NULL)==TIMED_OUT);
+    char *other_args[]={argv[0],"--slow","--compress",NULL};
+    assert(authorization_run_logged(argv[0],other_args,"fixture-user","fixture-password",true,capture,NULL)==TIMED_OUT);
+    char *stuck_args[]={argv[0],"configure-boot","--stuck","--compress",NULL};
+    assert(authorization_run_logged(argv[0],stuck_args,"fixture-user","fixture-password",true,capture,NULL)==TIMED_OUT);
+    authorization_kmutil="/usr/bin/kmutil";
     char *fd_args[]={argv[0],"--fd-check",NULL};
     assert(authorization_run_logged(argv[0],fd_args,"fixture-user","fixture-password",false,capture,NULL)==0);
     char *child_args[]={argv[0],"--grandchild-holds-terminal",NULL};

@@ -300,6 +300,19 @@
       }
     }
 
+    func testAResetOnlyErasingFixesOffersEraseLinuxNotCheckAgain() throws {
+      let summary =
+        "This installation was set up by an earlier Aurora installer, and this one can't reset it."
+      let display = PlainLanguage.engineFailure(
+        EngineFailureNotice(
+          reason: .reinstallRequired, exitStatus: 1, diskUnchanged: true, summary: summary),
+        technicalDetail: "detail")
+      XCTAssertEqual(display.plainDetail, summary + " No disk changes were made.")
+      let remedy = try XCTUnwrap(display.remedy)
+      XCTAssertTrue(remedy.contains("Erase Linux"), remedy)
+      XCTAssertFalse(remedy.contains("Check again"), remedy)
+    }
+
     func testASpaceFailureShowsItsNumbersAndNeverAReleaseMismatch() throws {
       let summary =
         "macOS needs 11.5 GB free to prepare the installation and has 8.9 GB. "
@@ -371,6 +384,43 @@
       }
     }
 
+    func testAPrebootAdminListRefusalTellsHowMacOSRebuildsTheList() throws {
+      let prefix = "The current macOS volume owner could not be verified: "
+      for summary in [
+        prefix + "the Recovery administrator list on Preboot could not be read safely: "
+          + "var/db is writable by other users (mode 0777).",
+        prefix + "the Preboot volume has no list of Recovery administrators.",
+        prefix + "the Recovery administrator list on Preboot does not include this account.",
+      ] {
+        let display = PlainLanguage.engineFailure(
+          EngineFailureNotice(
+            reason: .recoveryPreparation, exitStatus: 1, diskUnchanged: true, summary: summary),
+          technicalDetail: "detail")
+        XCTAssertEqual(display.plainDetail, summary + " No disk changes were made.")
+        let remedy = try XCTUnwrap(display.remedy)
+        XCTAssertTrue(remedy.contains("sudo diskutil apfs updatePreboot /"), remedy)
+        XCTAssertTrue(remedy.contains("Check again"), remedy)
+      }
+      for summary in [
+        prefix + "APFS does not list this account as a volume owner. Use the account that set up "
+          + "this Mac.",
+        "Native Recovery resources could not be verified.",
+      ] {
+        let display = PlainLanguage.engineFailure(
+          EngineFailureNotice(
+            reason: .recoveryPreparation, exitStatus: 1, diskUnchanged: true, summary: summary),
+          technicalDetail: "detail")
+        XCTAssertEqual(display.remedy, "Update the installer and choose Check again.")
+      }
+      // A run that may have changed the disk keeps the careful remedy.
+      let changed = PlainLanguage.engineFailure(
+        EngineFailureNotice(
+          reason: .recoveryPreparation, exitStatus: 1, diskUnchanged: false,
+          summary: prefix + "the Preboot volume has no list of Recovery administrators."),
+        technicalDetail: "detail")
+      XCTAssertFalse(try XCTUnwrap(changed.remedy).contains("updatePreboot"))
+    }
+
     func testPlanningRefusesWhatTheInstallCouldNotFinishWithAnAction() throws {
       let space = PlainLanguage.failure(
         for: MacOSFreeSpaceShortfall(requiredBytes: 12_557_937_290, availableBytes: 8_944_269_393))
@@ -436,7 +486,7 @@
       for name in ["release-inputs.template.json", "release-inputs-aurora.template.json"] {
         let text = try String(
           contentsOf: scripts.appendingPathComponent(name), encoding: .utf8)
-        for match in text.matches(of: /"(apple,j[0-9a-z]+)"/) {
+        for match in text.matches(of: /"(apple,[jk][0-9a-z]+)"/) {
           identifiers.insert(String(match.1))
         }
       }
@@ -444,7 +494,10 @@
         "j274", "j293", "j313", "j456", "j457", "j314s", "j314c", "j316s", "j316c", "j375c",
         "j375d", "j413", "j415", "j473", "j493", "j414s", "j414c", "j416s", "j416c", "j474s",
         "j475c", "j475d", "j180d", "j433", "j434", "j504", "j613", "j615", "j514s", "j514c",
-        "j514m", "j516s", "j516c", "j516m", "j575d", "j614s", "j616s", "j700",
+        "j514m", "j516s", "j516c", "j516m", "j575d", "j604", "j623", "j624", "j713", "j715",
+        "j773g", "j614s", "j614c", "j616s", "j616c", "j773s", "j575c", "j813", "j873g", "j700",
+        "j704", "j815", "j804", "j833ct",
+        "k114c", "k114s", "k116c", "k116s",
       ].map { "apple,\($0)" }
       XCTAssertEqual(identifiers, Set(everySupportedMac))
       let manifest = try JSONSerialization.jsonObject(

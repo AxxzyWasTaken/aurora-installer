@@ -370,8 +370,8 @@
           forResource: "source-preboot-admin-layouts", withExtension: "json",
           subdirectory: "Fixtures"))
       let layouts = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url)).layouts
-      XCTAssertGreaterThanOrEqual(layouts.count, 18)
-      XCTAssertEqual(layouts.filter { $0.expected == "admit" }.count, 6)
+      XCTAssertGreaterThanOrEqual(layouts.count, 25)
+      XCTAssertEqual(layouts.filter { $0.expected == "admit" }.count, 8)
       for layout in layouts {
         let fixture = try OwnerFixture()
         defer { fixture.base.remove() }
@@ -400,7 +400,7 @@
           }
         try content.write(to: fixture.admins)
         if let folder = layout.extraLink {
-          let directory = folder == "group" ? group : db
+          let directory = ["group": group, "var": variable, "db": db][folder]!
           XCTAssertEqual(
             link(fixture.admins.path, directory.appendingPathComponent("second-name").path), 0,
             layout.name)

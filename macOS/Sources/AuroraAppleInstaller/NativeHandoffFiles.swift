@@ -160,13 +160,19 @@
     /// Reads macOS's list of Recovery administrators,
     /// `<group>/var/db/AdminUserRecoveryInfo.plist`, from the verified source
     /// Preboot volume. Every component is opened without following links and
-    /// must be owned by root. A component others can write is accepted only
-    /// where they still cannot replace what root put in it:
+    /// must be owned by root. A folder others can write is accepted only
+    /// where they still cannot replace what root put below it:
     ///
-    /// - the volume group folder as macOS 26 creates it, root-owned 0777,
-    ///   whose descendants are each checked;
     /// - any root-owned folder with the sticky bit, where only root can
-    ///   rename or remove root's entries.
+    ///   rename or remove root's entries;
+    /// - one shared folder per path, root-owned and exactly 0777, above the
+    ///   file's own folder: the group folder as macOS 26 creates it, or
+    ///   `var` as macOS 27.2 does. Others can rename what is in it, but each
+    ///   folder below is opened from the one before and must again be
+    ///   root-owned, so only another tree that root made could take its
+    ///   place. Below it no folder may be writable by others without the
+    ///   sticky bit: a second shared folder, a shared `var/db` or any other
+    ///   writable mode is refused.
     ///
     /// The file must be a root-owned regular file no one else can write. A
     /// second name for it is accepted only when its own folder is one no one
@@ -189,6 +195,7 @@
       guard current >= 0 else { throw NativeHandoffValidationError.unsafePath }
       defer { close(current) }
       var parentProtected = false
+      var sharedFolder: String?
       for (index, component) in folders.enumerated() {
         let name = index == 0 ? "<group>" : folders[1...index].joined(separator: "/")
         let next = openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -209,13 +216,23 @@
             "\(name) is not owned by root (owner \(info.st_uid))", found)
         }
         let othersWrite = info.st_mode & 0o022 != 0
-        let accepted =
-          !othersWrite || info.st_mode & mode_t(S_ISVTX) != 0
-          || (index == 0 && info.st_mode & 0o7777 == 0o777)
-        guard accepted else {
-          close(next)
-          throw SourceOwnerMetadataRefusal(
-            "\(name) is writable by other users (mode \(found.octalMode))", found)
+        let sticky = info.st_mode & mode_t(S_ISVTX) != 0
+        if othersWrite, !sticky {
+          // The one shared folder: exactly 0777, never the file's own folder.
+          let exact = info.st_mode & 0o7777 == 0o777
+          let problem: String? =
+            if exact, let sharedFolder {
+              "\(name) is writable by other users below \(sharedFolder) (mode \(found.octalMode))"
+            } else if !exact || index == folders.count - 1 {
+              "\(name) is writable by other users (mode \(found.octalMode))"
+            } else {
+              nil
+            }
+          if let problem {
+            close(next)
+            throw SourceOwnerMetadataRefusal(problem, found)
+          }
+          sharedFolder = name
         }
         parentProtected = !othersWrite
         close(current)

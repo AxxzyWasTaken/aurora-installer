@@ -159,27 +159,36 @@
 
     /// Reads macOS's list of Recovery administrators,
     /// `<group>/var/db/AdminUserRecoveryInfo.plist`, from the verified source
-    /// Preboot volume. Every component is opened without following links and
-    /// must be owned by root. A folder others can write is accepted only
-    /// where they still cannot replace what root put below it:
+    /// Preboot volume.
     ///
-    /// - any root-owned folder with the sticky bit, where only root can
-    ///   rename or remove root's entries;
-    /// - one shared folder per path, root-owned and exactly 0777, above the
-    ///   file's own folder: the group folder as macOS 26 creates it, or
-    ///   `var` as macOS 27.2 does. Others can rename what is in it, but each
-    ///   folder below is opened from the one before and must again be
-    ///   root-owned, so only another tree that root made could take its
-    ///   place. Below it no folder may be writable by others without the
-    ///   sticky bit: a second shared folder, a shared `var/db` or any other
-    ///   writable mode is refused.
+    /// macOS leaves folders on this path writable by every local user: the
+    /// group folder on macOS 26 (0777), `var` and `var/db` on macOS 27.2
+    /// (both 0777, no sticky bit). The read therefore does not trust folder
+    /// modes. What a local user who is not root can do in such a folder is
+    /// add, remove and rename entries, and create symbolic links and hard
+    /// links; they cannot create anything owned by root, change root's
+    /// files or folders, or move anything across volumes. So:
     ///
-    /// The file must be a root-owned regular file no one else can write. A
-    /// second name for it is accepted only when its own folder is one no one
-    /// but root can write: another name elsewhere grants no write access, and
-    /// only root could have put this one there. Under a folder others can
-    /// write, the file must have exactly one name, so a link to some other
-    /// root-owned file can't stand in for it.
+    /// - every component is opened from the one before with `O_NOFOLLOW`
+    ///   and checked with `fstat` on the opened descriptor, so a symbolic
+    ///   link, or a swap after the check, cannot redirect the read;
+    /// - every folder must be owned by root, whatever its mode, so a folder
+    ///   a user made cannot stand in;
+    /// - the file must be a root-owned regular file that no one else can
+    ///   write, so its bytes are root's;
+    /// - when the file's own folder is writable by others (sticky or not),
+    ///   it must have exactly one name, since anyone can add a hard link
+    ///   there to any root-owned file on the volume. Under a folder only
+    ///   root can write, only root could have made a second name.
+    ///
+    /// A user can still remove the file (the list then reads as missing,
+    /// which macOS rebuilds) or rename into its place another root-owned
+    /// single-name file that already sits in a writable folder on the same
+    /// Preboot, such as another group's list or `AllUsersInfo.plist`. Its
+    /// contents are still root's: the caller reads only the authorized
+    /// account's entry, keyed by its short name, and requires its
+    /// GeneratedUID, and the account is proven an administrator and an APFS
+    /// volume owner separately. No layout lets a user write the list.
     ///
     /// `trace` is told what was found at each component, for the log. A
     /// refusal is a `SourceOwnerMetadataRefusal` naming the component and
@@ -195,7 +204,6 @@
       guard current >= 0 else { throw NativeHandoffValidationError.unsafePath }
       defer { close(current) }
       var parentProtected = false
-      var sharedFolder: String?
       for (index, component) in folders.enumerated() {
         let name = index == 0 ? "<group>" : folders[1...index].joined(separator: "/")
         let next = openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -215,26 +223,7 @@
           throw SourceOwnerMetadataRefusal(
             "\(name) is not owned by root (owner \(info.st_uid))", found)
         }
-        let othersWrite = info.st_mode & 0o022 != 0
-        let sticky = info.st_mode & mode_t(S_ISVTX) != 0
-        if othersWrite, !sticky {
-          // The one shared folder: exactly 0777, never the file's own folder.
-          let exact = info.st_mode & 0o7777 == 0o777
-          let problem: String? =
-            if exact, let sharedFolder {
-              "\(name) is writable by other users below \(sharedFolder) (mode \(found.octalMode))"
-            } else if !exact || index == folders.count - 1 {
-              "\(name) is writable by other users (mode \(found.octalMode))"
-            } else {
-              nil
-            }
-          if let problem {
-            close(next)
-            throw SourceOwnerMetadataRefusal(problem, found)
-          }
-          sharedFolder = name
-        }
-        parentProtected = !othersWrite
+        parentProtected = info.st_mode & 0o022 == 0
         close(current)
         current = next
       }

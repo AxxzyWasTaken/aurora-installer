@@ -9,7 +9,7 @@
     },
     {
       "name": "macos-27.2-measured",
-      "source": "Measured read-only with stat on macOS 27.2 (26B123), MacBook Air M4, after diskutil apfs updatePreboot: group 0755 root, var 0777 root, var/db 0777 root, no sticky bits, file 0644 root",
+      "source": "Measured read-only with stat on two Macs, reported independently: macOS 27.2 (26B123) on a MacBook Air M4 after diskutil apfs updatePreboot, and a second macOS 27.x Mac with the same layout: group 0755 root, var 0777 root, var/db 0777 root, no sticky bits, file 0644 root",
       "group": "0755", "var": "0777", "db": "0777", "file": "0644", "content": "xml",
       "expected": "admit"
     },

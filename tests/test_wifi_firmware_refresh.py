@@ -158,6 +158,8 @@ class Case(unittest.TestCase):
                          kw.get("version", "26.2"))
 
     def update(self, esp, macos, **kw):
+        kw.setdefault("probe", lambda name, text: False)
+        kw.setdefault("log_text", "")
         return awf.update(esp, macos, BOARD, backup_root=self.backups, state_dir=self.state,
                           out=self.out.append, swap=lambda a, b: False, **kw)
 

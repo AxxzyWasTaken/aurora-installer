@@ -81,7 +81,9 @@ public struct AuroraInstallationSelection: Equatable, Codable, Sendable {
   }
 
   public func requireMatchingProfile(_ profileID: String?) throws {
-    guard effectiveDesktop != nil, profileID == self.profileID else { throw AuroraProfileError.selectionMismatch }
+    guard effectiveDesktop != nil, profileID == self.profileID else {
+      throw AuroraProfileError.selectionMismatch
+    }
   }
 }
 

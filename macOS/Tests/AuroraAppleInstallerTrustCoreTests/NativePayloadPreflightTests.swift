@@ -53,6 +53,29 @@
       }
     }
 
+    func testOmarchyReusesOnlyTheBoundAlarmBtrfsContract() async throws {
+      let fixture = try fixture()
+      let vector = try XCTUnwrap(fixture.vectors.first { $0.name == "alarm-btrfs-v1-kde" })
+      var document = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(vector.metadata.utf8)) as? [String: Any])
+      var templates = try XCTUnwrap(document["os_list"] as? [[String: Any]])
+      templates[0]["installation_profile"] = "omarchy-hyprland"
+      document["os_list"] = templates
+      let archive = try await IPSWArchive.open(
+        PayloadFixtureSource(bytes: try XCTUnwrap(fixture.archives[vector.archive])))
+      try await NativePayloadPreflight.validate(
+        metadata: JSONSerialization.data(withJSONObject: document), payloadName: "payload.zip",
+        archive: archive)
+      templates[0]["installation_profile"] = "omarchy-kde"
+      document["os_list"] = templates
+      do {
+        try await NativePayloadPreflight.validate(
+          metadata: JSONSerialization.data(withJSONObject: document), payloadName: "payload.zip",
+          archive: archive)
+        XCTFail("An unsupported Omarchy desktop must be refused")
+      } catch NativePayloadPreflightError.invalidMetadata {}
+    }
+
     func testNixOSRefusesAnEFILoaderTiedToTheSourcePartitionNumber() async throws {
       let fixture = try fixture()
       let vector = try XCTUnwrap(

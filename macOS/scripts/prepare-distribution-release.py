@@ -11,7 +11,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = tuple(f"{distribution}-{desktop}" for distribution in ("fedora", "arch", "nixos")
-                 for desktop in ("kde", "gnome", "minimal"))
+                 for desktop in ("kde", "gnome", "minimal")) + ("omarchy-hyprland",)
 
 
 def prepare(source, output, sealed=False, signing_team=None):

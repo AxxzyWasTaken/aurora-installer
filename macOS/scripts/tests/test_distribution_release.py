@@ -55,7 +55,7 @@ class DistributionReleaseTests(unittest.TestCase):
         output = self.root / "output"
         with patch.object(module, "ROOT", self.root):
             module.prepare(self.profiles, output, sealed=True)
-        self.assertEqual(len(list((output / "Profiles").iterdir())), 9)
+        self.assertEqual(len(list((output / "Profiles").iterdir())), len(module.PROFILES))
         self.assertEqual((output / "catalog.json").read_bytes(),
                          (self.profiles / "fedora-kde/catalog.json").read_bytes())
 
@@ -69,7 +69,7 @@ class DistributionReleaseTests(unittest.TestCase):
         output = self.root / "output"
         with patch.object(module, "ROOT", self.root):
             module.prepare(self.profiles, output, sealed=True)
-        self.assertEqual(len(list((output / "Profiles").iterdir())), 9)
+        self.assertEqual(len(list((output / "Profiles").iterdir())), len(module.PROFILES))
         self.assertEqual(json.loads((output / "catalog.json").read_text())["schemaVersion"], 5)
 
     def test_engine_pinning_catalogs_emit_no_release(self):

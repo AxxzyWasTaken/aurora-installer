@@ -43,7 +43,7 @@ with (app / "Contents/Library/LaunchDaemons" / (helper + ".plist")).open("wb") a
                    "EnvironmentVariables": {"OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT": "never"}}, output)
 release = app / "Contents/Resources/Release"
 profiles = [distribution + "-" + desktop for distribution in ("fedora", "arch", "nixos")
-            for desktop in ("kde", "gnome", "minimal")]
+            for desktop in ("kde", "gnome", "minimal")] + ["omarchy-hyprland"]
 for directory in [release, *[release / "Profiles" / profile for profile in profiles]]:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "release.json").write_text(json.dumps({"helper_code_signing_requirement": requirement}))
@@ -88,7 +88,7 @@ import sys
 
 release = Path(sys.argv[1])
 profiles = {distribution + "-" + desktop for distribution in ("fedora", "arch", "nixos")
-            for desktop in ("kde", "gnome", "minimal")}
+            for desktop in ("kde", "gnome", "minimal")} | {"omarchy-hyprland"}
 assert {path.name for path in (release / "Profiles").iterdir()} == profiles
 for path in [release, *release.rglob("*")]:
     mode = path.stat().st_mode

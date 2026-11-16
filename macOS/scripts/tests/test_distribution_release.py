@@ -72,6 +72,20 @@ class DistributionReleaseTests(unittest.TestCase):
         self.assertEqual(len(list((output / "Profiles").iterdir())), len(module.PROFILES))
         self.assertEqual(json.loads((output / "catalog.json").read_text())["schemaVersion"], 5)
 
+    def test_missing_omarchy_is_allowed_only_for_explicit_sealed_developer_smoke(self):
+        import shutil
+        shutil.rmtree(self.profiles / "omarchy-hyprland")
+        output = self.root / "output"
+        with patch.object(module, "ROOT", self.root):
+            with self.assertRaisesRegex(ValueError, "missing omarchy-hyprland"):
+                module.prepare(self.profiles, output, sealed=True)
+            self.assertFalse(output.exists())
+            for options in ({}, {"sealed": True, "signing_team": "TESTTEAM01"}):
+                with self.assertRaisesRegex(ValueError, "sealed developer"):
+                    module.prepare(self.profiles, output, legacy_sealed=True, **options)
+            module.prepare(self.profiles, output, sealed=True, legacy_sealed=True)
+        self.assertEqual(len(list((output / "Profiles").iterdir())), 9)
+
     def test_engine_pinning_catalogs_emit_no_release(self):
         directory = self.profiles / "fedora-kde"
         catalog = json.loads((directory / "catalog.json").read_text())

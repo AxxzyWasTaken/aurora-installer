@@ -262,10 +262,49 @@
           XCTAssertTrue(selected.sourceURL.lastPathComponent.hasSuffix("_26B8125_Restore.ipsw"))
         }
       }
-      // No other Mac is offered the 27.2 firmware, and no other T6050 board is admitted.
+      // Other models must not receive the OLED-only restore image.
       XCTAssertNotEqual(
         try choose("apple,j616s", chip: 0x6040, boot: "mBoot-99999.1.1").version, "27.2")
-      XCTAssertThrowsError(try choose("apple,j714s", chip: 0x6050, boot: "mBoot-99999.1.1"))
+      XCTAssertThrowsError(try choose("apple,j999", chip: 0x6050, boot: "mBoot-99999.1.1"))
+    }
+
+    func testDTBackedT6050MacsUseThePinnedUniversalFirmware() throws {
+      let policy = try NativeInspectionPolicy.sealed()
+      let metadata = try NativeInstallationMetadata(
+        data: JSONSerialization.data(withJSONObject: [
+          "os_list": [
+            [
+              "omarchy_target": "apple-silicon-full-os", "default_os_name": "Fixture",
+              "partitions": [["size": "1GiB"]], "supported_fw": ["27.2"],
+            ]
+          ]
+        ]))
+      func choose(_ device: String, boot: String) throws -> NativeFirmwareSelection {
+        let hardware = NativeInspectionHardware(
+          chipID: 0x6050, bootVersion: boot, macOSVersion: "27.2",
+          recoveryVersion: "26.2.123.0.0,0")
+        XCTAssertTrue(policy.supports(device, hardware: hardware), device)
+        return try NativeFirmwareSelection.choose(
+          deviceIdentifier: device, facts: .init(deviceIdentifier: device, hardware: hardware),
+          metadata: metadata, policy: policy)
+      }
+      for board in ["j714c", "j714s", "j716c", "j716s", "j775c", "j775d", "j873s"] {
+        let device = "apple," + board
+        let selected = try choose(device, boot: "mBoot-20457.41.3")
+        XCTAssertEqual(selected.version, "27.2", board)
+        XCTAssertEqual(
+          selected.sourceURL.lastPathComponent, "UniversalMac_27.2_26B123_Restore.ipsw")
+        XCTAssertEqual(selected.pin?.build, "26B123", board)
+        XCTAssertEqual(selected.pin?.sourceBytes, 25_595_669_503, board)
+        // Admission does not lower the existing system-firmware floor or
+        // treat iBoot branding as proof of an equivalent mBoot release.
+        for boot in ["mBoot-20457.41.2", "iBoot-13822.120.5"] {
+          XCTAssertThrowsError(try choose(device, boot: boot)) { error in
+            XCTAssertEqual(
+              error as? NativeFirmwareSelectionError, .macOSUpdateRequired(version: "27.2"), board)
+          }
+        }
+      }
     }
 
     func testBoardBootObjectsAndESPLayoutMatchTheLockedBackend() async throws {

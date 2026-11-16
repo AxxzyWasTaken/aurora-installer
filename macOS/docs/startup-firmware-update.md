@@ -18,7 +18,9 @@ The 26B123 entry (`UniversalMac_27.2_26B123_Restore.ipsw`, 25,595,669,503 bytes)
 
 ### Which boards
 
-The entry starts with no models. `scripts/firmware-qualification.json` lists the boards admitted to each pinned build, each with the kernel release that shipped its support for that firmware, the distributions carrying it, and a link to the hardware result. `scripts/tests/test_firmware_qualification.py` requires the entry's `models` to equal that list, refuses a null model list (which would admit every Mac), and checks the pin fields against the record. Adding a board is a two-line change, reviewed with its evidence.
+`scripts/firmware-qualification.json` separates hardware-qualified `boards` from `experimental_boards`. A qualified board records the kernel release, distributions and hardware result. An experimental board records its kernel device tree and matching restore-image identity, remains explicitly not hardware-qualified, and must have an installer caution with recovery guidance. The entry's `models` is exactly the union of these two lists; a null list is refused. Both paths retain the same source-size, manifest and build checks.
+
+The experimental 26B123 admissions are J714c, J714s, J716c, J716s, J775c, J775d and J873s. Their Customer identities in the pinned BuildManifest all use T6050, with board IDs recorded separately. These Macs use this universal image rather than the OLED-only 26B8125 image. The existing system-firmware, macOS and Recovery floors still apply: admitting a board does not equate an older `iBoot` version with the required `mBoot` version or prove an installation on that board.
 
 Release templates don't set `supported_fw`, so the model list is the only gate. A release that wants to hold a board back can still list older versions in `supported_fw`.
 

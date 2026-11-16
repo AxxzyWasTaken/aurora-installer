@@ -5,9 +5,10 @@
   // This table admits backend capability; the signed catalog separately
   // admits the selected public release and model qualification.
   // A firmware entry with a `pin` names one build by size and manifest
-  // digest. The 26B123 entry's models are exactly the boards recorded in
-  // scripts/firmware-qualification.json (checked by its test): a board is
-  // added only once its kernel support for that firmware has shipped.
+  // digest. Its models are the qualified and explicitly experimental boards
+  // in scripts/firmware-qualification.json. Experimental admission requires
+  // a kernel device tree, a matching restore identity and an owner caution.
+  // It does not claim a hardware qualification result.
   enum NativeInspectionPolicySource {
     static let json = #"""
       {
@@ -220,10 +221,6 @@
             "expert": false,
             "minimum": "14.8.3"
           },
-          "j615": {
-            "expert": false,
-            "minimum": "14.8.3"
-          },
           "j614c": {
             "expert": false,
             "minimum": "26.6.2"
@@ -232,11 +229,15 @@
             "expert": false,
             "minimum": "26.6.2"
           },
-          "j616s": {
+          "j615": {
+            "expert": false,
+            "minimum": "14.8.3"
+          },
+          "j616c": {
             "expert": false,
             "minimum": "26.6.2"
           },
-          "j616c": {
+          "j616s": {
             "expert": false,
             "minimum": "26.6.2"
           },
@@ -260,9 +261,41 @@
             "expert": false,
             "minimum": "26.6.2"
           },
+          "j714c": {
+            "expert": false,
+            "minimum": "27.2"
+          },
+          "j714s": {
+            "expert": false,
+            "minimum": "27.2"
+          },
           "j715": {
             "expert": false,
             "minimum": "26.6.2"
+          },
+          "j716c": {
+            "expert": false,
+            "minimum": "27.2"
+          },
+          "j716s": {
+            "expert": false,
+            "minimum": "27.2"
+          },
+          "j773g": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j773s": {
+            "expert": false,
+            "minimum": "26.6.2"
+          },
+          "j775c": {
+            "expert": false,
+            "minimum": "27.2"
+          },
+          "j775d": {
+            "expert": false,
+            "minimum": "27.2"
           },
           "j804": {
             "expert": false,
@@ -284,13 +317,9 @@
             "expert": false,
             "minimum": "27.0"
           },
-          "j773g": {
+          "j873s": {
             "expert": false,
-            "minimum": "26.6.2"
-          },
-          "j773s": {
-            "expert": false,
-            "minimum": "26.6.2"
+            "minimum": "27.2"
           },
           "k114c": {
             "expert": false,
@@ -440,7 +469,15 @@
             "minimumBoot": "mBoot-20457.41.3",
             "minimumMacOS": "27.2",
             "minimumRecovery": "26.2.123.0.0,0",
-            "models": [],
+            "models": [
+              "j714c",
+              "j714s",
+              "j716c",
+              "j716s",
+              "j775c",
+              "j775d",
+              "j873s"
+            ],
             "pin": {
               "build": "26B123",
               "manifestSHA256": "sha256:0fbfae04175cde81ef36d273aa280d39ffe5a54eacba8494b45a59daca462510",

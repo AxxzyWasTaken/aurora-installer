@@ -988,10 +988,11 @@ def distro_sources_from(data):
 
 
 def markdown(report):
+    titles = {'fedora': 'Fedora', 'arch': 'Arch', 'nixos': 'NixOS', 'omarchy': 'Omarchy'}
+    columns = ['Machine', 'Mode'] + [titles[d] + ' (today / at pin)' for d in report['built']]
     lines = ['Today: the installer with the signed catalogs it downloads now. At the pin: the same, once images',
              'built from the pinned branches are published (checks of today\'s images left out).', '',
-             '| Machine | Mode | Fedora (today / at pin) | Arch (today / at pin) | NixOS (today / at pin) |',
-             '| --- | --- | --- | --- | --- |']
+             '| ' + ' | '.join(columns) + ' |', '| ' + ' | '.join(['---'] * len(columns)) + ' |']
     index = {(c['machine'], c['mode'], c['distro']): c for c in report['cells']}
     for machine in dict.fromkeys(c['machine'] for c in report['cells']):
         for mode in MODES:

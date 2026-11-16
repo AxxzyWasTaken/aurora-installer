@@ -505,7 +505,7 @@
     public static let blockedSubheadline =
       "This Mac model has not been approved for this release."
     public static let blockedExplainer =
-      "Each Mac model is tested on real hardware before a signed release includes it. A catalog update can withdraw support, but adding a model needs a new release."
+      "Aurora releases include Macs with kernel device trees. Experimental boards show a warning and recovery guidance before installation. New models need an updated installer and catalog."
     public static let blockedBadge = "Not supported"
     public static let notReadyHeadline = "This Mac isn’t ready yet"
     public static let notReadyDetail =

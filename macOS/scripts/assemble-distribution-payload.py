@@ -32,9 +32,12 @@ DISTRIBUTION_ICONS = {
 
 # The M4 and later Macs the payload must carry a board Stage 2 for, besides the Neo.
 OLED_STAGE2_REQUIRED = ('k114c', 'k114s', 'k116c', 'k116s')
+T6050_STAGE2_REQUIRED = (
+    'j714c', 'j714s', 'j716c', 'j716s', 'j775c', 'j775d', 'j873s',
+) + OLED_STAGE2_REQUIRED
 BOARD_STAGE2_REQUIRED = ('j604', 'j623', 'j624', 'j713', 'j715', 'j773g', 'j614s', 'j614c',
                          'j616s', 'j616c', 'j773s', 'j575c', 'j813', 'j873g', 'j704', 'j815',
-                         'j804', 'j833ct') + OLED_STAGE2_REQUIRED
+                         'j804', 'j833ct') + T6050_STAGE2_REQUIRED
 
 
 def digest(path):
@@ -394,15 +397,16 @@ def assemble(bundle, recovery, output, reuse_payload=False, release_id=None):
     # The manifest uses apple,jXXX identifiers; Stage 1 qualification uses jXXXap classes.
     import supported_models
     identifiers, _ = supported_models.load()
-    # Every supported Mac is qualified for the common Stage 1. The M1 Pro, Max
-    # and Ultra boards in stage1_caution may have it refused by iBoot; the
-    # installer warns their owners, with the recovery steps, before installing.
+    # Every supported Mac is admitted for the common Stage 1. Boards with an
+    # unqualified installer composition stay installable after the owner
+    # acknowledges stage1_caution and the recovery steps.
     supported_models.stage1_caution()
-    # The OLED MacBook Pros (K114/K116, T6050) shipped with macOS 27.2 and
-    # have no older firmware, so 27.2 is the only one they are qualified on.
+    # The admitted T6050 policy selects macOS 27.2. The serialized field name
+    # qualified_machines is the existing boot-chain contract; admission here
+    # does not claim physical qualification of an experimental board.
     template['aurora_stage1'] = {'kind': 'common-raw-v1', 'qualified_machines': {
         identifier.removeprefix('apple,') + 'ap':
-            ['27.2'] if identifier.startswith('apple,k')
+            ['27.2'] if identifier.removeprefix('apple,') in T6050_STAGE2_REQUIRED
             else ['13.5', '14.8.3', '26.6', '26.6.2', '27.0', '27.2']
         for identifier in identifiers
     }}

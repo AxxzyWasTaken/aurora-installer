@@ -20,12 +20,14 @@ import supported_models  # noqa: E402  (on the path the payload module adds)
 
 # Root compatibles: every board that needs its own Stage 2, an M1, and boards a
 # published payload may also carry: A7 boards, whose tree names no apple,tNNNN,
-# and M4 or later boards the release doesn't support, such as the M5 Pro J714s.
+# and future M4 or later boards the release does not admit, such as J999.
 CHIPS = {'j604': 't8132', 'j623': 't8132', 'j624': 't8132', 'j713': 't8132', 'j715': 't8132',
          'j773g': 't8132', 'j614s': 't6040', 'j616s': 't6040', 'j773s': 't6040', 'j614c': 't6041',
          'j616c': 't6041', 'j575c': 't6041', 'j813': 't8142', 'j873g': 't8152', 'j700': 't8140',
          'j704': 't8142', 'j815': 't8142', 'j804': 't8152', 'j833ct': 't8152',
-         'j274': 't8103', 'j714s': 't6050',
+         'j274': 't8103', 'j999': 't6050',
+         'j714c': 't6050', 'j714s': 't6050', 'j716c': 't6050', 'j716s': 't6050',
+         'j775c': 't6050', 'j775d': 't6050', 'j873s': 't6050',
          'k114c': 't6050', 'k114s': 't6050', 'k116c': 't6050', 'k116s': 't6050'}
 COMPATIBLES = {board: ['apple,' + board, 'apple,' + chip, 'apple,arm-platform']
                for board, chip in CHIPS.items()}
@@ -77,7 +79,7 @@ class DistributionPayloadTests(unittest.TestCase):
         header[12:16] = (12).to_bytes(4, 'little')
         (self.bundle / 'esp/aurora/stage1.macho').write_bytes(bytes(header) + raw + bytes(0x4000 - len(raw)))
 
-    def write_neo_stage_two(self, sha256=None, boards=M4_OR_LATER + ('j71', 'j714s')):
+    def write_neo_stage_two(self, sha256=None, boards=M4_OR_LATER + ('j71', 'j999')):
         records = {}
         for board in boards:
             dedicated = self.bundle / ('esp/m1n1/boot-%s.bin' % board)
@@ -111,7 +113,7 @@ class DistributionPayloadTests(unittest.TestCase):
     def common_with_missing_oled(self, omit_tree=None, wrong_chip=None):
         aura = b'authenticated-aura-fixture'
         trailer = gzip.compress(b'authenticated-u-boot-fixture', mtime=0)
-        boards = M4_OR_LATER + ('j71', 'j714s')
+        boards = M4_OR_LATER + ('j71', 'j999')
         trees = {}
         for board in boards:
             if board == omit_tree:
@@ -240,7 +242,7 @@ class DistributionPayloadTests(unittest.TestCase):
         shared.unlink()
         (self.bundle / 'esp/m1n1/boot-ctxr-j700.bin').write_bytes(b'board file')
         # The native installer would refuse every other M4 or later Mac on this
-        # payload. The unsupported J714s and the A7 J71 need nothing.
+        # payload. The future J999 and the A7 J71 need nothing.
         others = sorted(payload.BOARD_STAGE2_REQUIRED)
         with self.assertRaisesRegex(ValueError, r'boards ' + ', '.join(others) + '$'):
             self.assembled('neo-only')
@@ -252,7 +254,7 @@ class DistributionPayloadTests(unittest.TestCase):
         with zipfile.ZipFile(output / metadata['package']) as archive:
             self.assertEqual(archive.read('esp/m1n1/boot-ctxr-j700.bin'), b'board file')
         # A board the release doesn't support may carry its own file too.
-        (self.bundle / 'esp/m1n1/boot-ctxr-j714s.bin').write_bytes(b'board file')
+        (self.bundle / 'esp/m1n1/boot-ctxr-j999.bin').write_bytes(b'board file')
         self.assembled('unsupported-board-file')
         # The shared file covers a board without its own.
         (self.bundle / 'esp/m1n1/boot-ctxr-j614s.bin').unlink()
@@ -327,7 +329,7 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertFalse(receipt['private_neo_inputs'])
         self.assertFalse(receipt['native_neo_reset_qa'])
 
-    def test_every_supported_board_is_qualified_and_only_untried_boards_are_cautioned(self):
+    def test_every_supported_board_is_admitted_and_experimental_boards_are_cautioned(self):
         # Ryan 2026-10-30: M1 to M3 and the A18 Pro are supported. A board
         # whose Stage 1 is untried is warned about, not blocked. The M1 Pro,
         # Max and Ultra left the list once aura's Stage 1 shrank to 1.6 MB.
@@ -336,8 +338,8 @@ class DistributionPayloadTests(unittest.TestCase):
         qualified = json.loads((output / 'installer-data-fedora-kde.json').read_text())['os_list'][0][
             'aurora_stage1']['qualified_machines']
         caution = supported_models.stage1_caution()
-        oled = {'apple,k114c', 'apple,k114s', 'apple,k116c', 'apple,k116s'}
-        self.assertEqual(set(caution), oled | {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
+        t6050 = {'apple,' + board for board in payload.T6050_STAGE2_REQUIRED}
+        self.assertEqual(set(caution), t6050 | {'apple,j575d', 'apple,j614s', 'apple,j604', 'apple,j623',
                                         'apple,j624', 'apple,j715', 'apple,j773g', 'apple,j614c',
                                         'apple,j616c', 'apple,j773s', 'apple,j575c', 'apple,j813', 'apple,j873g',
                                         'apple,j704', 'apple,j815', 'apple,j804', 'apple,j833ct'})
@@ -356,8 +358,8 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertIn('27.2', qualified['j833ctap'])
         self.assertIn('26.6.2', qualified['j704ap'])
         self.assertIn('26.6.2', qualified['j815ap'])
-        # The OLED MacBook Pros shipped with macOS 27.2 and have no older firmware.
-        for identifier in oled:
+        # Every admitted T6050 board selects only the matching 27.2 firmware.
+        for identifier in t6050:
             self.assertEqual(qualified[identifier.removeprefix('apple,') + 'ap'], ['27.2'])
 
     def test_public_payload_without_required_m4_stage_two_is_refused(self):
@@ -366,6 +368,18 @@ class DistributionPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'J614s requires a current board-specific'):
             payload.assemble(self.bundle, self.app, output, release_id='fixture')
         self.assertFalse(output.exists())
+
+    def test_each_new_t6050_board_requires_its_stage_two(self):
+        for board in ('j714c', 'j714s', 'j716c', 'j716s', 'j775c', 'j775d', 'j873s'):
+            with self.subTest(board=board):
+                self.write_neo_stage_two(
+                    boards=tuple(item for item in M4_OR_LATER if item != board))
+                output = self.root / ('missing-' + board)
+                with self.assertRaisesRegex(
+                    ValueError, f'J{board[1:]} requires a current board-specific'
+                ):
+                    payload.assemble(self.bundle, self.app, output, release_id='fixture')
+                self.assertFalse(output.exists())
 
     def test_the_installer_warns_about_exactly_the_caution_boards(self):
         source = (SCRIPT.parents[1] / 'Sources/AuroraInstallerUXCore/Stage1Caution.swift').read_text()

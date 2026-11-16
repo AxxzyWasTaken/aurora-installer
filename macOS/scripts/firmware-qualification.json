@@ -6,7 +6,79 @@
       "source_url": "https://updates.cdn-apple.com/2026FallFCS/c9671975-52db-4fb5-9af2-00217169ba8d/UniversalMac_27.2_26B123_Restore.ipsw",
       "source_bytes": 25595669503,
       "manifest_sha256": "sha256:0fbfae04175cde81ef36d273aa280d39ffe5a54eacba8494b45a59daca462510",
-      "boards": {}
+      "boards": {},
+      "experimental_boards": {
+        "j714c": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j714c.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j714c.dts",
+          "manifest_identity": {
+            "device_class": "j714cap",
+            "chip_id": "0x6050",
+            "board_id": "0x0a"
+          },
+          "qualification": "not_hardware_qualified"
+        },
+        "j714s": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j714s.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j714s.dts",
+          "manifest_identity": {
+            "device_class": "j714sap",
+            "chip_id": "0x6050",
+            "board_id": "0x08"
+          },
+          "qualification": "not_hardware_qualified"
+        },
+        "j716c": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j716c.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j716c.dts",
+          "manifest_identity": {
+            "device_class": "j716cap",
+            "chip_id": "0x6050",
+            "board_id": "0x0e"
+          },
+          "qualification": "not_hardware_qualified"
+        },
+        "j716s": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j716s.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j716s.dts",
+          "manifest_identity": {
+            "device_class": "j716sap",
+            "chip_id": "0x6050",
+            "board_id": "0x0c"
+          },
+          "qualification": "not_hardware_qualified"
+        },
+        "j775c": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j775c.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j775c.dts",
+          "manifest_identity": {
+            "device_class": "j775cap",
+            "chip_id": "0x6050",
+            "board_id": "0x10"
+          },
+          "qualification": "not_hardware_qualified"
+        },
+        "j775d": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j775d.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j775d.dts",
+          "manifest_identity": {
+            "device_class": "j775dap",
+            "chip_id": "0x6050",
+            "board_id": "0x12"
+          },
+          "qualification": "not_hardware_qualified"
+        },
+        "j873s": {
+          "device_tree": "arch/arm64/boot/dts/apple/t6050-j873s.dts",
+          "evidence": "https://github.com/aurora-silicon/linux/blob/677be395b9d2e15d98696107ebf88191f08efbf9/arch/arm64/boot/dts/apple/t6050-j873s.dts",
+          "manifest_identity": {
+            "device_class": "j873sap",
+            "chip_id": "0x6050",
+            "board_id": "0x02"
+          },
+          "qualification": "not_hardware_qualified"
+        }
+      }
     }
   }
 }

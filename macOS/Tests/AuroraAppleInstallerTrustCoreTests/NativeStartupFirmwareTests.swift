@@ -45,7 +45,7 @@
 
     // MARK: Policy
 
-    func testTheSealedPinNamesTheUniversal26B123ImageAndNoBoardYet() throws {
+    func testTheSealedPinNamesTheUniversal26B123ImageAndExperimentalT6050Boards() throws {
       let sealed = try NativeInspectionPolicy.sealed()
       let pinned = sealed.firmware.filter { $0.pin != nil }
       XCTAssertEqual(pinned.count, 1)
@@ -59,10 +59,11 @@
           + "UniversalMac_27.2_26B123_Restore.ipsw")
       XCTAssertEqual(entry.minimumBoot, "mBoot-20457.41.3")
       XCTAssertEqual(entry.minimumMacOS, "27.2")
-      XCTAssertEqual(entry.models, [])
+      XCTAssertEqual(
+        entry.models, ["j714c", "j714s", "j716c", "j716s", "j775c", "j775d", "j873s"])
       // It is last, so it wins wherever a board qualifies for it.
       XCTAssertEqual(sealed.firmware.last?.pin?.build, Self.build)
-      // Until a board is qualified, an M2 on macOS 27.2 keeps the 13.5 stub.
+      // Experimental T6050 admission does not change the M2 firmware choice.
       XCTAssertEqual(try choose("apple,j413", air272, policy: sealed).version, "13.5")
     }
 

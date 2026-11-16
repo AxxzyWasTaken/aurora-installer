@@ -43,8 +43,10 @@ The native executor is `NativeInstallerExecutor`. Signed schema-5 catalogs selec
 
 ## Images and releases
 
-The nine distribution/desktop profiles and their payloads are maintained in [aurora-distributions](https://github.com/aurora-silicon/aurora-distributions). Image producers live in [fedora-aurora](https://github.com/aurora-silicon/fedora-aurora), [alarm-aurora](https://github.com/aurora-silicon/alarm-aurora) and [nixos-aurora](https://github.com/aurora-silicon/nixos-aurora).
+The ten distribution/desktop profiles and their payloads are maintained in [aurora-distributions](https://github.com/aurora-silicon/aurora-distributions). Image producers live in [fedora-aurora](https://github.com/aurora-silicon/fedora-aurora), [alarm-aurora](https://github.com/aurora-silicon/alarm-aurora), [nixos-aurora](https://github.com/aurora-silicon/nixos-aurora) and [omarchy-aurora](https://github.com/aurora-silicon/omarchy-aurora).
 
 Catalogs bind the selected profile and exact artifact hashes. Firmware and calibration are collected from the target Mac. Names required by existing installations and released payloads are recorded in `Sources/AuroraAppleInstaller/PublishedContractNames.swift`.
 
 See [DMG release builds](docs/native-dmg-release.md) and [local payload testing](docs/private-local-payload-install.md). Current downloads and hardware qualification belong in the distribution repository.
+
+Omarchy Aurora offers Hyprland only and reuses the signed ALARM Btrfs/GRUB/first-boot contract. Other distributions keep their existing KDE, GNOME and minimal profiles.

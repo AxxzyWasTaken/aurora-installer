@@ -391,11 +391,11 @@ class DistributionPayloadTests(unittest.TestCase):
                          'allowed_device_classes', 'excluded_device_classes'):
             self.assertNotIn(fragment, source)
 
-    def test_all_nine_profiles_use_the_selected_distribution_symbol(self):
+    def test_all_profiles_use_the_selected_distribution_symbol(self):
         observed = {}
         provenance = json.loads((payload.ROOT / 'Packaging/DistributionIcons/provenance.json').read_text())['icons']
-        for distribution, layout in [('fedora', 'fedora'), ('arch', 'alarm'), ('nixos', 'nixos')]:
-            for desktop in ('kde', 'gnome', 'minimal'):
+        for distribution, layout in [('fedora', 'fedora'), ('arch', 'alarm'), ('nixos', 'nixos'), ('omarchy', 'alarm')]:
+            for desktop in (('hyprland',) if distribution == 'omarchy' else ('kde', 'gnome', 'minimal')):
                 profile = distribution + '-' + desktop
                 self.image.update(installation_profile=profile, layout_kind=layout + '-btrfs-v1')
                 (self.bundle / 'image.json').write_text(json.dumps(self.image))

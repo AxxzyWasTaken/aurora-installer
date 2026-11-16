@@ -7,6 +7,8 @@ struct AuroraWelcomeView: View {
   var device: MacHeaderDisplay = .unknown
   var onContinue: () -> Void
   private let columns = Array(repeating: GridItem(.flexible(minimum: 0), spacing: 18), count: 3)
+  private let distributionColumns = Array(
+    repeating: GridItem(.flexible(minimum: 0), spacing: 18), count: 4)
 
   var body: some View {
     VStack(spacing: 0) {
@@ -18,12 +20,12 @@ struct AuroraWelcomeView: View {
         .inPageColumn().padding(.top, 28)
       VStack(alignment: .leading, spacing: 10) {
         sectionTitle("Distribution")
-        LazyVGrid(columns: columns, spacing: 18) {
+        LazyVGrid(columns: distributionColumns, spacing: 18) {
           ForEach(AuroraDistribution.allCases) { distribution in
             SelectionCard(
               selected: selection.distribution == distribution, label: distribution.title
             ) {
-              selection.distribution = distribution
+              selection.selectDistribution(distribution)
             } content: {
               Text(distribution.title).font(.system(size: 13, weight: .medium))
                 .lineLimit(1).minimumScaleFactor(0.85)
@@ -34,7 +36,7 @@ struct AuroraWelcomeView: View {
         sectionTitle("Desktop environment").padding(.top, 12)
         if selection.distribution.supportsDesktop {
           LazyVGrid(columns: columns, spacing: 18) {
-            ForEach(AuroraDesktop.allCases) { desktop in
+            ForEach(selection.distribution.availableDesktops) { desktop in
               SelectionCard(selected: selection.desktop == desktop, label: desktop.title) {
                 selection.desktop = desktop
               } content: {
@@ -77,6 +79,9 @@ struct AuroraWelcomeView: View {
         + "Arch Linux or Arch Linux ARM projects."
     case .nixos:
       "Aurora NixOS is based on NixOS and is not provided or endorsed by the NixOS project."
+    case .omarchy:
+      "Omarchy Aurora combines Omarchy with Aurora's Arch Linux ARM hardware stack and is not "
+        + "provided or endorsed by the Omarchy project."
     }
   }
 
@@ -94,6 +99,7 @@ struct AuroraWelcomeView: View {
     case .kde: "Familiar and customizable"
     case .gnome: "Clean and focused"
     case .minimal: "A lightweight shell"
+    case .hyprland: "Omarchy's tiling desktop"
     }
   }
 }

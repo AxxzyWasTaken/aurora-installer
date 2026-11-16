@@ -40,7 +40,10 @@ HERE = Path(__file__).resolve().parent
 MACOS = HERE.parents[1]
 REPO = MACOS.parent
 DISTROS = {'fedora': 'fedora-aurora', 'arch': 'alarm-aurora', 'nixos': 'nixos-aurora'}
+ALL_DISTROS = dict(DISTROS, omarchy='omarchy-aurora')
 DESKTOPS = ('gnome', 'kde', 'minimal')
+DESKTOPS_BY_DISTRO = {distro: DESKTOPS for distro in DISTROS}
+DESKTOPS_BY_DISTRO['omarchy'] = ('hyprland',)
 MODES = ('fresh', 'side-by-side')
 
 
@@ -403,23 +406,24 @@ def check(name, ok, detail, hardware=None, scope=None):
 
 def evaluate(machine, mode, distro, dry, context):
     """Every check for one cell. `dry` maps desktop -> dry-run result."""
+    desktops = tuple(dry)
     checks = []
     board = machine['device_identifier'].removeprefix('apple,') + 'ap'
-    sample = dry[DESKTOPS[0]]
+    sample = dry[desktops[0]]
     profiles = context['profiles'][distro]
 
     # 1. machine support: native inspection policy and every signed catalog
-    enabled = [d for d in DESKTOPS if machine['device_identifier'] in profiles[d]['enabled']]
-    unsigned = [d for d in DESKTOPS if not profiles[d]['verified']]
-    ok = sample['supported'] and len(enabled) == len(DESKTOPS) and not unsigned
+    enabled = [d for d in desktops if machine['device_identifier'] in profiles[d]['enabled']]
+    unsigned = [d for d in desktops if not profiles[d]['verified']]
+    ok = sample['supported'] and len(enabled) == len(desktops) and not unsigned
     reason = []
     if not sample['supported']:
         reason.append('native inspection refuses %s: %s' % (machine['device_identifier'], sample.get('unsupported_reason')))
-    if len(enabled) != len(DESKTOPS):
-        reason.append('signed catalog enables it for %s of %s desktops' % (len(enabled), len(DESKTOPS)))
+    if len(enabled) != len(desktops):
+        reason.append('signed catalog enables it for %s of %s desktops' % (len(enabled), len(desktops)))
     if unsigned:
         reason.append('catalog signature did not verify for %s' % ', '.join(unsigned))
-    checks.append(check('supported', ok, '; '.join(reason) or 'inspection policy and all three signed catalogs admit it'))
+    checks.append(check('supported', ok, '; '.join(reason) or 'inspection policy and all selected signed catalogs admit it'))
     if not sample['supported']:
         return checks
 
@@ -433,7 +437,7 @@ def evaluate(machine, mode, distro, dry, context):
 
     # 3. Stage 1: filled by the installer, the pinned aura, and within iBoot's known limits
     problems, notes, published = [], [], []
-    for desktop in DESKTOPS:
+    for desktop in desktops:
         chain, payload = dry[desktop].get('boot_chain'), profiles[desktop]['payload']
         if not chain:
             problems.append('%s: boot chain refused (%s)' % (desktop, dry[desktop].get('boot_chain_error')))
@@ -451,7 +455,7 @@ def evaluate(machine, mode, distro, dry, context):
     limit = context['constraints']['stage1_iboot'].get(board)
     # Without the pinned Stage 1 at hand, the payload's own Stage 1 is the size iBoot sees.
     size = context['pins'].get('stage1_bytes') or max(
-        [dry[d]['boot_chain']['stage1_bytes'] for d in DESKTOPS if 'stage1_bytes' in (dry[d].get('boot_chain') or {})],
+        [dry[d]['boot_chain']['stage1_bytes'] for d in desktops if 'stage1_bytes' in (dry[d].get('boot_chain') or {})],
         default=None)
     if limit and fw['version'] in limit['stub_os'] and size and size >= min(limit['rejected_bytes']):
         problems.append('iBoot on %s (%s stub) rejects the pinned %d B aura Stage 1: %s' % (
@@ -468,7 +472,7 @@ def evaluate(machine, mode, distro, dry, context):
 
     # 4. Stage 2 composition for this board
     problems, published, notes2 = [], [], set()
-    for desktop in DESKTOPS:
+    for desktop in desktops:
         chain, payload = dry[desktop].get('boot_chain'), profiles[desktop]['payload']
         if not chain:
             continue
@@ -517,7 +521,7 @@ def evaluate(machine, mode, distro, dry, context):
 
     # 6. the distribution image: public, sized and digest-checked
     problems, digests = [], []
-    for desktop in DESKTOPS:
+    for desktop in desktops:
         payload = profiles[desktop]['payload']
         for url, ok in payload['public'].items():
             if ok is not True:
@@ -550,7 +554,7 @@ def evaluate(machine, mode, distro, dry, context):
     expected = ['-nca'] if machine['device_identifier'] == 'apple,j700' else ['-nc']
     selection = (MACOS / 'Recovery/Sources/BootSelection.swift').read_text()
     enrollment, how = enrollment_check(selection, sample.get('uses_execute_window', False),
-                                       [dry[d].get('boot_chain') or {} for d in DESKTOPS])
+                                       [dry[d].get('boot_chain') or {} for d in desktops])
     steps = [c.get('plan', {}).get('required_human_steps') for c in sample.get('candidates', [])]
     fresh_steps = all(s is None or 'enterOneTrueRecovery' in s for s in steps)
     ok = sample['one_true_recovery_boot_policy'] == expected and enrollment and fresh_steps
@@ -586,8 +590,9 @@ def enrollment_check(selection, uses_window, chains):
 def confined_stage2_checks(machine, dry, profiles, aura_labels):
     """The Stage 2 a padded Stage 1 loads holds this board's trees and U-Boot, at the pin.
     Today's images may not carry one yet, which only a published-scope check reports."""
+    desktops = tuple(dry)
     problems, published, checked = [], [], 0
-    for desktop in DESKTOPS:
+    for desktop in desktops:
         chain = dry[desktop].get('boot_chain')
         if not chain:
             continue
@@ -630,8 +635,9 @@ def stage1_caution(machine, dry, context):
     the plan screen must show the warning, its recovery steps and a widened
     acknowledgement, and the install must still go ahead. None for any other
     board, unless the dry run warns where the list does not."""
+    desktops = tuple(dry)
     listed = context['stage1_caution'].get(machine['device_identifier'])
-    shown = {d: dry[d].get('stage1_caution') for d in DESKTOPS}
+    shown = {d: dry[d].get('stage1_caution') for d in desktops}
     if not listed:
         extra = [d for d, c in shown.items() if c]
         return check('stage1 caution', False, 'warns on a board stage1_caution does not list (%s)' % ', '.join(
@@ -655,7 +661,7 @@ def stage1_caution(machine, dry, context):
                 'unsupported_reason') or dry[desktop].get('boot_chain_error') or 'no Stage 1'))
         if machine['disk'] is not None and not any('plan' in c for c in dry[desktop].get('candidates', [])):
             problems.append('%s: no plan to go ahead with' % desktop)
-    first = shown[DESKTOPS[0]] or {}
+    first = shown[desktops[0]] or {}
     return check('stage1 caution', not problems, '; '.join(problems) or 'warns, then goes ahead: "%s" %s %s' % (
         first['headline'], first['reason'], first['recovery']))
 
@@ -821,7 +827,9 @@ def main():
     parser.add_argument('--cache', default=os.path.join(tempfile.gettempdir(), 'installer-conformance-cache'))
     parser.add_argument('--markdown')
     parser.add_argument('--json')
+    parser.add_argument('--distributions', nargs='+', choices=tuple(ALL_DISTROS), default=tuple(DISTROS))
     args = parser.parse_args()
+    distros = {name: ALL_DISTROS[name] for name in args.distributions}
     Path(args.cache).mkdir(parents=True, exist_ok=True)
     constraints = json.loads((HERE / 'fixtures/constraints.json').read_text())
     pins = installer_pins()
@@ -833,7 +841,7 @@ def main():
         pins['stage1_bytes'] = Path(args.stage1).stat().st_size
     else:
         pins['stage1_bytes'] = constraints.get('pinned_stage1_bytes', {}).get(pins['aura'], {}).get('bytes')
-    branches = {name: None for name in DISTROS}
+    branches = {name: None for name in distros}
     for item in args.distro:
         name, path = item.split('=', 1)
         branches[name] = distro_sources(path)
@@ -841,9 +849,9 @@ def main():
     boards = {m['device_identifier'].removeprefix('apple,') for m in machines}
 
     profiles, built, kernels, dry = {}, {}, {}, {}
-    for distro, repo in DISTROS.items():
+    for distro, repo in distros.items():
         profiles[distro] = {}
-        for desktop in DESKTOPS:
+        for desktop in DESKTOPS_BY_DISTRO[distro]:
             profile = '%s-%s' % (distro, desktop)
             catalog, verified = load_catalog(args.catalogs, profile, args.cache, args.trust_root)
             enabled = {m['deviceIdentifier'] for m in catalog['models'] if m['status'] == 'enabled'}
@@ -891,21 +899,21 @@ def main():
                                                 'digest': digest},
                 'image_source': image.get('head_sha'), 'payload_name': artifact['fileName'],
             }
-        sha = profiles[distro][DESKTOPS[0]]['image_source']
+        sha = profiles[distro][DESKTOPS_BY_DISTRO[distro][0]]['image_source']
         built[distro] = distro_sources_from(published_sources(repo, sha, args.cache)) if sha else None
         kernels[distro] = kernel_facts(distro, branches[distro] or built[distro], args.cache)
 
-    parity = distro_parity({d: branches[d] or built[d] for d in DISTROS}, args.cache)
+    parity = distro_parity({d: branches[d] or built[d] for d in distros}, args.cache)
     context = {'parity': parity, 'pins': pins, 'constraints': constraints, 'profiles': profiles, 'branches': branches,
                'built': built, 'kernels': kernels, 'stage1_caution': stage1_caution_list()}
     cells = []
     for machine in machines:
         for mode in MODES:
             swift = swift_machine(machine, mode, constraints)
-            for distro in DISTROS:
+            for distro in distros:
                 results = {d: run_dry(args.dry_run, swift, profiles[distro][d]['metadata'],
                                       profiles[distro][d]['digest_id'], profiles[distro][d]['archive'])
-                           for d in DESKTOPS}
+                           for d in DESKTOPS_BY_DISTRO[distro]}
                 checks = evaluate(machine, mode, distro, results, context)
                 cells.append({'machine': machine['name'], 'device': machine['device_identifier'], 'mode': mode,
                               'distro': distro, 'verdict': verdict(checks), 'at_pin': verdict(checks, True),
@@ -980,15 +988,16 @@ def distro_sources_from(data):
 
 
 def markdown(report):
+    titles = {'fedora': 'Fedora', 'arch': 'Arch', 'nixos': 'NixOS', 'omarchy': 'Omarchy'}
+    columns = ['Machine', 'Mode'] + [titles[d] + ' (today / at pin)' for d in report['built']]
     lines = ['Today: the installer with the signed catalogs it downloads now. At the pin: the same, once images',
              'built from the pinned branches are published (checks of today\'s images left out).', '',
-             '| Machine | Mode | Fedora (today / at pin) | Arch (today / at pin) | NixOS (today / at pin) |',
-             '| --- | --- | --- | --- | --- |']
+             '| ' + ' | '.join(columns) + ' |', '| ' + ' | '.join(['---'] * len(columns)) + ' |']
     index = {(c['machine'], c['mode'], c['distro']): c for c in report['cells']}
     for machine in dict.fromkeys(c['machine'] for c in report['cells']):
         for mode in MODES:
             row = [machine, mode] + ['%s / %s' % (index[(machine, mode, d)]['verdict'], index[(machine, mode, d)]['at_pin'])
-                                     for d in DISTROS]
+                                     for d in report['built']]
             lines.append('| ' + ' | '.join(row) + ' |')
     lines.append('')
     if report.get('tips'):

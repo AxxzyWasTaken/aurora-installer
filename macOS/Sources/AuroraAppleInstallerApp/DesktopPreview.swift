@@ -12,7 +12,7 @@ struct DesktopPreview: View {
       switch desktop {
       case .kde: screenshot("KDE-Desktop")
       case .gnome: screenshot("GNOME-Desktop")
-      case .minimal: IllustratedDesktop(desktop: desktop)
+      case .minimal, .hyprland: IllustratedDesktop(desktop: desktop)
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -49,9 +49,23 @@ private struct IllustratedDesktop: View {
       case .kde: drawPanelDesktop(in: &context)
       case .gnome: drawTopBarDesktop(in: &context)
       case .minimal: drawShell(in: &context)
+      case .hyprland: drawTilingDesktop(in: &context)
       }
     }
     .aspectRatio(1.6, contentMode: .fit)
+  }
+
+  private func drawTilingDesktop(in c: inout GraphicsContext) {
+    box(&c, 0, 0, 320, 200, Color(red: 0.10, green: 0.12, blue: 0.16))
+    box(&c, 8, 8, 304, 16, Color(white: 0.08), radius: 5)
+    label(&c, "Omarchy", 16, 10, size: 8, color: .white)
+    label(&c, "1   2   3", 134, 10, size: 8, color: .white.opacity(0.8))
+    label(&c, "10:30", 276, 10, size: 8, color: .white)
+    box(&c, 8, 32, 184, 160, Color(white: 0.15), radius: 5)
+    box(&c, 200, 32, 112, 76, Color(white: 0.19), radius: 5)
+    box(&c, 200, 116, 112, 76, Color(white: 0.13), radius: 5)
+    label(&c, "❯", 18, 44, size: 11, color: .green)
+    label(&c, "omarchy", 34, 44, size: 10, color: .white.opacity(0.9))
   }
 
   private func box(

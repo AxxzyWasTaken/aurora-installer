@@ -11,12 +11,30 @@ final class InstallationSelectionTests: XCTestCase {
       [
         "fedora-kde", "fedora-gnome", "fedora-minimal",
         "arch-kde", "arch-gnome", "arch-minimal",
-        "nixos-kde", "nixos-gnome", "nixos-minimal",
+        "nixos-kde", "nixos-gnome", "nixos-minimal", "omarchy-hyprland",
       ])
   }
 
+  func testOmarchyOffersOnlyHyprlandAndSwitchingKeepsAValidSelection() throws {
+    var selection = AuroraInstallationSelection()
+    selection.selectDistribution(.omarchy)
+    XCTAssertEqual(selection.desktop, .hyprland)
+    XCTAssertEqual(selection.profileID, "omarchy-hyprland")
+    XCTAssertEqual(AuroraDistribution.omarchy.availableDesktops, [.hyprland])
+    try selection.requireMatchingProfile("omarchy-hyprland")
+    selection.selectDistribution(.arch)
+    XCTAssertEqual(selection.desktop, .kde)
+    XCTAssertEqual(selection.profileID, "arch-kde")
+    for pair in [(AuroraDistribution.omarchy, AuroraDesktop.kde), (.arch, .hyprland)] {
+      let invalid = AuroraInstallationSelection(distribution: pair.0, desktop: pair.1)
+      XCTAssertThrowsError(try invalid.requireMatchingProfile(invalid.profileID))
+      let data = try JSONEncoder().encode(invalid)
+      XCTAssertThrowsError(try JSONDecoder().decode(AuroraInstallationSelection.self, from: data))
+    }
+  }
+
   func testNixOSKeepsItsDesktopInTheSignedProfile() {
-    for desktop in AuroraDesktop.allCases {
+    for desktop in AuroraDistribution.nixos.availableDesktops {
       let selection = AuroraInstallationSelection(distribution: .nixos, desktop: desktop)
       XCTAssertEqual(selection.effectiveDesktop, desktop)
       XCTAssertEqual(selection.profileID, "nixos-" + desktop.rawValue)

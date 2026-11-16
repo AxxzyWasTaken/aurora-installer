@@ -119,7 +119,7 @@ jobs:
           # Build and validate Recovery once; packaging reuses this exact template.
           bash Recovery/build-recovery.sh "$RUNNER_TEMP/installer-ci/recovery-template" \
             2>&1 | tee "$RUNNER_TEMP/installer-ci/recovery-fixtures.log"
-      - name: Build and measure the sealed nine-profile download app
+      - name: Build and measure the sealed published-profile download app
         env:
           AURORA_DEVELOPER_BUILD: '1'
           AURORA_RECOVERY_TEMPLATE: ${{ runner.temp }}/installer-ci/recovery-template/Aurora Installer.app
@@ -127,7 +127,7 @@ jobs:
           set -euo pipefail
           python3 scripts/prepare-distribution-release.py \
             --profiles "$GITHUB_WORKSPACE/packaging-delivery/site/installer/Profiles" \
-            --output "$RUNNER_TEMP/packaging-release" --sealed
+            --output "$RUNNER_TEMP/packaging-release" --sealed --legacy-sealed-profiles
           bash Packaging/build-app.sh "$RUNNER_TEMP/packaging-release" "$RUNNER_TEMP/packaging-app" \
             2>&1 | tee "$RUNNER_TEMP/installer-ci/packaging-smoke.log"
           app="$RUNNER_TEMP/packaging-app/Aurora Installer.app"

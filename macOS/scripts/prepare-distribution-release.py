@@ -14,7 +14,10 @@ PROFILES = tuple(f"{distribution}-{desktop}" for distribution in ("fedora", "arc
                  for desktop in ("kde", "gnome", "minimal")) + ("omarchy-hyprland",)
 
 
-def prepare(source, output, sealed=False, signing_team=None):
+def prepare(source, output, sealed=False, signing_team=None, legacy_sealed=False):
+    if legacy_sealed and (not sealed or signing_team is not None):
+        raise ValueError("legacy profiles are only allowed for sealed developer packaging checks")
+    profiles = PROFILES[:-1] if legacy_sealed else PROFILES
     if signing_team is not None and not re.fullmatch(r"[A-Z0-9]{10}", signing_team):
         raise ValueError("invalid release signing team")
     identity = {}
@@ -35,7 +38,7 @@ def prepare(source, output, sealed=False, signing_team=None):
     with tempfile.TemporaryDirectory(prefix="aurora-delivery-verify-") as temporary:
         key = Path(temporary) / "public.der"
         key.write_bytes(bytes.fromhex("302a300506032b6570032100") + trusted)
-        for profile in PROFILES:
+        for profile in profiles:
             directory = source / profile
             names = ("release.json", "trust-root.ed25519.pub", "catalog.json", "catalog.json.sig")
             data = {}
@@ -93,7 +96,7 @@ def prepare(source, output, sealed=False, signing_team=None):
         return (json.dumps(descriptor, indent=2) + "\n").encode()
     descriptors = {profile: release_descriptor(data["release.json"]) for profile, data in documents.items()}
     root_descriptor = release_descriptor((ROOT / "Release/release.json").read_bytes())
-    # Nothing is emitted until the entire nine-profile set has verified.
+    # Nothing is emitted until every requested profile has verified.
     output.mkdir(parents=True)
     for profile, data in documents.items():
         directory = output / "Profiles" / profile
@@ -121,5 +124,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sealed", action="store_true", help="seal exact signed catalogs for a developer/offline build")
     parser.add_argument("--signing-team", help="bind the root and all profile descriptors to this named-signing team")
+    parser.add_argument("--legacy-sealed-profiles", action="store_true",
+                        help="CI transition only: verify the existing nine profiles in a sealed developer build")
     args = parser.parse_args()
-    prepare(args.profiles, args.output, args.sealed, args.signing_team)
+    prepare(args.profiles, args.output, args.sealed, args.signing_team, args.legacy_sealed_profiles)

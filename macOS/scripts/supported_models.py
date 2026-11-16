@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """The Macs every Aurora Mac catalog must enable, and the ones it must refuse.
 
-`supported-models.json` is the single list: every M1, M2, M3 and M4 Mac
-Aurora has a device tree for, and the MacBook Neo, which the native installer
+`supported-models.json` is the single list: every Apple Silicon Mac
+Aurora has a device tree for, including the MacBook Neo, which the native installer
 inspects and prepares itself. A catalog that offers any Mac offers all of
 them, so a release or preview can never ship a subset by accident. A channel with no
 Mac release yet (an empty catalog) is the only exception. `refused` names each
 board that stays out and why. `developer` names each board only a developer
 build's sealed catalog may add, with its own image; channel catalogs never
 carry one, so check-catalog rejects it like any unknown board.
-`stage1_caution` names each supported board whose Stage 1 or board is
-untried (the M3 Ultra and the M4 boards the Aurora team has not started).
-They stay supported and qualified: the installer warns the owner, with the
+`stage1_caution` names supported boards whose startup code or installer
+composition has not been qualified.
+They stay supported and installable: the installer warns the owner, with the
 recovery steps, and lets them continue. The installer's Swift table
 (Sources/AuroraInstallerUXCore/Stage1Caution.swift) must name the same boards.
 
@@ -42,8 +42,8 @@ def load(path: Path = MANIFEST) -> tuple[list[str], dict[str, str]]:
 
 
 def stage1_caution(path: Path = MANIFEST) -> dict[str, str]:
-    """Supported boards whose iBoot may refuse the common raw Stage 1, with why.
-    They are still qualified; the installer warns before installing."""
+    """Supported boards whose startup or installer composition needs caution.
+    They stay installable; the installer warns before installing."""
     supported, _ = load(path)
     document = json.loads(path.read_text())
     if "stage1_unqualified" in document:

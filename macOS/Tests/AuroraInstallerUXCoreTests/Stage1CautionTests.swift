@@ -4,7 +4,7 @@
   @testable import AuroraInstallerUXCore
 
   final class Stage1CautionTests: XCTestCase {
-    func testOnlyTheUntriedBoardsAreWarnedAndNotBlocked() {
+    func testBoardsWithStartupCautionsAreWarnedAndNotBlocked() {
       let untried = [
         "j575d", "j614s", "j604", "j623", "j624", "j715", "j773g", "j614c", "j773s", "j575c",
         "j616c", "j813", "j873g", "j704", "j815", "j804", "j833ct",
@@ -29,6 +29,16 @@
       ]
       for board in others {
         XCTAssertNil(Stage1Caution.reason(for: "apple," + board), board)
+      }
+    }
+
+    func testT6050BoardsWarnAboutTheUnqualifiedInstallerComposition() {
+      for board in ["j714c", "j714s", "j716c", "j716s", "j775c", "j775d", "j873s"] {
+        let reason = Stage1Caution.reason(for: "apple," + board)
+        XCTAssertTrue(reason?.contains("have not been qualified") ?? false, board)
+        XCTAssertTrue(reason?.contains("Aurora may not start") ?? false, board)
+        XCTAssertTrue(reason?.contains("recovery steps") ?? false, board)
+        XCTAssertFalse(reason?.contains("nobody") ?? true, board)
       }
     }
 

@@ -528,6 +528,7 @@
         "j514m", "j516s", "j516c", "j516m", "j575d", "j604", "j623", "j624", "j713", "j715",
         "j773g", "j614s", "j614c", "j616s", "j616c", "j773s", "j575c", "j813", "j873g", "j700",
         "j704", "j815", "j804", "j833ct",
+        "j714c", "j714s", "j716c", "j716s", "j775c", "j775d", "j873s",
         "k114c", "k114s", "k116c", "k116s",
       ].map { "apple,\($0)" }
       XCTAssertEqual(identifiers, Set(everySupportedMac))

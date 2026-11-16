@@ -2,8 +2,8 @@
   import Darwin
   import Foundation
 
-  /// Supported Macs on which aura's Stage 1 is untried or known to be
-  /// limited. The owner is told before installing and can still go ahead.
+  /// Supported Macs whose startup code is limited or whose installer
+  /// composition is unqualified. The owner is told and can still go ahead.
   /// This mirrors scripts/supported-models.json `stage1_caution`; a test
   /// keeps them equal. The M1 Pro, Max and Ultra are no longer listed:
   /// their iBoot refused aura 1.0.0b1's 4.39 MB Stage 1, and aura's
@@ -33,6 +33,9 @@
     private static let preliminaryOLED =
       "Support for this MacBook Pro with the OLED touchscreen is preliminary and untested on hardware. Nobody on the Aurora team has one yet. Its Linux device tree is new and untested, the touchscreen does not work yet, the glowing Apple logo is untested, and the built-in display works only as a simple boot screen until the display driver supports it. Aurora may not start."
 
+    private static let unqualifiedT6050Composition =
+      "This installer and its kernel, startup code and firmware combination have not been qualified on this Mac. Its Linux device tree is present, but Aurora may not start and some hardware may not work. Continue only after acknowledging the warning and the recovery steps."
+
     static let reasons: [String: String] = [
       "apple,j575d": untriedChip,
       "apple,j614s": untriedBoard,
@@ -51,6 +54,13 @@
       "apple,j815": describedOnly,
       "apple,j804": describedOnly,
       "apple,j833ct": describedOnly,
+      "apple,j714c": unqualifiedT6050Composition,
+      "apple,j714s": unqualifiedT6050Composition,
+      "apple,j716c": unqualifiedT6050Composition,
+      "apple,j716s": unqualifiedT6050Composition,
+      "apple,j775c": unqualifiedT6050Composition,
+      "apple,j775d": unqualifiedT6050Composition,
+      "apple,j873s": unqualifiedT6050Composition,
       "apple,k114c": preliminaryOLED,
       "apple,k114s": preliminaryOLED,
       "apple,k116c": preliminaryOLED,

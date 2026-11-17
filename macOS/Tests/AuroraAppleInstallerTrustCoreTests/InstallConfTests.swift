@@ -13,7 +13,7 @@
 
     func testSerializesOptOutAndEveryAppChannel() throws {
       XCTAssertEqual(InstallConf.allowedLanes, Set(ReleaseChannel.allCases.map(\.rawValue)))
-      for lane in ["stable", "rc", "edge"] {
+      for lane in ["stable", "rc", "testing", "edge"] {
         let conf = try InstallConf(encrypt: false, lane: lane)
         XCTAssertEqual(conf.serialized, "format=1\nencrypt=0\nlane=\(lane)\n")
         XCTAssertEqual(try InstallConf.parse(conf.serialized).lane, lane)

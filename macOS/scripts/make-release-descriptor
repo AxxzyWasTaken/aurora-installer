@@ -9,9 +9,9 @@ usage() {
   cat <<'USAGE'
 Usage:
   make-release-descriptor --public-key FILE --base-url URL --output FILE
-                          [--default-channel stable|rc|edge] [--adhoc]
+                          [--default-channel stable|rc|testing] [--adhoc]
 
-Writes release.json (schema 3) naming the stable, rc and edge catalogs
+Writes release.json (schema 3) naming the stable, rc, testing and edge catalogs
 under BASE_URL (the release stream's base, for example the public base plus
 the stream path) and pinning the SHA-256 fingerprint of the public key.
 
@@ -31,7 +31,7 @@ die() {
 public_key=""
 base_url=""
 output=""
-default_channel="edge"
+default_channel="testing"
 adhoc=0
 
 while (( $# > 0 )); do
@@ -50,8 +50,8 @@ done
 (( $(wc -c <"$public_key") == 32 )) || die "the trust root must be exactly 32 raw bytes"
 [[ $base_url == https://* ]] || die "--base-url must be https: $base_url"
 [[ $base_url != */ ]] || die "--base-url must not end with a slash: $base_url"
-[[ $default_channel == "stable" || $default_channel == "rc" || $default_channel == "edge" ]] ||
-  die "--default-channel must be stable, rc or edge"
+[[ $default_channel == "stable" || $default_channel == "rc" || $default_channel == "testing" ]] ||
+  die "--default-channel must be stable, rc or testing (Edge requires an explicit opt-in)"
 [[ ! -e $output ]] || die "refusing to overwrite $output"
 
 # shellcheck source=../Packaging/identity.conf
@@ -84,7 +84,8 @@ descriptor = {
     "channels": {
         "stable": {"catalog_url": f"{base_url}/channels/stable/catalog.signed.json"},
         "rc": {"catalog_url": f"{base_url}/channels/rc/catalog.signed.json"},
-        "edge": {"catalog_url": f"{base_url}/channels/edge/catalog.signed.json"},
+        "testing": {"catalog_url": f"{base_url}/channels/testing/catalog.signed.json"},
+        "edge": {"catalog_url": f"{base_url}/channels/edge-alpha/catalog.signed.json"},
     },
     "trust_root_fingerprint": fingerprint,
     "helper_mach_service_name": helper,

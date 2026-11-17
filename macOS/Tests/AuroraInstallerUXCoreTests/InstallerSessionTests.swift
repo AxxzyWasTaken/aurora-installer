@@ -369,10 +369,10 @@
       environment.availabilityGates = [slow, nil]
       let unreachable = ReleaseChannelAvailability.checkFailed(.network)
       let current: [ReleaseChannel: ReleaseChannelAvailability] = [
-        .stable: .noRelease, .rc: .noRelease, .edge: .available,
+        .stable: .noRelease, .rc: .noRelease, .testing: .available, .edge: .notPublished,
       ]
       environment.availabilityAnswers = [
-        [.stable: unreachable, .rc: unreachable, .edge: unreachable],
+        [.stable: unreachable, .rc: unreachable, .testing: unreachable],
         current,
       ]
       let session = InstallerSession(environment: environment)
@@ -381,7 +381,7 @@
       let first = Task { await session.refreshChannelAvailability() }
       await slow.waitUntilEntered()
       await session.refreshChannelAvailability()
-      XCTAssertEqual(session.channelAvailability[.edge], .available)
+      XCTAssertEqual(session.channelAvailability[.testing], .available)
 
       await slow.release()
       await first.value

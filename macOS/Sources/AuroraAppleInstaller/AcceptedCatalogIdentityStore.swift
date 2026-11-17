@@ -31,12 +31,15 @@
     }
 
     /// Each channel of this release stream keeps its own accepted sequence.
+    /// Testing also inherits the old native development-edge floor; the new
+    /// Edge namespace never reads that legacy state.
     /// Without this, a tester who accepted a rc catalog could never go back to
     /// stable: the older stable sequence would look like a rollback. The
     /// stream name keeps the MX Mac installer's floors, in the same workspace,
     /// from blocking this stream's first catalogs and the other way round.
     public static func fileName(for channel: ReleaseChannel) -> String {
-      "accepted-catalog-\(InstallerBuildConfiguration.streamPath)-\(channel.rawValue).json"
+      let lane = channel == .edge ? "edge-alpha-v1" : channel.rawValue
+      return "accepted-catalog-\(InstallerBuildConfiguration.streamPath)-\(lane).json"
     }
 
     private var fileName: String {
@@ -45,7 +48,16 @@
 
     public func load() throws -> AcceptedCatalogIdentity? {
       try validateDirectory()
-      return try read(fileName: fileName)
+      let current = try read(fileName: fileName)
+      guard channel == .testing,
+        let legacy = try read(
+          fileName: "accepted-catalog-\(InstallerBuildConfiguration.streamPath)-edge.json")
+      else { return current }
+      guard let current else { return legacy }
+      if current.sequence == legacy.sequence && current.payloadDigest != legacy.payloadDigest {
+        throw SupportCatalogSequenceError.sequenceReuse(current.sequence)
+      }
+      return current.sequence >= legacy.sequence ? current : legacy
     }
 
     private func read(fileName: String) throws -> AcceptedCatalogIdentity? {

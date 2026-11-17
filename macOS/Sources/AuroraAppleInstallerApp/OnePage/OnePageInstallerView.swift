@@ -76,7 +76,7 @@ struct OnePageInstallerView: View {
       device = .simulation
       self.selection = selection
       startAtPlan = false
-      channel = .edge
+      channel = .testing
       onChannelAvailability = { _ in }
       onSessionAvailable = { _ in }
       onRemoveLinux = {}

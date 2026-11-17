@@ -16,15 +16,19 @@
     case releaseResourcesUnavailable
     case unsafeReleaseResource(String)
     case invalidCatalogEnvelope
+    case edgeAlphaUnavailable
+    case invalidCatalogChannel
+    case invalidEdgeQualification
   }
 
-  /// The release channels a build can read: the same three Aurora offers,
+  /// The release channels a build can read: the same four Aurora offers,
   /// in menu order. Every build names all of them, so a channel can be opened
   /// later without shipping a new signed app. The developer channel links a
   /// source checkout after installation and is never an installer channel.
   public enum ReleaseChannel: String, CaseIterable, Codable, Sendable {
     case stable
     case rc
+    case testing
     case edge
   }
 
@@ -52,6 +56,7 @@
     public let helperMachServiceName: String
     public let helperCodeSigningRequirement: String
     public let sealedCatalogDocuments: InstallerReleaseCatalogDocuments?
+    public let legacyDevelopmentChannel: Bool
 
     public init(
       channels: ReleaseChannelEndpoints,
@@ -59,7 +64,8 @@
       trustRoot: AppOwnedTrustRoot,
       helperMachServiceName: String,
       helperCodeSigningRequirement: String,
-      sealedCatalogDocuments: InstallerReleaseCatalogDocuments? = nil
+      sealedCatalogDocuments: InstallerReleaseCatalogDocuments? = nil,
+      legacyDevelopmentChannel: Bool = false
     ) {
       self.channels = channels
       self.defaultChannel = defaultChannel
@@ -67,6 +73,7 @@
       self.helperMachServiceName = helperMachServiceName
       self.helperCodeSigningRequirement = helperCodeSigningRequirement
       self.sealedCatalogDocuments = sealedCatalogDocuments
+      self.legacyDevelopmentChannel = legacyDevelopmentChannel
     }
 
     public func catalogURL(for channel: ReleaseChannel) -> URL {
@@ -107,14 +114,19 @@
           decoded.schemaVersion
         )
       }
-      try validateChannelObjects(in: dictionary)
-      guard let defaultChannel = ReleaseChannel(rawValue: decoded.defaultChannel)
+      let legacy = try validateChannelObjects(in: dictionary)
+      guard let decodedDefault = ReleaseChannel(rawValue: decoded.defaultChannel)
       else {
+        throw InstallerReleaseConfigurationError.invalidDescriptor
+      }
+      let defaultChannel: ReleaseChannel = legacy && decodedDefault == .edge ? .testing : decodedDefault
+      guard defaultChannel != .edge else {
         throw InstallerReleaseConfigurationError.invalidDescriptor
       }
       var endpoints = [ReleaseChannel: URL]()
       for channel in ReleaseChannel.allCases {
-        guard let descriptor = decoded.channels[channel.rawValue] else {
+        let source = legacy && channel == .testing ? ReleaseChannel.edge : channel
+        guard let descriptor = decoded.channels[source.rawValue] else {
           throw InstallerReleaseConfigurationError.invalidDescriptor
         }
         try validateURL(
@@ -125,7 +137,7 @@
       }
       // Two channels pointing at one object would silently defeat the
       // separation between what testers see and what users get.
-      guard Set(endpoints.values).count == ReleaseChannel.allCases.count,
+      guard Set(decoded.channels.values.map(\.catalogURL)).count == decoded.channels.count,
         let channels = ReleaseChannelEndpoints(endpoints: endpoints)
       else {
         throw InstallerReleaseConfigurationError.invalidURL("channels")
@@ -159,15 +171,17 @@
         trustRoot: trustRoot,
         helperMachServiceName: decoded.helperMachServiceName,
         helperCodeSigningRequirement: decoded.helperCodeSigningRequirement,
-        sealedCatalogDocuments: nil
+        sealedCatalogDocuments: nil,
+        legacyDevelopmentChannel: legacy
       )
     }
 
     /// The decoder tolerates extra keys, so the channel objects are key-set
     /// checked here the same way the top level is.
-    private func validateChannelObjects(in dictionary: [String: Any]) throws {
+    private func validateChannelObjects(in dictionary: [String: Any]) throws -> Bool {
       guard let channels = dictionary["channels"] as? [String: Any],
         Set(channels.keys) == Set(ReleaseChannel.allCases.map(\.rawValue))
+          || Set(channels.keys) == Set(["stable", "rc", "edge"])
       else {
         throw InstallerReleaseConfigurationError.invalidDescriptor
       }
@@ -179,6 +193,7 @@
           throw InstallerReleaseConfigurationError.invalidDescriptor
         }
       }
+      return channels["testing"] == nil
     }
 
     private func validateURL(_ url: URL, field: String) throws {
@@ -243,7 +258,8 @@
         helperMachServiceName: configuration.helperMachServiceName,
         helperCodeSigningRequirement:
           configuration.helperCodeSigningRequirement,
-        sealedCatalogDocuments: sealedCatalogDocuments
+        sealedCatalogDocuments: sealedCatalogDocuments,
+        legacyDevelopmentChannel: configuration.legacyDevelopmentChannel
       )
     }
 
@@ -379,7 +395,10 @@
       configuration: InstallerReleaseConfiguration,
       channel: ReleaseChannel
     ) async throws -> InstallerReleaseCatalogDocuments {
-      if let sealed = configuration.sealedCatalogDocuments {
+      if channel == .edge && configuration.legacyDevelopmentChannel {
+        throw InstallerReleaseConfigurationError.edgeAlphaUnavailable
+      }
+      if channel == configuration.defaultChannel, let sealed = configuration.sealedCatalogDocuments {
         guard !sealed.payload.isEmpty,
           sealed.payload.count <= Self.maximumCatalogBytes
         else {
@@ -393,11 +412,22 @@
         return sealed
       }
 
-      let envelope = try await downloader.download(
-        from: configuration.catalogURL(for: channel),
-        maximumBytes: Self.maximumEnvelopeBytes,
-        role: "catalog-envelope"
-      )
+      let envelope: Data
+      do {
+        envelope = try await downloader.download(
+          from: configuration.catalogURL(for: channel),
+          maximumBytes: Self.maximumEnvelopeBytes,
+          role: "catalog-envelope"
+        )
+      } catch {
+        if channel == .edge,
+          let configurationError = error as? InstallerReleaseConfigurationError,
+          configurationError == .unexpectedHTTPStatus(404)
+        {
+          throw InstallerReleaseConfigurationError.edgeAlphaUnavailable
+        }
+        throw error
+      }
       return try SignedCatalogEnvelope.decode(envelope)
     }
   }

@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "default_channel": "edge",
+  "default_channel": "testing",
   "channels": {
     "stable": {
       "catalog_url": "https://aurorasilicon.org/aurora-distributions/installer/channels/stable/catalog.signed.json"
@@ -8,8 +8,11 @@
     "rc": {
       "catalog_url": "https://aurorasilicon.org/aurora-distributions/installer/channels/rc/catalog.signed.json"
     },
+    "testing": {
+      "catalog_url": "https://aurorasilicon.org/aurora-distributions/installer/channels/testing/catalog.signed.json"
+    },
     "edge": {
-      "catalog_url": "https://aurorasilicon.org/aurora-distributions/installer/channels/edge/catalog.signed.json"
+      "catalog_url": "https://aurorasilicon.org/aurora-distributions/installer/channels/edge-alpha/catalog.signed.json"
     }
   },
   "trust_root_fingerprint": "sha256:5e510a663c3765a9a6ffe78085f330f9ba83a11cbd4621385791ec4e98aee5ed",

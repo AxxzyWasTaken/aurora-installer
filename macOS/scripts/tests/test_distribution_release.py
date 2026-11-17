@@ -38,8 +38,8 @@ class DistributionReleaseTests(unittest.TestCase):
                           "helper_mach_service_name": "invalid.example.installer.helper",
                           "helper_code_signing_requirement": 'identifier "invalid.example.installer.helper"',
                           "channels": {channel: {"catalog_url": "https://delivery.invalid/native/Profiles/"
-                                                 + profile + "/channels/" + channel + "/catalog.signed.json"}
-                                       for channel in ("stable", "rc", "edge")}}
+                                                 + profile + "/channels/" + ("edge-alpha" if channel == "edge" else channel) + "/catalog.signed.json"}
+                                       for channel in ("stable", "rc", "testing", "edge")}}
             (directory / "release.json").write_text(json.dumps(descriptor))
             (directory / "trust-root.ed25519.pub").write_bytes(self.public)
             (directory / "catalog.json").write_text(json.dumps({"schemaVersion": 5, "sequence": 1,

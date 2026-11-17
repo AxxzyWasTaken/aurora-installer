@@ -30,6 +30,15 @@
       XCTAssertEqual(preference.resolve(descriptorDefault: .stable), .rc)
     }
 
+    func testEdgeRequiresAnExplicitPickInThisLaunch() {
+      let preference = ReleaseChannelPreference(store: store)
+      XCTAssertEqual(preference.resolve(descriptorDefault: .testing), .testing)
+      preference.select(.edge)
+      XCTAssertEqual(preference.resolve(descriptorDefault: .testing), .edge)
+      let fresh = ReleaseChannelPreference(store: ReleaseChannelPreference.Store())
+      XCTAssertEqual(fresh.resolve(descriptorDefault: .testing), .testing)
+    }
+
     func testClearingThePreferenceReturnsToTheDefault() {
       let preference = ReleaseChannelPreference(store: store)
       preference.select(.rc)

@@ -86,17 +86,17 @@
     func testTheThreeChannelStatesPreviewDistinctly() async throws {
       let expected: [(InstallerSimulationScenario, ReleaseChannelAvailability, String, String)] = [
         (
-          .noMacRelease, .noRelease, "Edge — No Mac release yet",
+          .noMacRelease, .noRelease, "Testing — No Mac release yet",
           "No Mac release on this channel yet"
         ),
         (
           .modelNotOnChannel,
           .modelUnavailable(
             supportedDeviceIdentifiers: InstallerSimulationEnvironment.simulatedCatalogDevices),
-          "Edge — Not available for this Mac", PlainLanguage.blockedHeadline
+          "Testing — Not available for this Mac", PlainLanguage.blockedHeadline
         ),
         (
-          .channelUnreachable, .checkFailed(.network), "Edge — Couldn’t load",
+          .channelUnreachable, .checkFailed(.network), "Testing — Couldn’t load",
           "This channel’s release list wasn’t found"
         ),
       ]
@@ -105,9 +105,9 @@
           environment: InstallerSimulationEnvironment(scenario: scenario, delay: .zero))
         await session.inspect()
         await session.refreshChannelAvailability()
-        XCTAssertEqual(session.channelAvailability[.edge], availability, scenario.title)
+        XCTAssertEqual(session.channelAvailability[.testing], availability, scenario.title)
         XCTAssertEqual(session.channelAvailability[.stable], .noRelease, scenario.title)
-        let item = PlainLanguage.channelMenuItem(.edge, availability: availability)
+        let item = PlainLanguage.channelMenuItem(.testing, availability: availability)
         XCTAssertEqual(item, menuItem, scenario.title)
         await session.continueToPlan()
         guard case .failed(let failure) = session.phase else {

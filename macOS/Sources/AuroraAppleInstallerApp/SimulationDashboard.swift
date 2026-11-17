@@ -7,7 +7,7 @@
   @MainActor @Observable
   final class SimulationControls {
     var scenario = launchScenario
-    var channel = ReleaseChannel.edge
+    var channel = ReleaseChannel.testing
     var slow = false
     var dark = true
     var generation = UUID()

@@ -31,7 +31,7 @@ PUBLIC_BASE="${AURORA_PUBLIC_BASE:-$INSTALLER_PUBLIC_BASE}"
 STREAM_PATH="${AURORA_STREAM_PATH:-$INSTALLER_STREAM_PATH}"
 [[ $STREAM_PATH =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "the stream path must be one lowercase path segment: $STREAM_PATH"
 STREAM_BASE="$PUBLIC_BASE/$STREAM_PATH"
-CHANNELS="stable rc edge"
+CHANNELS="stable rc testing edge"
 TRUST_ROOT="${AURORA_TRUST_ROOT:-$script_directory/../Release/trust-root.ed25519.pub}"
 SIGNING_TOOL="${AURORA_CATALOG_SIGNING_TOOL:-xcrun swift $script_directory/catalog-signing.swift}"
 # The download is the notarized app in a zip; the installer package is no
@@ -59,9 +59,9 @@ channels_usage() {
 Usage:
   publish-channels envelope --catalog FILE --signature FILE --output FILE
   publish-channels empty-catalog --output FILE [--sequence N]
-  publish-channels os-promote --tag TAG --to stable|rc|edge [--minimum-sequence N] [--no-prune]
-  publish-channels app-publish --zip FILE --version X.Y.Z [--to stable|rc|edge]
-  publish-channels channel-status [--channel stable|rc|edge|all]
+  publish-channels os-promote --tag TAG --to stable|rc|testing|edge [--minimum-sequence N] [--no-prune]
+  publish-channels app-publish --zip FILE --version X.Y.Z [--to stable|rc|testing|edge]
+  publish-channels channel-status [--channel stable|rc|testing|edge|all]
   publish-channels prune [--confirm]
 
 Keys are relative to the release stream, PUBLIC_BASE/STREAM_PATH. empty-catalog
@@ -88,16 +88,26 @@ validate_channel() {
   [[ " $CHANNELS " == *" $1 "* ]] || die "invalid channel: $1"
 }
 
+# The logical Edge ID never reuses the old default-development URL.
+channel_directory() {
+  case $1 in
+    edge) printf '%s\n' edge-alpha ;;
+    legacy-edge) printf '%s\n' edge ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 validate_installer_version() {
   [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid installer version: $1"
 }
 
 mutable_key_allowed() {
-  local channel
+  local channel directory
   for channel in $CHANNELS; do
+    directory=$(channel_directory "$channel")
     case $1 in
-      "channels/$channel/catalog.signed.json" | "channels/$channel/channel.json") return 0 ;;
-      "installer/$channel/$ZIP_FILE_NAME" | "installer/$channel/installer.json") return 0 ;;
+      "channels/$directory/catalog.signed.json" | "channels/$directory/channel.json") return 0 ;;
+      "installer/$directory/$ZIP_FILE_NAME" | "installer/$directory/installer.json") return 0 ;;
     esac
   done
   return 1
@@ -318,6 +328,7 @@ os_promote() {
   [[ -n $tag && -n $channel ]] || channels_usage
   validate_os_tag "$tag"
   validate_channel "$channel"
+  [[ $channel != "edge" ]] || die "Edge requires a separately qualified aurora-edge payload; testing promotion is forbidden"
   command -v aws >/dev/null || die "missing command: aws"
 
   local work
@@ -328,6 +339,14 @@ os_promote() {
     die "releases/$tag/catalog.signed.json is not published"
   decode_envelope "$work/candidate.json" "$work/catalog" "$work/signature"
   verify_catalog "$work/catalog" "$work/signature"
+  local declared_channel
+  declared_channel=$(python3 - "$work/catalog" <<'PYCHANNEL'
+import json, sys
+print(json.load(open(sys.argv[1])).get("channel", ""))
+PYCHANNEL
+)
+  [[ -z $declared_channel || $declared_channel == "$channel" ]] ||
+    die "catalog is bound to $declared_channel; $channel requires its own signed channel catalog"
 
   local sequence
   sequence=$(catalog_field "$work/catalog" sequence)
@@ -433,6 +452,7 @@ app_publish() {
   [[ $zip == *.zip ]] || die "the download must be a .zip: $zip"
   validate_installer_version "$version"
   validate_channel "$channel"
+  [[ $channel != "edge" ]] || die "Edge requires a separately qualified aurora-edge payload; testing promotion is forbidden"
   command -v aws >/dev/null || die "missing command: aws"
 
   local work digest immutable_key entries
@@ -638,8 +658,10 @@ channel_status() {
   fi
 
   for channel in $channels; do
+    local directory
+    directory=$(channel_directory "$channel")
     echo "channel $channel"
-    if fetch_public "channels/$channel/catalog.signed.json" "$work/$channel.json"; then
+    if fetch_public "channels/$directory/catalog.signed.json" "$work/$channel.json"; then
       decode_envelope "$work/$channel.json" "$work/$channel.catalog" "$work/$channel.sig"
       if verify_catalog "$work/$channel.catalog" "$work/$channel.sig" >/dev/null 2>&1; then
         echo "  catalog_sequence=$(catalog_field "$work/$channel.catalog" sequence)"
@@ -652,7 +674,7 @@ channel_status() {
     else
       echo "  catalog=absent"
     fi
-    if fetch_public "installer/$channel/installer.json" "$work/$channel.installer.json"; then
+    if fetch_public "installer/$directory/installer.json" "$work/$channel.installer.json"; then
       echo "  installer_version=$(catalog_field "$work/$channel.installer.json" version)"
       echo "  installer_sha256=$(catalog_field "$work/$channel.installer.json" sha256)"
     else
@@ -675,10 +697,11 @@ channel_status() {
 # set is reachable when any channel catalog names an artifact under it; an
 # installer version is reachable when any channel's installer.json points at it.
 referenced_prefixes() {
-  local work=$1 channel envelope catalog signature pointer
-  for channel in $CHANNELS; do
+  local work=$1 channel directory envelope catalog signature pointer
+  for channel in $CHANNELS legacy-edge; do
+    directory=$(channel_directory "$channel")
     envelope="$work/$channel.env.json"
-    if fetch_public "channels/$channel/catalog.signed.json" "$envelope"; then
+    if fetch_public "channels/$directory/catalog.signed.json" "$envelope"; then
       catalog="$work/$channel.catalog"; signature="$work/$channel.sig"
       decode_envelope "$envelope" "$catalog" "$signature"
       python3 - "$catalog" <<'PY'
@@ -698,7 +721,7 @@ for model in catalog["models"]:
 PY
     fi
     pointer="$work/$channel.channel.json"
-    if fetch_public "channels/$channel/channel.json" "$pointer"; then
+    if fetch_public "channels/$directory/channel.json" "$pointer"; then
       # The current set too: an empty catalog names no artifact, but its own
       # release set is what the next channel promotes from.
       python3 -c '
@@ -710,7 +733,7 @@ for tag in (pointer.get("os_tag"), pointer.get("previous_os_tag")):
 ' "$pointer"
     fi
     pointer="$work/$channel.installer.json"
-    if fetch_public "installer/$channel/installer.json" "$pointer"; then
+    if fetch_public "installer/$directory/installer.json" "$pointer"; then
       python3 - "$pointer" <<'PY'
 import json, re, sys
 source = json.load(open(sys.argv[1])).get("source", "")

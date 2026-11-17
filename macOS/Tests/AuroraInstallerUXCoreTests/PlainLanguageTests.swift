@@ -123,12 +123,13 @@
     func testChannelBadgesNameEveryChannel() {
       XCTAssertEqual(PlainLanguage.badge(for: .stable), "Stable")
       XCTAssertEqual(PlainLanguage.badge(for: .rc), "Release candidate")
+      XCTAssertEqual(PlainLanguage.badge(for: .testing), "Testing")
       XCTAssertEqual(PlainLanguage.badge(for: .edge), "Edge")
     }
 
     func testChannelMenuItemsNameTheThreeStatesApart() {
-      XCTAssertEqual(PlainLanguage.channelMenuItem(.edge, availability: nil), "Edge")
-      XCTAssertEqual(PlainLanguage.channelMenuItem(.edge, availability: .available), "Edge")
+      XCTAssertEqual(PlainLanguage.channelMenuItem(.testing, availability: nil), "Testing")
+      XCTAssertEqual(PlainLanguage.channelMenuItem(.testing, availability: .available), "Testing")
       XCTAssertEqual(
         PlainLanguage.channelMenuItem(.stable, availability: .noRelease),
         "Stable — No Mac release yet")
@@ -144,9 +145,23 @@
         "Release candidate — Couldn’t verify")
     }
 
+    func testUnpublishedEdgeIsClearlyNamedAndCannotBeChosen() {
+      XCTAssertEqual(
+        PlainLanguage.channelMenuItem(.edge, availability: .notPublished),
+        "Edge — No release available")
+      XCTAssertEqual(
+        PlainLanguage.channelMenuItem(.edge, availability: .noRelease),
+        "Edge — No release available")
+      XCTAssertFalse(
+        PlainLanguage.channelMenuItemEnabled(
+          .edge, selected: .testing, availability: .notPublished))
+      XCTAssertTrue(
+        PlainLanguage.channelMenuItemEnabled(.edge, selected: .testing, availability: .available))
+    }
+
     func testOnlyChannelsWithNothingForThisMacAreDisabled() {
       func enabled(_ channel: ReleaseChannel, _ availability: ReleaseChannelAvailability?) -> Bool {
-        PlainLanguage.channelMenuItemEnabled(channel, selected: .edge, availability: availability)
+        PlainLanguage.channelMenuItemEnabled(channel, selected: .testing, availability: availability)
       }
       XCTAssertFalse(enabled(.stable, .noRelease))
       XCTAssertFalse(enabled(.rc, .modelUnavailable(supportedDeviceIdentifiers: [])))
@@ -155,7 +170,7 @@
       XCTAssertTrue(enabled(.rc, .available))
       XCTAssertTrue(enabled(.rc, nil))
       // The channel in use stays chosen whatever it offers.
-      XCTAssertTrue(enabled(.edge, .noRelease))
+      XCTAssertTrue(enabled(.testing, .noRelease))
     }
 
     func testNoMacReleaseReadsApartFromAMissingModelAndAServerFailure() {

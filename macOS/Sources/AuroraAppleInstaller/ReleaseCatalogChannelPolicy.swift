@@ -99,9 +99,10 @@
       }
 
       private func isRevision(_ value: String) -> Bool {
-        value.count == 40 && value.utf8.allSatisfy {
-          (48...57).contains($0) || (97...102).contains($0)
-        }
+        value.count == 40
+          && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+          }
       }
     }
   }

@@ -119,7 +119,8 @@
       else {
         throw InstallerReleaseConfigurationError.invalidDescriptor
       }
-      let defaultChannel: ReleaseChannel = legacy && decodedDefault == .edge ? .testing : decodedDefault
+      let defaultChannel: ReleaseChannel =
+        legacy && decodedDefault == .edge ? .testing : decodedDefault
       guard defaultChannel != .edge else {
         throw InstallerReleaseConfigurationError.invalidDescriptor
       }
@@ -398,7 +399,8 @@
       if channel == .edge && configuration.legacyDevelopmentChannel {
         throw InstallerReleaseConfigurationError.edgeAlphaUnavailable
       }
-      if channel == configuration.defaultChannel, let sealed = configuration.sealedCatalogDocuments {
+      if channel == configuration.defaultChannel, let sealed = configuration.sealedCatalogDocuments
+      {
         guard !sealed.payload.isEmpty,
           sealed.payload.count <= Self.maximumCatalogBytes
         else {

@@ -98,15 +98,18 @@
         JSONSerialization.jsonObject(with: modelCatalog(devices: [thisMac], channel: .edge))
           as? [String: Any])
       let source = { (repository: String) in
-        ["repository": repository, "branch": "aurora-edge",
-         "revision": String(repeating: "a", count: 40), "tree": String(repeating: "b", count: 40)]
+        [
+          "repository": repository, "branch": "aurora-edge",
+          "revision": String(repeating: "a", count: 40), "tree": String(repeating: "b", count: 40),
+        ]
       }
-      object["edgeQualification"] = [
-        "schemaVersion": 1, "releaseKind": "alpha", "status": "passed", "imageRunID": 41,
-        "payloadDigest": "sha256:" + String(repeating: "3", count: 64),
-        "evidenceDigest": "sha256:" + String(repeating: "4", count: 64),
-        "linux": source("aurora-silicon/linux"), "mesa": source("aurora-silicon/mesa"),
-      ] as [String: Any]
+      object["edgeQualification"] =
+        [
+          "schemaVersion": 1, "releaseKind": "alpha", "status": "passed", "imageRunID": 41,
+          "payloadDigest": "sha256:" + String(repeating: "3", count: 64),
+          "evidenceDigest": "sha256:" + String(repeating: "4", count: 64),
+          "linux": source("aurora-silicon/linux"), "mesa": source("aurora-silicon/mesa"),
+        ] as [String: Any]
       let payload = try JSONSerialization.data(withJSONObject: object)
       let value = coordinator(serving: [
         configuration.catalogURL(for: .edge): try envelope(payload),
@@ -161,7 +164,8 @@
       let configuration = try configuration()
       let coordinator = coordinator(serving: [
         configuration.catalogURL(for: .stable): try envelope(emptyCatalog(sequence: 5)),
-        configuration.catalogURL(for: .rc): try envelope(modelCatalog(devices: ["apple,j274"], channel: .rc)),
+        configuration.catalogURL(for: .rc): try envelope(
+          modelCatalog(devices: ["apple,j274"], channel: .rc)),
         configuration.catalogURL(for: .testing): try envelope(modelCatalog(devices: [thisMac])),
       ])
 

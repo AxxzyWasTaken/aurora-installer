@@ -74,8 +74,11 @@
       XCTAssertEqual(configuration.defaultChannel, .testing)
       XCTAssertTrue(configuration.legacyDevelopmentChannel)
       XCTAssertTrue(configuration.catalogURL(for: .testing).path.contains("/channels/edge/"))
-      let fetcher = InstallerReleaseCatalogFetcher(downloader: FixtureReleaseDownloader(values: [:]))
-      await assertThrowsErrorAsync(try await fetcher.fetch(configuration: configuration, channel: .edge)) {
+      let fetcher = InstallerReleaseCatalogFetcher(
+        downloader: FixtureReleaseDownloader(values: [:]))
+      await assertThrowsErrorAsync(
+        try await fetcher.fetch(configuration: configuration, channel: .edge)
+      ) {
         XCTAssertEqual($0 as? InstallerReleaseConfigurationError, .edgeAlphaUnavailable)
       }
     }
@@ -92,10 +95,13 @@
         helperMachServiceName: base.helperMachServiceName,
         helperCodeSigningRequirement: base.helperCodeSigningRequirement,
         sealedCatalogDocuments: .init(payload: payload, signature: Data(repeating: 1, count: 64)))
-      let fetcher = InstallerReleaseCatalogFetcher(downloader: FixtureReleaseDownloader(values: [:]))
+      let fetcher = InstallerReleaseCatalogFetcher(
+        downloader: FixtureReleaseDownloader(values: [:]))
       let testing = try await fetcher.fetch(configuration: configuration, channel: .testing)
       XCTAssertEqual(testing.payload, payload)
-      await assertThrowsErrorAsync(try await fetcher.fetch(configuration: configuration, channel: .edge)) {
+      await assertThrowsErrorAsync(
+        try await fetcher.fetch(configuration: configuration, channel: .edge)
+      ) {
         XCTAssertEqual($0 as? InstallerReleaseConfigurationError, .edgeAlphaUnavailable)
       }
     }

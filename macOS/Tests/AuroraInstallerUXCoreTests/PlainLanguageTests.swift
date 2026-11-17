@@ -161,7 +161,8 @@
 
     func testOnlyChannelsWithNothingForThisMacAreDisabled() {
       func enabled(_ channel: ReleaseChannel, _ availability: ReleaseChannelAvailability?) -> Bool {
-        PlainLanguage.channelMenuItemEnabled(channel, selected: .testing, availability: availability)
+        PlainLanguage.channelMenuItemEnabled(
+          channel, selected: .testing, availability: availability)
       }
       XCTAssertFalse(enabled(.stable, .noRelease))
       XCTAssertFalse(enabled(.rc, .modelUnavailable(supportedDeviceIdentifiers: [])))

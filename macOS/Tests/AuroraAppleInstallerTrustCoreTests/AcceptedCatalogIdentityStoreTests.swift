@@ -108,7 +108,8 @@
       try Data(
         """
         {"schema_version":1,"sequence":90,"payload_digest":"sha256:\(String(repeating: "a", count: 64))"}
-        """.utf8).write(to: legacy)
+        """.utf8
+      ).write(to: legacy)
       try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacy.path)
       XCTAssertThrowsError(try testing.load()) {
         XCTAssertEqual($0 as? SupportCatalogSequenceError, .sequenceReuse(90))

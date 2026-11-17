@@ -654,10 +654,10 @@
       maximumBytes: Int,
       role: String
     ) async throws -> Data {
-      guard let value = values[url],
-        !value.isEmpty,
-        value.count <= maximumBytes
-      else {
+      guard let value = values[url] else {
+        throw InstallerReleaseConfigurationError.unexpectedHTTPStatus(404)
+      }
+      guard !value.isEmpty, value.count <= maximumBytes else {
         throw InstallerReleaseConfigurationError.oversizedDocument(role)
       }
       return value

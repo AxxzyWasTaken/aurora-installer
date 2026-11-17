@@ -66,22 +66,37 @@ def prepare(source, output, sealed=False, signing_team=None, legacy_sealed=False
                 for model in catalog["models"]
             ):
                 raise ValueError(f"native-only catalog includes an execution archive: {profile}")
+            if catalog.get("channel") not in (None, "testing"):
+                raise ValueError("the bundled default must be a testing delivery")
             schema_versions.add(catalog["schemaVersion"])
             descriptor = json.loads(data["release.json"])
             expected = "sha256:" + hashlib.sha256(trusted).hexdigest()
             if descriptor["schema_version"] != 3 or descriptor["trust_root_fingerprint"] != expected:
                 raise ValueError(f"descriptor root mismatch: {profile}")
             base = public_base + "/" + stream + "/Profiles/" + profile
-            for channel in ("stable", "rc", "edge"):
-                if descriptor["channels"][channel]["catalog_url"] != base + "/channels/" + channel + "/catalog.signed.json":
+            for channel in descriptor["channels"]:
+                if descriptor["channels"][channel]["catalog_url"] != base + "/channels/" + ("edge-alpha" if channel == "edge" and "testing" in descriptor["channels"] else channel) + "/catalog.signed.json":
                     raise ValueError(f"descriptor channel mismatch: {profile}")
             documents[profile] = data
     if len(schema_versions) != 1:
         raise ValueError("mixed catalog schemas")
     def release_descriptor(content):
-        if signing_team is None:
-            return content
         descriptor = json.loads(content)
+        channels = descriptor["channels"]
+        legacy = set(channels) == {"stable", "rc", "edge"}
+        if legacy:
+            edge = channels["edge"]["catalog_url"]
+            suffix = "/channels/edge/catalog.signed.json"
+            if not edge.endswith(suffix):
+                raise ValueError("legacy channel URL is not canonical")
+            channels["testing"] = {"catalog_url": edge[:-len(suffix)] + "/channels/testing/catalog.signed.json"}
+            channels["edge"] = {"catalog_url": edge[:-len(suffix)] + "/channels/edge-alpha/catalog.signed.json"}
+            if descriptor.get("default_channel") == "edge":
+                descriptor["default_channel"] = "testing"
+        if set(channels) != {"stable", "rc", "testing", "edge"} or descriptor.get("default_channel") == "edge":
+            raise ValueError("Edge is opt-in; all four channel endpoints are required")
+        if signing_team is None:
+            return (json.dumps(descriptor, indent=2) + "\n").encode()
         helper = identity["INSTALLER_HELPER_IDENTIFIER"]
         expected_fingerprint = "sha256:" + hashlib.sha256(trusted).hexdigest()
         if (not re.fullmatch(r"[A-Za-z0-9.-]+", helper)

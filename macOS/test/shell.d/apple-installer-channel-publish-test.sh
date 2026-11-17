@@ -235,9 +235,17 @@ PY
 }
 
 publish_candidate() {
-  local tag=$1 sequence=$2 payload_url=$3 payload_size=$4
+  local tag=$1 sequence=$2 payload_url=$3 payload_size=$4 declared_channel=${5:-}
   local catalog="$WORK/$tag.catalog" signature="$WORK/$tag.sig"
   write_catalog "$catalog" "$sequence" "$payload_url" "$payload_size"
+  if [[ -n $declared_channel ]]; then
+    python3 - "$catalog" "$declared_channel" <<'PYCHANNEL'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1]); value = json.loads(p.read_text()); value['channel'] = sys.argv[2]
+p.write_text(json.dumps(value))
+PYCHANNEL
+  fi
   sign_catalog "$catalog" "$signature"
   mkdir -p "$STREAM_DIR/releases/$tag"
   "$PUBLISHER" envelope --catalog "$catalog" --signature "$signature" \
@@ -664,11 +672,11 @@ pass "an identical zip never skips the metadata check"
 # (on edge, so the stable and rc checks below are undisturbed)
 make_app_zip "$WORK/Eight.zip" 6050 "" 2.0.4 8
 AURORA_PUBLISH_ASSUME_YES=installer-v2.0.4 "$PUBLISHER" app-publish \
-  --zip "$WORK/Eight.zip" --version 2.0.4 --to edge >"$WORK/eight.log" 2>&1 ||
+  --zip "$WORK/Eight.zip" --version 2.0.4 --to testing >"$WORK/eight.log" 2>&1 ||
   fail "build 8 publishes to edge" "$(cat "$WORK/eight.log")"
 make_app_zip "$WORK/Octal.zip" 6100 "" 2.0.6 09
 AURORA_PUBLISH_ASSUME_YES=installer-v2.0.6 "$PUBLISHER" app-publish \
-  --zip "$WORK/Octal.zip" --version 2.0.6 --to edge >"$WORK/octal.log" 2>&1 ||
+  --zip "$WORK/Octal.zip" --version 2.0.6 --to testing >"$WORK/octal.log" 2>&1 ||
   fail "build 09 is compared as nine, above eight" "$(cat "$WORK/octal.log")"
 pass "build numbers compare as decimal"
 
@@ -801,20 +809,32 @@ after=$(find "$STREAM_DIR/channels" "$STREAM_DIR/installer/stable" -type f | sor
 [[ $before == "$after" ]] || fail "prune never touches channel or download objects"
 pass "prune deletes only unreferenced immutable sets and never a channel object"
 
-# --- edge is a channel; the retired rc-aurora lane is not ----------------------
+# --- Testing is development; Edge requires a separate qualified Alpha ---------
 stage_payload "os-v4.0.2-mac.1.20260910" 128
-publish_candidate "os-v4.0.2-mac.1.20260910" 900 "$BASE/releases/os-v4.0.2-mac.1.20260910/payload.zip" 128
-AURORA_PUBLISH_ASSUME_YES=os-v4.0.2-mac.1.20260910 "$PUBLISHER" os-promote --tag os-v4.0.2-mac.1.20260910 --to edge \
-  >"$WORK/edge.log" 2>&1 || fail "edge promotion succeeds" "$(cat "$WORK/edge.log")"
-[[ -f $STREAM_DIR/channels/edge/catalog.signed.json ]] || fail "the edge catalog is published"
+publish_candidate "os-v4.0.2-mac.1.20260910" 900 "$BASE/releases/os-v4.0.2-mac.1.20260910/payload.zip" 128 testing
+AURORA_PUBLISH_ASSUME_YES=os-v4.0.2-mac.1.20260910 "$PUBLISHER" os-promote --tag os-v4.0.2-mac.1.20260910 --to testing \
+  >"$WORK/testing.log" 2>&1 || fail "testing promotion succeeds" "$(cat "$WORK/testing.log")"
+[[ -f $STREAM_DIR/channels/testing/catalog.signed.json ]] || fail "the testing catalog is published"
+if "$PUBLISHER" os-promote --tag os-v4.0.2-mac.1.20260910 --to stable >"$WORK/channel-mismatch.log" 2>&1; then
+  fail "a typed Testing catalog cannot be copied into Stable"
+fi
+grep -q 'catalog is bound to testing' "$WORK/channel-mismatch.log" || fail "signed channel binding is enforced"
+before_calls=$(wc -l <"$CALLS")
+if "$PUBLISHER" os-promote --tag os-v4.0.2-mac.1.20260910 --to edge >"$WORK/edge-refused.log" 2>&1; then
+  fail "an existing testing set cannot be promoted to Edge"
+fi
+grep -q 'separately qualified aurora-edge payload' "$WORK/edge-refused.log" || fail "Edge refusal explains qualification"
+[[ $(wc -l <"$CALLS") == "$before_calls" ]] || fail "Edge refusal reaches no publication or download"
+[[ ! -e $STREAM_DIR/channels/edge-alpha/catalog.signed.json ]] || fail "no first Edge Alpha was published"
 if "$PUBLISHER" os-promote --tag os-v4.0.2-mac.1.20260910 --to rc-aurora >"$WORK/aurora.log" 2>&1; then
   fail "the retired rc-aurora channel is refused"
 fi
-grep -q "invalid channel: rc-aurora" "$WORK/aurora.log" || fail "the refusal names the channel" "$(cat "$WORK/aurora.log")"
-"$PUBLISHER" channel-status --channel edge >"$WORK/edge-status.log" 2>&1 ||
-  fail "edge status succeeds" "$(cat "$WORK/edge-status.log")"
-grep -q "catalog_sequence=900" "$WORK/edge-status.log" || fail "status reads edge" "$(cat "$WORK/edge-status.log")"
-pass "edge publishes like any channel and rc-aurora is no channel any more"
+grep -q "invalid channel: rc-aurora" "$WORK/aurora.log" || fail "the refusal names the channel"
+"$PUBLISHER" channel-status --channel testing >"$WORK/testing-status.log" 2>&1 || fail "testing status succeeds"
+grep -q "catalog_sequence=900" "$WORK/testing-status.log" || fail "status reads testing"
+"$PUBLISHER" channel-status --channel edge >"$WORK/edge-status.log" 2>&1 || fail "empty Edge status succeeds"
+grep -q "catalog=absent" "$WORK/edge-status.log" || fail "Edge does not alias testing"
+pass "testing stays development and cannot be promoted or relabelled as Edge"
 
 # --- a channel with no Mac release serves a signed empty catalog --------------
 "$PUBLISHER" empty-catalog --sequence 1000 --output "$WORK/empty.catalog" >"$WORK/empty.log" 2>&1 ||
@@ -867,6 +887,16 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['previous_
   "$STREAM_DIR/channels/rc/channel.json" || fail "channel.json records the empty set it superseded"
 pass "an empty catalog it replaces stays recorded for rollback"
 
+# An old app still reads its bundled legacy development endpoint. Pruning
+# must retain payloads reachable only through that compatibility alias.
+stage_payload "os-v4.0.2-mac.1.20260913" 128
+publish_candidate "os-v4.0.2-mac.1.20260913" 1200 "$BASE/releases/os-v4.0.2-mac.1.20260913/payload.zip" 128
+mkdir -p "$STREAM_DIR/channels/edge"
+cp "$STREAM_DIR/releases/os-v4.0.2-mac.1.20260913/catalog.signed.json" "$STREAM_DIR/channels/edge/catalog.signed.json"
+AURORA_PUBLISH_ASSUME_YES=prune "$PUBLISHER" prune --confirm >"$WORK/legacy-prune.log" 2>&1 || fail "legacy-aware prune succeeds"
+[[ -d $STREAM_DIR/releases/os-v4.0.2-mac.1.20260913 ]] || fail "prune preserves legacy development references"
+pass "prune preserves payloads referenced by old clients' development alias"
+
 # --- the MX Mac feeds at the bucket root are never touched ---------------------
 [[ $(root_digest) == "$MX_ROOT_DIGEST" ]] || fail "the MX Mac feeds are unchanged" "$(cd "$BUCKET_DIR" && find . -type f -not -path "./$INSTALLER_STREAM_PATH/*")"
 grep -E "^aws s3 (rm|cp) " "$CALLS" | grep -vE "s3://test-bucket/$INSTALLER_STREAM_PATH/" | grep -q . &&
@@ -880,11 +910,11 @@ for bucket_key in "${written[@]}"; do
   [[ $bucket_key == "$INSTALLER_STREAM_PATH/"* ]] || fail "a key outside the stream was written" "$bucket_key"
   key=${bucket_key#"$INSTALLER_STREAM_PATH/"}
   case $key in
-    channels/stable/catalog.signed.json | channels/rc/catalog.signed.json | channels/edge/catalog.signed.json) ;;
-    channels/stable/channel.json | channels/rc/channel.json | channels/edge/channel.json) ;;
+    channels/stable/catalog.signed.json | channels/rc/catalog.signed.json | channels/testing/catalog.signed.json) ;;
+    channels/stable/channel.json | channels/rc/channel.json | channels/testing/channel.json) ;;
     installer/stable/"$INSTALLER_FILE_STEM.zip" | installer/rc/"$INSTALLER_FILE_STEM.zip") ;;
-    installer/edge/"$INSTALLER_FILE_STEM.zip") ;;
-    installer/stable/installer.json | installer/rc/installer.json | installer/edge/installer.json) ;;
+    installer/testing/"$INSTALLER_FILE_STEM.zip") ;;
+    installer/stable/installer.json | installer/rc/installer.json | installer/testing/installer.json) ;;
     installer/*/"$INSTALLER_FILE_STEM"-*.zip | installer/*/*.zip.sha256) ;;
     *) fail "an unexpected key was written" "$key" ;;
   esac

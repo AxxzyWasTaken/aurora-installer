@@ -405,7 +405,9 @@
     public static let channelMenuTitle = "Release channel"
     public static let channelStable = "Stable"
     public static let channelRC = "Release candidate"
+    public static let channelTesting = "Testing"
     public static let channelEdge = "Edge"
+    public static let channelEdgeNotPublished = "No release available"
     public static let channelNoMacRelease = "No Mac release yet"
     public static let channelModelUnavailable = "Not available for this Mac"
     public static let channelUnreachable = "Couldn’t load"
@@ -416,6 +418,7 @@
       switch channel {
       case .stable: channelStable
       case .rc: rcBadge
+      case .testing: channelTesting
       case .edge: channelEdge
       }
     }
@@ -430,7 +433,8 @@
       let state: String? =
         switch availability {
         case .none, .available: nil
-        case .noRelease: channelNoMacRelease
+        case .noRelease: channel == .edge ? channelEdgeNotPublished : channelNoMacRelease
+        case .notPublished: channelEdgeNotPublished
         case .modelUnavailable: channelModelUnavailable
         case .checkFailed(.network): channelUnreachable
         case .checkFailed(.verification): channelUnverified
@@ -1144,6 +1148,13 @@
 
       if let configuration = error as? InstallerReleaseConfigurationError {
         switch configuration {
+        case .edgeAlphaUnavailable:
+          return FailureDisplay(
+            headline: "Edge isn’t available yet",
+            plainDetail: "An Edge release is not available. Installation has not started.",
+            technicalDetail: technical,
+            remedy: "Choose Testing for development releases, or check Edge again later."
+          )
         case .releaseResourcesUnavailable:
           return FailureDisplay(
             headline: "Installation is unavailable in this build",

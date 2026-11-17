@@ -11,6 +11,8 @@
     case available
     /// The verified catalog admits no Mac at all.
     case noRelease
+    /// Edge has no published, qualified Alpha yet. No other channel is substituted.
+    case notPublished
     /// The verified catalog admits other Macs but not this one.
     case modelUnavailable(supportedDeviceIdentifiers: [String])
     case checkFailed(ReleaseChannelCheckFailure)
@@ -26,6 +28,10 @@
     }
 
     public init(checkError error: any Error) {
+      if error as? InstallerReleaseConfigurationError == .edgeAlphaUnavailable {
+        self = .notPublished
+        return
+      }
       self = .checkFailed(ReleaseChannelCheckFailure(error))
     }
 
@@ -34,7 +40,7 @@
     public var isSelectable: Bool {
       switch self {
       case .available, .checkFailed: true
-      case .noRelease, .modelUnavailable: false
+      case .noRelease, .notPublished, .modelUnavailable: false
       }
     }
   }

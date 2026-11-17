@@ -148,14 +148,20 @@ descriptor_fingerprint="$(plutil -extract trust_root_fingerprint raw -o - "$rele
 if [[ $descriptor_schema != "3" ]]; then
   fail "release.json schema_version must be 3"
 fi
-release_channels=(stable rc edge)
+release_channels=(stable rc testing edge)
+default_channels=(stable rc testing)
 descriptor_default_channel="$(plutil -extract default_channel raw -o - "$release_descriptor")"
-if [[ " ${release_channels[*]} " != *" $descriptor_default_channel "* ]]; then
-  fail "release.json default_channel must be one of: ${release_channels[*]}"
-fi
 descriptor_channel_keys="$(plutil -extract channels raw -o - "$release_descriptor" | sort | tr '\n' ' ')"
+# The runtime reads a three-channel descriptor as a legacy development feed.
+if [[ $descriptor_channel_keys == "edge rc stable " ]]; then
+  release_channels=(stable rc edge)
+  default_channels=(stable rc edge)
+fi
 if [[ $descriptor_channel_keys != "$(printf '%s\n' "${release_channels[@]}" | sort | tr '\n' ' ')" ]]; then
   fail "release.json must name exactly the channels: ${release_channels[*]}"
+fi
+if [[ " ${default_channels[*]} " != *" $descriptor_default_channel "* ]]; then
+  fail "release.json default_channel must be one of: ${default_channels[*]}"
 fi
 descriptor_urls=" "
 for release_channel in "${release_channels[@]}"; do

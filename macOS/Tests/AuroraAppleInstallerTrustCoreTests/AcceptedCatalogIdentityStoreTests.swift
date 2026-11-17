@@ -74,6 +74,48 @@
       }
     }
 
+    func testTestingInheritsLegacyDevelopmentFloorButEdgeStartsSeparately() throws {
+      let directory = try privateDirectory()
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let legacy = directory.appendingPathComponent(
+        "accepted-catalog-\(InstallerBuildConfiguration.streamPath)-edge.json")
+      let bytes = Data(
+        """
+        {"schema_version":1,"sequence":90,"payload_digest":"sha256:\(String(repeating: "a", count: 64))"}
+        """.utf8)
+      try bytes.write(to: legacy)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacy.path)
+      let testing = AcceptedCatalogIdentityStore(directory: directory, channel: .testing)
+      let edge = AcceptedCatalogIdentityStore(directory: directory, channel: .edge)
+      XCTAssertEqual(try testing.load()?.sequence, 90)
+      XCTAssertNil(try edge.load())
+      XCTAssertThrowsError(try testing.store(catalogIdentity(sequence: 89, digit: "b")))
+      try edge.store(catalogIdentity(sequence: 1, digit: "c"))
+      XCTAssertEqual(try edge.load()?.sequence, 1)
+      XCTAssertEqual(try testing.load()?.sequence, 90)
+      try testing.store(catalogIdentity(sequence: 91, digit: "d"))
+      XCTAssertEqual(try testing.load()?.sequence, 91)
+      XCTAssertEqual(try Data(contentsOf: legacy), bytes)
+    }
+
+    func testTestingCannotReuseALegacySequenceWithADifferentDigest() throws {
+      let directory = try privateDirectory()
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let testing = AcceptedCatalogIdentityStore(directory: directory, channel: .testing)
+      try testing.store(catalogIdentity(sequence: 90, digit: "b"))
+      let legacy = directory.appendingPathComponent(
+        "accepted-catalog-\(InstallerBuildConfiguration.streamPath)-edge.json")
+      try Data(
+        """
+        {"schema_version":1,"sequence":90,"payload_digest":"sha256:\(String(repeating: "a", count: 64))"}
+        """.utf8
+      ).write(to: legacy)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacy.path)
+      XCTAssertThrowsError(try testing.load()) {
+        XCTAssertEqual($0 as? SupportCatalogSequenceError, .sequenceReuse(90))
+      }
+    }
+
     func testRollbackSequenceIsRejected() throws {
       let directory = try privateDirectory()
       defer { try? FileManager.default.removeItem(at: directory) }

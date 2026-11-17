@@ -312,9 +312,6 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     } catch {
       return everyChannelFailed(error)
     }
-    // A sealed catalog answers for every channel alike, so it says nothing
-    // about what each channel offers.
-    guard configuration.sealedCatalogDocuments == nil else { return [:] }
     let stateDirectory: URL
     do {
       stateDirectory = try installerWorkspace().state
@@ -625,7 +622,7 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
           $0.identifier == prepared.review.plan.sourceIdentifier && $0.kind != .free
         }?.name,
         release:
-          "\(channel.rawValue.capitalized) · \(release.assets.payload.fileURL.lastPathComponent)"
+          "\(PlainLanguage.badge(for: channel)) · \(release.assets.payload.fileURL.lastPathComponent)"
       ))
   }
 

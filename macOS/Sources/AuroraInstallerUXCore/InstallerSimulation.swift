@@ -108,7 +108,7 @@
     public let channel: ReleaseChannel
 
     public init(
-      scenario: InstallerSimulationScenario, channel: ReleaseChannel = .edge,
+      scenario: InstallerSimulationScenario, channel: ReleaseChannel = .testing,
       delay: Duration = .milliseconds(600)
     ) {
       self.scenario = scenario
@@ -158,11 +158,11 @@
           : nil)
     }
 
-    /// Today's channels as a Mac sees them: only edge has a Mac release. The
+    /// Today's channels as a Mac sees them: only Testing has a development release. The
     /// three channel scenarios change what the test channel offers.
     public func channelAvailability() async -> [ReleaseChannel: ReleaseChannelAvailability] {
       var availability: [ReleaseChannel: ReleaseChannelAvailability] = [
-        .stable: .noRelease, .rc: .noRelease, .edge: .available,
+        .stable: .noRelease, .rc: .noRelease, .testing: .available, .edge: .notPublished,
       ]
       switch scenario {
       case .noMacRelease: availability[channel] = .noRelease

@@ -43,10 +43,10 @@
       // channel, and dev is a developer choice made after installation.
       XCTAssertNil(ReleaseChannel(rawValue: "rc-aurora"))
       XCTAssertNil(ReleaseChannel(rawValue: "dev"))
-      XCTAssertEqual(ReleaseChannel.allCases, [.stable, .rc, .edge])
+      XCTAssertEqual(ReleaseChannel.allCases, [.stable, .rc, .testing, .edge])
       XCTAssertEqual(
-        configuration.catalogURL(for: .edge).absoluteString,
-        "https://releases.aurora.example/channels/edge/catalog.signed.json"
+        configuration.catalogURL(for: .testing).absoluteString,
+        "https://releases.aurora.example/channels/testing/catalog.signed.json"
       )
     }
 
@@ -58,6 +58,54 @@
       }
     }
 
+    func testLegacyDefaultEdgeIsTestingAndDoesNotOptIntoNewEdge() async throws {
+      let key = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+      var value = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: descriptor(fingerprint: digest(key))) as? [String: Any])
+      var channels = try XCTUnwrap(value["channels"] as? [String: Any])
+      channels["testing"] = nil
+      channels["edge"] = [
+        "catalog_url": "https://releases.aurora.example/channels/edge/catalog.signed.json"
+      ]
+      value["channels"] = channels
+      value["default_channel"] = "edge"
+      let configuration = try InstallerReleaseConfigurationLoader().load(
+        descriptor: JSONSerialization.data(withJSONObject: value), trustRootPublicKey: key)
+      XCTAssertEqual(configuration.defaultChannel, .testing)
+      XCTAssertTrue(configuration.legacyDevelopmentChannel)
+      XCTAssertTrue(configuration.catalogURL(for: .testing).path.contains("/channels/edge/"))
+      let fetcher = InstallerReleaseCatalogFetcher(
+        downloader: FixtureReleaseDownloader(values: [:]))
+      await assertThrowsErrorAsync(
+        try await fetcher.fetch(configuration: configuration, channel: .edge)
+      ) {
+        XCTAssertEqual($0 as? InstallerReleaseConfigurationError, .edgeAlphaUnavailable)
+      }
+    }
+
+    func testNewEdgeIsNeverAnImplicitDescriptorDefault() throws {
+      try assertDescriptorRejected { value in value["default_channel"] = "edge" }
+    }
+
+    func testSealedTestingCatalogCannotLeakIntoEdge() async throws {
+      let base = try configuration()
+      let payload = Data("sealed testing catalog".utf8)
+      let configuration = InstallerReleaseConfiguration(
+        channels: base.channels, defaultChannel: .testing, trustRoot: base.trustRoot,
+        helperMachServiceName: base.helperMachServiceName,
+        helperCodeSigningRequirement: base.helperCodeSigningRequirement,
+        sealedCatalogDocuments: .init(payload: payload, signature: Data(repeating: 1, count: 64)))
+      let fetcher = InstallerReleaseCatalogFetcher(
+        downloader: FixtureReleaseDownloader(values: [:]))
+      let testing = try await fetcher.fetch(configuration: configuration, channel: .testing)
+      XCTAssertEqual(testing.payload, payload)
+      await assertThrowsErrorAsync(
+        try await fetcher.fetch(configuration: configuration, channel: .edge)
+      ) {
+        XCTAssertEqual($0 as? InstallerReleaseConfigurationError, .edgeAlphaUnavailable)
+      }
+    }
+
     func testADescriptorNamingTheDevChannelFailsClosed() throws {
       try assertDescriptorRejected { value in
         var channels = value["channels"] as! [String: Any]
@@ -66,10 +114,10 @@
       }
     }
 
-    /// The descriptor this repository ships: edge by default, and every
+    /// The descriptor this repository ships: Testing by default, and every
     /// channel inside the release stream, away from the MX Mac feeds at the
     /// root of the same host.
-    func testTheShippedDescriptorDefaultsToEdgeInsideTheReleaseStream() throws {
+    func testTheShippedDescriptorDefaultsToTestingInsideTheReleaseStream() throws {
       let release = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Release")
@@ -79,11 +127,11 @@
           contentsOf: release.appendingPathComponent("trust-root.ed25519.pub"))
       )
 
-      XCTAssertEqual(configuration.defaultChannel, .edge)
+      XCTAssertEqual(configuration.defaultChannel, .testing)
       for channel in ReleaseChannel.allCases {
         XCTAssertEqual(
           configuration.catalogURL(for: channel).absoluteString,
-          "\(InstallerBuildConfiguration.publicBase)/\(InstallerBuildConfiguration.streamPath)/channels/\(channel.rawValue)/catalog.signed.json"
+          "\(InstallerBuildConfiguration.publicBase)/\(InstallerBuildConfiguration.streamPath)/channels/\(channel == .edge ? "edge-alpha" : channel.rawValue)/catalog.signed.json"
         )
       }
       XCTAssertFalse(InstallerBuildConfiguration.streamPath.isEmpty)
@@ -329,19 +377,19 @@
       XCTAssertEqual(result.payload, catalog)
     }
 
-    func testEdgeChannelReadsTheEdgeObject() async throws {
+    func testTestingChannelReadsTheTestingObject() async throws {
       let configuration = try configuration()
       let catalog = Data("edge catalog".utf8)
       let fetcher = InstallerReleaseCatalogFetcher(
         downloader: FixtureReleaseDownloader(values: [
-          configuration.catalogURL(for: .edge): envelope(
+          configuration.catalogURL(for: .testing): envelope(
             catalog: catalog,
             signature: Data(repeating: 5, count: 64)
           )
         ])
       )
 
-      let result = try await fetcher.fetch(configuration: configuration, channel: .edge)
+      let result = try await fetcher.fetch(configuration: configuration, channel: .testing)
 
       XCTAssertEqual(result.payload, catalog)
     }
@@ -554,7 +602,7 @@
     private func descriptor(fingerprint: String) -> Data {
       Data(
         """
-        {"schema_version":3,"default_channel":"stable","channels":{"stable":{"catalog_url":"https://releases.aurora.example/channels/stable/catalog.signed.json"},"rc":{"catalog_url":"https://releases.aurora.example/channels/rc/catalog.signed.json"},"edge":{"catalog_url":"https://releases.aurora.example/channels/edge/catalog.signed.json"}},"trust_root_fingerprint":"\(fingerprint)","helper_mach_service_name":"\(helper)","helper_code_signing_requirement":"identifier \\"\(helper)\\""}
+        {"schema_version":3,"default_channel":"stable","channels":{"stable":{"catalog_url":"https://releases.aurora.example/channels/stable/catalog.signed.json"},"rc":{"catalog_url":"https://releases.aurora.example/channels/rc/catalog.signed.json"},"testing":{"catalog_url":"https://releases.aurora.example/channels/testing/catalog.signed.json"},"edge":{"catalog_url":"https://releases.aurora.example/channels/edge-alpha/catalog.signed.json"}},"trust_root_fingerprint":"\(fingerprint)","helper_mach_service_name":"\(helper)","helper_code_signing_requirement":"identifier \\"\(helper)\\""}
         """.utf8
       )
     }
@@ -606,10 +654,10 @@
       maximumBytes: Int,
       role: String
     ) async throws -> Data {
-      guard let value = values[url],
-        !value.isEmpty,
-        value.count <= maximumBytes
-      else {
+      guard let value = values[url] else {
+        throw InstallerReleaseConfigurationError.unexpectedHTTPStatus(404)
+      }
+      guard !value.isEmpty, value.count <= maximumBytes else {
         throw InstallerReleaseConfigurationError.oversizedDocument(role)
       }
       return value

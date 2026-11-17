@@ -517,7 +517,9 @@
         channels: ReleaseChannelEndpoints(endpoints: [
           .stable: stableURL,
           .rc: rcURL,
-          .edge: edgeURL,
+          .testing: edgeURL,
+          .edge: URL(
+            string: "https://releases.example.com/channels/edge-alpha/catalog.signed.json")!,
         ])!,
         defaultChannel: .stable,
         trustRoot: trustRoot,

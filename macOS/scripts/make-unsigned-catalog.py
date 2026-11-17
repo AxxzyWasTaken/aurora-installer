@@ -435,6 +435,7 @@ def main() -> None:
 
     catalog = {
         "schemaVersion": NATIVE_SCHEMA_VERSION,
+        "channel": "testing",
         "sequence": int(issued.timestamp()),
         "issuedAt": issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "installer": {

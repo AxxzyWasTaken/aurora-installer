@@ -6,7 +6,7 @@
   ///
   /// The choice lives in memory only: every launch opens on the bundled
   /// default, and one app process can never change another's channel. It only
-  /// chooses between the two URLs already baked into the signed app bundle, so
+  /// chooses between the channel URLs already baked into the signed app bundle, so
   /// it can never introduce a source the app was not built to trust.
   public struct ReleaseChannelPreference: Sendable {
     public final class Store: @unchecked Sendable {

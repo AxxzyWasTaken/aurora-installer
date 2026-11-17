@@ -71,13 +71,15 @@
         configuration: configuration,
         channel: channel
       )
-      return try AppleInstallerTrustCore().validateSupportCatalog(
+      let support = try AppleInstallerTrustCore().validateSupportCatalog(
         payload: documents.payload,
         signature: documents.signature,
         trustRoot: configuration.trustRoot,
         now: validationTime,
         previouslyAccepted: previouslyAcceptedCatalog
-      ).deviceIdentifiers
+      )
+      try ReleaseCatalogChannelPolicy.validate(payload: documents.payload, channel: channel)
+      return support.deviceIdentifiers
     }
 
     public func prepareRelease(
@@ -91,6 +93,14 @@
         configuration: request.configuration,
         channel: request.channel
       )
+      _ = try AppleInstallerTrustCore().validateSupportCatalog(
+        payload: catalog.payload,
+        signature: catalog.signature,
+        trustRoot: request.configuration.trustRoot,
+        now: request.validationTime,
+        previouslyAccepted: request.previouslyAcceptedCatalog
+      )
+      try ReleaseCatalogChannelPolicy.validate(payload: catalog.payload, channel: request.channel)
       let assets = try await assetPreparer.prepare(
         InstallerAssetPreparationRequest(
           host: request.host,
@@ -102,8 +112,9 @@
           // A sealed catalog is distributed inside this signed app, so its
           // remote-update minimum cannot make the app outdated against itself.
           // Remote channel catalogs still enforce their minimum version.
-          installerVersion: request.configuration.sealedCatalogDocuments == nil
-            ? request.installerVersion : nil,
+          installerVersion: request.configuration.sealedCatalogDocuments != nil
+            && request.channel == request.configuration.defaultChannel
+            ? nil : request.installerVersion,
           stagingDirectory: request.stagingDirectory
         ),
         progress: progress,

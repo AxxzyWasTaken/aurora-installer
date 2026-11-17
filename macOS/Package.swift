@@ -9,6 +9,10 @@ let localPayloadTestSettings: [SwiftSetting] =
   ProcessInfo.processInfo.environment["AURORA_LOCAL_PAYLOAD_TEST_BUILD"] == "1"
   ? [.define("AURORA_LOCAL_PAYLOAD_TEST_BUILD", .when(configuration: .debug))] : []
 
+let omarchySettings: [SwiftSetting] =
+  ProcessInfo.processInfo.environment["AURORA_ENABLE_OMARCHY"] == "1"
+  ? [.define("AURORA_ENABLE_OMARCHY")] : []
+
 let package = Package(
   name: "AuroraAppleInstallerTrustCore",
   platforms: [
@@ -89,7 +93,7 @@ let package = Package(
       name: "AuroraAppleInstallerTrustCore",
       dependencies: ["AuroraInstallerSystem", "RecoveryAccountCore", "AuroraFirmware"],
       path: "Sources/AuroraAppleInstaller",
-      swiftSettings: localPayloadTestSettings,
+      swiftSettings: localPayloadTestSettings + omarchySettings,
       plugins: ["AuroraInstallerIdentityPlugin"]
     ),
     .target(

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -11,13 +12,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = tuple(f"{distribution}-{desktop}" for distribution in ("fedora", "arch", "nixos")
-                 for desktop in ("kde", "gnome", "minimal")) + ("omarchy-hyprland",)
+                 for desktop in ("kde", "gnome", "minimal"))
+OMARCHY_PROFILE = "omarchy-hyprland"
 
 
-def prepare(source, output, sealed=False, signing_team=None, legacy_sealed=False):
-    if legacy_sealed and (not sealed or signing_team is not None):
-        raise ValueError("legacy profiles are only allowed for sealed developer packaging checks")
-    profiles = PROFILES[:-1] if legacy_sealed else PROFILES
+def prepare(source, output, sealed=False, signing_team=None):
+    omarchy = os.environ.get("AURORA_ENABLE_OMARCHY", "0")
+    if omarchy not in ("0", "1"):
+        raise ValueError("AURORA_ENABLE_OMARCHY must be 0 or 1")
+    profiles = PROFILES + ((OMARCHY_PROFILE,) if omarchy == "1" else ())
     if signing_team is not None and not re.fullmatch(r"[A-Z0-9]{10}", signing_team):
         raise ValueError("invalid release signing team")
     identity = {}
@@ -57,7 +60,7 @@ def prepare(source, output, sealed=False, signing_team=None, legacy_sealed=False
                 raise ValueError(f"catalog is not a native-only schema 5 catalog: {profile}")
             if not catalog["models"] or any(
                 model.get("installationProfile") != profile for model in catalog["models"]
-                if model["status"] == "enabled"
+                if model["status"] == "enabled" or model.get("installationProfile") is not None
             ):
                 raise ValueError(f"catalog profile mismatch: {profile}")
             if any(
@@ -139,7 +142,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sealed", action="store_true", help="seal exact signed catalogs for a developer/offline build")
     parser.add_argument("--signing-team", help="bind the root and all profile descriptors to this named-signing team")
-    parser.add_argument("--legacy-sealed-profiles", action="store_true",
-                        help="CI transition only: verify the existing nine profiles in a sealed developer build")
     args = parser.parse_args()
-    prepare(args.profiles, args.output, args.sealed, args.signing_team, args.legacy_sealed_profiles)
+    prepare(args.profiles, args.output, args.sealed, args.signing_team)

@@ -31,6 +31,10 @@ build_jobs="${AURORA_BUILD_JOBS:-10}"
   || fail "AURORA_BUILD_JOBS must be a positive integer"
 export CARGO_BUILD_JOBS="$build_jobs"
 
+export AURORA_ENABLE_OMARCHY="${AURORA_ENABLE_OMARCHY-0}"
+[[ $AURORA_ENABLE_OMARCHY == "0" || $AURORA_ENABLE_OMARCHY == "1" ]] \
+  || fail "AURORA_ENABLE_OMARCHY must be 0 or 1"
+
 # Local payload support is compiled only in an explicitly requested debug test
 # build. Release configuration always compiles it out.
 build_configuration=release
@@ -139,6 +143,25 @@ if [[ ${AURORA_DEVELOPER_BUILD:-0} == "1" && $sealed_catalog_available != "true"
 fi
 if [[ ${AURORA_OFFLINE_BUILD:-0} == "1" && $sealed_catalog_available != "true" ]]; then
   fail "offline builds require a sealed catalog"
+fi
+
+# Catalogs are signed, so refuse mismatched staged resources before building.
+if [[ $AURORA_ENABLE_OMARCHY == "0" ]]; then
+  python3 - "$release_directory" <<'PYPROFILES'
+import json
+from pathlib import Path
+import sys
+
+release = Path(sys.argv[1])
+profiles = release / "Profiles"
+if (profiles / "omarchy-hyprland").exists() or (profiles / "omarchy-hyprland").is_symlink():
+    raise SystemExit("Omarchy profile requires AURORA_ENABLE_OMARCHY=1")
+for catalog in (release / "catalog.json", *profiles.glob("*/catalog.json")):
+    if catalog.is_file():
+        if any(model.get("installationProfile") == "omarchy-hyprland"
+               for model in json.loads(catalog.read_bytes())["models"]):
+            raise SystemExit(f"Omarchy catalog requires AURORA_ENABLE_OMARCHY=1: {catalog}")
+PYPROFILES
 fi
 
 descriptor_schema="$(plutil -extract schema_version raw -o - "$release_descriptor")"

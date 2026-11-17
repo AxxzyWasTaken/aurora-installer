@@ -67,6 +67,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
+      AURORA_ENABLE_OMARCHY: '0'
       NATIVE_TEST_FILTER: ${{ inputs.test-filter }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -134,10 +135,22 @@ jobs:
           set -euo pipefail
           python3 scripts/prepare-distribution-release.py \
             --profiles "$GITHUB_WORKSPACE/packaging-delivery/site/installer/Profiles" \
-            --output "$RUNNER_TEMP/packaging-release" --sealed --legacy-sealed-profiles
+            --output "$RUNNER_TEMP/packaging-release" --sealed
           bash Packaging/build-app.sh "$RUNNER_TEMP/packaging-release" "$RUNNER_TEMP/packaging-app" \
             2>&1 | tee "$RUNNER_TEMP/installer-ci/packaging-smoke.log"
           app="$RUNNER_TEMP/packaging-app/Aurora Installer.app"
+          python3 - "$app/Contents/Resources/Release" <<'PYPROFILES'
+          import json,sys
+          from pathlib import Path
+          release=Path(sys.argv[1])
+          profiles=release/'Profiles'
+          expected={f'{d}-{s}' for d in ('fedora','arch','nixos') for s in ('kde','gnome','minimal')}
+          assert {p.name for p in profiles.iterdir()}==expected
+          for profile in expected:
+              models=json.loads((profiles/profile/'catalog.json').read_bytes())['models']
+              assert all(model.get('installationProfile') in (None,profile) for model in models),profile
+          assert (release/'catalog.json').read_bytes()==(profiles/'fedora-kde/catalog.json').read_bytes()
+          PYPROFILES
           bash Packaging/check-download-size.sh "$app" \
             | tee "$RUNNER_TEMP/installer-ci/app-size.log"
           python3 Packaging/check-local-payload-policy.py --expected disabled "$app"
@@ -164,6 +177,14 @@ jobs:
           xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug \
             --filter 'VerifiedArtifactStagerTests.testLocal' \
             2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-local-payload.log"
+      - name: Test the explicit Omarchy opt-in
+        env:
+          AURORA_ENABLE_OMARCHY: '1'
+        run: |
+          set -euo pipefail
+          xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug \
+            --filter 'InstallationSelectionTests|NativePayloadPreflightTests.testOmarchy' \
+            2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-omarchy.log"
       - name: Build the native preview
         run: bash Packaging/build-aurora-preview.sh "$RUNNER_TEMP/aurora-preview"
       - name: Check exact developer app and helper requirements

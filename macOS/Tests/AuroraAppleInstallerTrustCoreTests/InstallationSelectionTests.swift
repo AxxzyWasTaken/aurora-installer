@@ -6,13 +6,16 @@ import XCTest
 
 final class InstallationSelectionTests: XCTestCase {
   func testEachLinuxDesktopHasItsOwnProfile() {
-    XCTAssertEqual(
-      AuroraInstallationSelection.allProfileIDs,
-      [
-        "fedora-kde", "fedora-gnome", "fedora-minimal",
-        "arch-kde", "arch-gnome", "arch-minimal",
-        "nixos-kde", "nixos-gnome", "nixos-minimal", "omarchy-hyprland",
-      ])
+    let optedIn = ProcessInfo.processInfo.environment["AURORA_ENABLE_OMARCHY"] == "1"
+    let distributions: [AuroraDistribution] = [.fedora, .arch, .nixos]
+    XCTAssertEqual(AuroraDistribution.installable, distributions + (optedIn ? [.omarchy] : []))
+    var expected: Set<String> = [
+      "fedora-kde", "fedora-gnome", "fedora-minimal",
+      "arch-kde", "arch-gnome", "arch-minimal",
+      "nixos-kde", "nixos-gnome", "nixos-minimal",
+    ]
+    if optedIn { expected.insert("omarchy-hyprland") }
+    XCTAssertEqual(AuroraInstallationSelection.allProfileIDs, expected)
   }
 
   func testOmarchyOffersOnlyHyprlandAndSwitchingKeepsAValidSelection() throws {
@@ -21,7 +24,11 @@ final class InstallationSelectionTests: XCTestCase {
     XCTAssertEqual(selection.desktop, .hyprland)
     XCTAssertEqual(selection.profileID, "omarchy-hyprland")
     XCTAssertEqual(AuroraDistribution.omarchy.availableDesktops, [.hyprland])
-    try selection.requireMatchingProfile("omarchy-hyprland")
+    if ProcessInfo.processInfo.environment["AURORA_ENABLE_OMARCHY"] == "1" {
+      try selection.requireMatchingProfile("omarchy-hyprland")
+    } else {
+      XCTAssertThrowsError(try selection.requireMatchingProfile("omarchy-hyprland"))
+    }
     selection.selectDistribution(.arch)
     XCTAssertEqual(selection.desktop, .kde)
     XCTAssertEqual(selection.profileID, "arch-kde")

@@ -63,9 +63,15 @@
       document["os_list"] = templates
       let archive = try await IPSWArchive.open(
         PayloadFixtureSource(bytes: try XCTUnwrap(fixture.archives[vector.archive])))
-      try await NativePayloadPreflight.validate(
-        metadata: JSONSerialization.data(withJSONObject: document), payloadName: "payload.zip",
-        archive: archive)
+      let optedIn = ProcessInfo.processInfo.environment["AURORA_ENABLE_OMARCHY"] == "1"
+      do {
+        try await NativePayloadPreflight.validate(
+          metadata: JSONSerialization.data(withJSONObject: document), payloadName: "payload.zip",
+          archive: archive)
+        XCTAssertTrue(optedIn, "Default builds must reject Omarchy")
+      } catch NativePayloadPreflightError.invalidMetadata {
+        XCTAssertFalse(optedIn, "Opt-in builds must admit the Omarchy ALARM layout")
+      }
       templates[0]["installation_profile"] = "omarchy-kde"
       document["os_list"] = templates
       do {

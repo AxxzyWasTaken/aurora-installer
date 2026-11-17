@@ -37,6 +37,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
       AURORA_DEVELOPER_BUILD: '1'
+      AURORA_ENABLE_OMARCHY: '0'
       AURORA_LOCAL_PAYLOAD_TEST_BUILD: ${{ inputs.test-local-payloads && '1' || '0' }}
       AURORA_SIGNING_KEYCHAIN_TIMEOUT: '5400'
     defaults:
@@ -86,7 +87,7 @@ jobs:
           from pathlib import Path
           import os,shutil,sys
           root=Path(sys.argv[1]);source=Path(os.environ['GITHUB_WORKSPACE'])/'delivery/site/installer/Profiles'
-          expected={f'{d}-{s}' for d in ('fedora','arch','nixos') for s in ('kde','gnome','minimal')} | {'omarchy-hyprland'}
+          expected={f'{d}-{s}' for d in ('fedora','arch','nixos') for s in ('kde','gnome','minimal')}
           assert {p.name for p in source.iterdir()}==expected
           for profile in expected:
               destination=root/'Profiles'/profile
@@ -106,7 +107,7 @@ jobs:
           import json,os,sys
           from pathlib import Path
           profiles=Path(sys.argv[1])
-          expected={f'{d}-{s}' for d in ('fedora','arch','nixos') for s in ('kde','gnome','minimal')} | {'omarchy-hyprland'}
+          expected={f'{d}-{s}' for d in ('fedora','arch','nixos') for s in ('kde','gnome','minimal')}
           assert {p.name for p in profiles.iterdir()} == expected
           schemas=set()
           models_by_profile={}
@@ -153,7 +154,9 @@ jobs:
           xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests Recovery/Package.swift Recovery/Sources Recovery/Tests
           configuration=release
           if [[ $AURORA_LOCAL_PAYLOAD_TEST_BUILD == 1 ]]; then configuration=debug; fi
-          # A release build with the opt-in set must still ignore local files.
+          xcodebuildmcp swift-package test --package-path "$PWD" --configuration release \
+            --filter InstallationSelectionTests 2>&1 | tee "$RUNNER_TEMP/evidence/release-profile-tests.log"
+          # Release builds must ignore the local payload opt-in.
           AURORA_LOCAL_PAYLOAD_TEST_BUILD=1 xcodebuildmcp swift-package test \
             --package-path "$PWD" --configuration release --filter 'VerifiedArtifactStagerTests.testLocal' \
             2>&1 | tee "$RUNNER_TEMP/evidence/local-source-release.log"
@@ -192,12 +195,16 @@ jobs:
           import hashlib,json,sys
           from pathlib import Path
           profiles=Path(sys.argv[1]);manifest=json.loads(Path(sys.argv[2]).read_text())
-          expected=manifest['profiles']
-          assert manifest['sealed'] and {p.name for p in profiles.iterdir()}==set(expected)
-          for profile,record in expected.items():
+          expected={f'{d}-{s}' for d in ('fedora','arch','nixos') for s in ('kde','gnome','minimal')}
+          assert manifest['sealed'] and set(manifest['profiles'])==expected
+          assert {p.name for p in profiles.iterdir()}==expected
+          for profile,record in manifest['profiles'].items():
               data=(profiles/profile/'catalog.json').read_bytes()
               assert hashlib.sha256(data).hexdigest()==record['catalog_sha256'],profile
-              assert json.loads(data)['sequence']==record['sequence'],profile
+              catalog=json.loads(data)
+              assert catalog['sequence']==record['sequence'],profile
+              assert all(model.get('installationProfile') in (None,profile) for model in catalog['models']),profile
+          assert (profiles.parent/'catalog.json').read_bytes()==(profiles/'fedora-kde/catalog.json').read_bytes()
           PYPROFILES
           expected=disabled
           if [[ $AURORA_LOCAL_PAYLOAD_TEST_BUILD == 1 ]]; then expected=enabled; fi
@@ -275,7 +282,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          printf 'Native installer %s.\n\nSource: `%s`\nProfiles: `%s`\nBuild evidence: %s/%s/actions/runs/%s\n\nSigned and notarized DMG with ten sealed distribution catalogs. A NixOS KDE Reset and encrypted first boot passed on MacBook Neo; the other profiles still require physical installation qualification.\n' \
+          printf 'Native installer %s.\n\nSource: `%s`\nProfiles: `%s`\nBuild evidence: %s/%s/actions/runs/%s\n\nSigned and notarized DMG with nine sealed distribution catalogs. A NixOS KDE Reset and encrypted first boot passed on MacBook Neo; the other profiles still require physical installation qualification.\n' \
             "$APP_VERSION" "$GITHUB_SHA" "$PROFILES_REVISION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > notes.md
           [[ $RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[1-9][0-9]*$ ]]
           alpha_number=${RELEASE_TAG##*.}

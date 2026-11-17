@@ -2,6 +2,14 @@ import Foundation
 
 public enum AuroraDistribution: String, CaseIterable, Codable, Identifiable, Sendable {
   case fedora, arch, nixos, omarchy
+  public static var installable: [Self] {
+    #if AURORA_ENABLE_OMARCHY
+      allCases
+    #else
+      [.fedora, .arch, .nixos]
+    #endif
+  }
+
   public var id: String { rawValue }
   public var title: String {
     switch self {
@@ -55,7 +63,7 @@ public struct AuroraInstallationSelection: Equatable, Codable, Sendable {
   }
   public static var allProfileIDs: Set<String> {
     Set(
-      AuroraDistribution.allCases.flatMap { distribution in
+      AuroraDistribution.installable.flatMap { distribution in
         distribution.availableDesktops.map {
           AuroraInstallationSelection(distribution: distribution, desktop: $0).profileID
         }
@@ -81,7 +89,9 @@ public struct AuroraInstallationSelection: Equatable, Codable, Sendable {
   }
 
   public func requireMatchingProfile(_ profileID: String?) throws {
-    guard effectiveDesktop != nil, profileID == self.profileID else {
+    guard effectiveDesktop != nil, profileID == self.profileID,
+      AuroraDistribution.installable.contains(distribution)
+    else {
       throw AuroraProfileError.selectionMismatch
     }
   }

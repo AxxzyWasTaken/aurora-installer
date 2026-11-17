@@ -58,7 +58,8 @@
         guard let layout = layout as? String, let contract = contracts[layout],
           let profile = template["installation_profile"] as? String,
           (["kde", "gnome", "minimal"].map({ contract.0 + "-" + $0 })
-            + (layout == "alarm-btrfs-v1" ? ["omarchy-hyprland"] : [])).contains(profile)
+            + (layout == "alarm-btrfs-v1" ? ["omarchy-hyprland"] : [])).contains(profile),
+          AuroraInstallationSelection.allProfileIDs.contains(profile)
         else { throw NativePayloadPreflightError.invalidMetadata }
         icon = "aurora-volume.icns"
         filesystem = contract.1

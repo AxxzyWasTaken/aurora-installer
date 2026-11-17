@@ -8,7 +8,8 @@ struct AuroraWelcomeView: View {
   var onContinue: () -> Void
   private let columns = Array(repeating: GridItem(.flexible(minimum: 0), spacing: 18), count: 3)
   private let distributionColumns = Array(
-    repeating: GridItem(.flexible(minimum: 0), spacing: 18), count: 4)
+    repeating: GridItem(.flexible(minimum: 0), spacing: 18),
+    count: AuroraDistribution.installable.count)
 
   var body: some View {
     VStack(spacing: 0) {
@@ -21,7 +22,7 @@ struct AuroraWelcomeView: View {
       VStack(alignment: .leading, spacing: 10) {
         sectionTitle("Distribution")
         LazyVGrid(columns: distributionColumns, spacing: 18) {
-          ForEach(AuroraDistribution.allCases) { distribution in
+          ForEach(AuroraDistribution.installable) { distribution in
             SelectionCard(
               selected: selection.distribution == distribution, label: distribution.title
             ) {

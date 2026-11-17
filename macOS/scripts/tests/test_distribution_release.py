@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,6 +15,9 @@ spec.loader.exec_module(module)
 
 class DistributionReleaseTests(unittest.TestCase):
     def setUp(self):
+        mode = patch.dict(os.environ, {"AURORA_ENABLE_OMARCHY": "0"})
+        mode.start()
+        self.addCleanup(mode.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -31,7 +35,7 @@ class DistributionReleaseTests(unittest.TestCase):
         (release / "trust-root.ed25519.pub").write_bytes(self.public)
         import hashlib
         fingerprint = "sha256:" + hashlib.sha256(self.public).hexdigest()
-        for profile in module.PROFILES:
+        for profile in module.PROFILES + (module.OMARCHY_PROFILE,):
             directory = self.profiles / profile
             directory.mkdir(parents=True)
             descriptor = {"schema_version": 3, "trust_root_fingerprint": fingerprint,
@@ -55,7 +59,8 @@ class DistributionReleaseTests(unittest.TestCase):
         output = self.root / "output"
         with patch.object(module, "ROOT", self.root):
             module.prepare(self.profiles, output, sealed=True)
-        self.assertEqual(len(list((output / "Profiles").iterdir())), len(module.PROFILES))
+        self.assertEqual({entry.name for entry in (output / "Profiles").iterdir()},
+                         set(module.PROFILES))
         self.assertEqual((output / "catalog.json").read_bytes(),
                          (self.profiles / "fedora-kde/catalog.json").read_bytes())
 
@@ -69,22 +74,32 @@ class DistributionReleaseTests(unittest.TestCase):
         output = self.root / "output"
         with patch.object(module, "ROOT", self.root):
             module.prepare(self.profiles, output, sealed=True)
-        self.assertEqual(len(list((output / "Profiles").iterdir())), len(module.PROFILES))
+        self.assertEqual({entry.name for entry in (output / "Profiles").iterdir()},
+                         set(module.PROFILES))
         self.assertEqual(json.loads((output / "catalog.json").read_text())["schemaVersion"], 5)
 
-    def test_missing_omarchy_is_allowed_only_for_explicit_sealed_developer_smoke(self):
+    def test_default_accepts_nine_profiles_and_opt_in_requires_omarchy(self):
         import shutil
-        shutil.rmtree(self.profiles / "omarchy-hyprland")
+        shutil.rmtree(self.profiles / module.OMARCHY_PROFILE)
         output = self.root / "output"
         with patch.object(module, "ROOT", self.root):
-            with self.assertRaisesRegex(ValueError, "missing omarchy-hyprland"):
-                module.prepare(self.profiles, output, sealed=True)
-            self.assertFalse(output.exists())
-            for options in ({}, {"sealed": True, "signing_team": "TESTTEAM01"}):
-                with self.assertRaisesRegex(ValueError, "sealed developer"):
-                    module.prepare(self.profiles, output, legacy_sealed=True, **options)
-            module.prepare(self.profiles, output, sealed=True, legacy_sealed=True)
-        self.assertEqual(len(list((output / "Profiles").iterdir())), 9)
+            with patch.dict(os.environ, {"AURORA_ENABLE_OMARCHY": "1"}):
+                with self.assertRaisesRegex(ValueError, "missing omarchy-hyprland"):
+                    module.prepare(self.profiles, output, sealed=True)
+                self.assertFalse(output.exists())
+            module.prepare(self.profiles, output, sealed=True)
+        self.assertEqual({entry.name for entry in (output / "Profiles").iterdir()},
+                         set(module.PROFILES))
+
+    def test_opt_in_adds_the_signed_omarchy_profile(self):
+        output = self.root / "output"
+        with patch.object(module, "ROOT", self.root), patch.dict(os.environ, {"AURORA_ENABLE_OMARCHY": "1"}):
+            module.prepare(self.profiles, output, sealed=True)
+        self.assertEqual({entry.name for entry in (output / "Profiles").iterdir()},
+                         set(module.PROFILES) | {module.OMARCHY_PROFILE})
+        for name in ("catalog.json", "catalog.json.sig"):
+            self.assertEqual((output / "Profiles" / module.OMARCHY_PROFILE / name).read_bytes(),
+                             (self.profiles / module.OMARCHY_PROFILE / name).read_bytes())
 
     def test_engine_pinning_catalogs_emit_no_release(self):
         directory = self.profiles / "fedora-kde"

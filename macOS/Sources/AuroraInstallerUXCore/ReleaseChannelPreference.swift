@@ -52,9 +52,12 @@
 
     /// The channel the next preparation fetches. The window and the download
     /// both resolve through here, so they cannot disagree.
-    public func resolve(configuration: InstallerReleaseConfiguration) -> ReleaseChannel {
+    public func resolve(
+      configuration: InstallerReleaseConfiguration, profileID: String
+    ) -> ReleaseChannel {
       let prefersEdge =
         deviceIdentifier == "apple,j700"
+        && profileID == "fedora-kde"
         && configuration.defaultChannel == .testing
         && !configuration.legacyDevelopmentChannel
       return resolve(descriptorDefault: prefersEdge ? .edge : configuration.defaultChannel)
@@ -62,12 +65,12 @@
 
     /// `nil` when the app bundle carries no valid release descriptor; nothing
     /// can be fetched then either.
-    public func resolveFromMainBundle() -> ReleaseChannel? {
+    public func resolveFromMainBundle(profileID: String) -> ReleaseChannel? {
       guard
         let configuration = try? InstallerReleaseConfigurationLocator()
           .loadFromMainBundle()
       else { return nil }
-      return resolve(configuration: configuration)
+      return resolve(configuration: configuration, profileID: profileID)
     }
   }
 #endif

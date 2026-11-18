@@ -65,11 +65,23 @@
       let preference = ReleaseChannelPreference(store: store, deviceIdentifier: "apple,j700")
 
       XCTAssertNil(preference.stored)
-      XCTAssertEqual(preference.resolve(configuration: configuration), .edge)
+      XCTAssertEqual(
+        preference.resolve(configuration: configuration, profileID: "fedora-kde"), .edge)
       preference.select(.testing)
-      XCTAssertEqual(preference.resolve(configuration: configuration), .testing)
+      XCTAssertEqual(
+        preference.resolve(configuration: configuration, profileID: "fedora-kde"), .testing)
       preference.select(nil)
-      XCTAssertEqual(preference.resolve(configuration: configuration), .edge)
+      XCTAssertEqual(
+        preference.resolve(configuration: configuration, profileID: "fedora-kde"), .edge)
+    }
+
+    func testOtherNeoProfilesUseNightly() throws {
+      let configuration = try Self.bundledConfiguration()
+      let preference = ReleaseChannelPreference(store: store, deviceIdentifier: "apple,j700")
+      for profile in ["fedora-gnome", "arch-kde", "nixos-kde"] {
+        XCTAssertEqual(
+          preference.resolve(configuration: configuration, profileID: profile), .testing)
+      }
     }
 
     func testOtherAndUnidentifiedMacsUseNightlyByDefault() throws {
@@ -77,7 +89,8 @@
       let deviceIdentifiers: [String?] = ["apple,j313", nil]
       for deviceIdentifier in deviceIdentifiers {
         let preference = ReleaseChannelPreference(store: store, deviceIdentifier: deviceIdentifier)
-        XCTAssertEqual(preference.resolve(configuration: configuration), .testing)
+        XCTAssertEqual(
+          preference.resolve(configuration: configuration, profileID: "fedora-kde"), .testing)
       }
     }
 
@@ -90,7 +103,7 @@
         legacyDevelopmentChannel: true)
       let preference = ReleaseChannelPreference(store: store, deviceIdentifier: "apple,j700")
 
-      XCTAssertEqual(preference.resolve(configuration: legacy), .testing)
+      XCTAssertEqual(preference.resolve(configuration: legacy, profileID: "fedora-kde"), .testing)
     }
 
     func testASavedChoiceWinsOverTheBundledDefault() throws {
@@ -102,7 +115,7 @@
 
       preference.select(other)
 
-      XCTAssertEqual(preference.resolve(configuration: configuration), other)
+      XCTAssertEqual(preference.resolve(configuration: configuration, profileID: "fedora-kde"), other)
     }
 
     func testTheWindowAndTheDownloadResolveTheChannelTheSameWay() throws {
@@ -125,13 +138,16 @@
       // Wiring guard only; the resolver's behaviour is tested above.
       XCTAssertTrue(
         scene.contains(
-          "@State private var channel = ReleaseChannelPreference().resolveFromMainBundle()\n"))
+          "@State private var channel = ReleaseChannelPreference().resolveFromMainBundle(\n"
+            + "    profileID: AuroraInstallationSelection().profileID)"))
       XCTAssertTrue(
         scene.contains(
           "environment: LiveInstallerEnvironment(selection: selection), channel: channel,"))
       XCTAssertFalse(scene.contains("channel = ."))
       XCTAssertTrue(
-        download.contains("ReleaseChannelPreference().resolve(configuration: configuration)"))
+        scene.contains("resolveFromMainBundle(profileID: selection.profileID)"))
+      XCTAssertTrue(
+        download.contains("configuration: configuration, profileID: selection.profileID)"))
     }
 
     private static func bundledConfiguration() throws -> InstallerReleaseConfiguration {

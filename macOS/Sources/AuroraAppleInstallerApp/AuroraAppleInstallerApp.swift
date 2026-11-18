@@ -252,7 +252,8 @@ struct AuroraAppleInstallerApp: App {
       })
   }
 
-  @State private var channel = ReleaseChannelPreference().resolveFromMainBundle()
+  @State private var channel = ReleaseChannelPreference().resolveFromMainBundle(
+    profileID: AuroraInstallationSelection().profileID)
 
   var body: some Scene {
     WindowGroup(PlainLanguage.windowTitle) {
@@ -270,6 +271,9 @@ struct AuroraAppleInstallerApp: App {
         }
       }
       .id(generation)
+      .onChange(of: selection) { _, selection in
+        channel = ReleaseChannelPreference().resolveFromMainBundle(profileID: selection.profileID)
+      }
       .task {
         guard !isSimulation, !checkedPendingInstallation else { return }
         checkedPendingInstallation = true

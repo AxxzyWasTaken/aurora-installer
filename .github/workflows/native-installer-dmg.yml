@@ -36,7 +36,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
-      AURORA_DEVELOPER_BUILD: '1'
+      AURORA_DEVELOPER_BUILD: ${{ inputs.test-local-payloads && '1' || '0' }}
       AURORA_ENABLE_OMARCHY: '0'
       AURORA_LOCAL_PAYLOAD_TEST_BUILD: ${{ inputs.test-local-payloads && '1' || '0' }}
       AURORA_SIGNING_KEYCHAIN_TIMEOUT: '5400'

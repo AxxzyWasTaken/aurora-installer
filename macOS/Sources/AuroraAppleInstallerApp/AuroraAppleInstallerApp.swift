@@ -194,7 +194,15 @@ struct AuroraAppleInstallerApp: App {
   @ViewBuilder
   private var selectedInstallerContent: some View {
     if choosingSystem {
-      AuroraWelcomeView(selection: $selection, device: .inspect(isSimulation: isSimulation)) {
+      #if DEBUG
+        let selectedChannel = isSimulation ? simulation.channel : channel
+      #else
+        let selectedChannel = channel
+      #endif
+      AuroraWelcomeView(
+        selection: $selection, device: .inspect(isSimulation: isSimulation),
+        channel: selectedChannel
+      ) {
         choosingSystem = false
         generation = UUID()
       }

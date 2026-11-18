@@ -4,8 +4,8 @@
 
   /// Holds which release channel this run of the app reads.
   ///
-  /// The choice lives in memory only: every launch opens on the bundled
-  /// default, and one app process can never change another's channel. It only
+  /// The choice lives in memory only: every launch resolves the default for
+  /// this Mac, and one app process can never change another's channel. It only
   /// chooses between the channel URLs already baked into the signed app bundle, so
   /// it can never introduce a source the app was not built to trust.
   public struct ReleaseChannelPreference: Sendable {
@@ -23,10 +23,20 @@
 
     public static let processStore = Store()
 
+    private static let processDeviceIdentifier: String? = {
+      guard InstallerBuildProfile.current == .standard else { return nil }
+      return (try? AppleSiliconHostInspector().inspectIdentity())?.deviceIdentifier
+    }()
     private let store: Store
+    private let deviceIdentifier: String?
 
     public init(store: Store = processStore) {
+      self.init(store: store, deviceIdentifier: Self.processDeviceIdentifier)
+    }
+
+    public init(store: Store, deviceIdentifier: String?) {
       self.store = store
+      self.deviceIdentifier = deviceIdentifier
     }
 
     /// The choice made in this run, or `nil` when none was made.
@@ -43,7 +53,11 @@
     /// The channel the next preparation fetches. The window and the download
     /// both resolve through here, so they cannot disagree.
     public func resolve(configuration: InstallerReleaseConfiguration) -> ReleaseChannel {
-      resolve(descriptorDefault: configuration.defaultChannel)
+      let prefersEdge =
+        deviceIdentifier == "apple,j700"
+        && configuration.defaultChannel == .testing
+        && !configuration.legacyDevelopmentChannel
+      return resolve(descriptorDefault: prefersEdge ? .edge : configuration.defaultChannel)
     }
 
     /// `nil` when the app bundle carries no valid release descriptor; nothing

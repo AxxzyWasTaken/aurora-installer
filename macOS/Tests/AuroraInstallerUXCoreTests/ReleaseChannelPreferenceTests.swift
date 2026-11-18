@@ -30,7 +30,7 @@
       XCTAssertEqual(preference.resolve(descriptorDefault: .stable), .rc)
     }
 
-    func testEdgeRequiresAnExplicitPickInThisLaunch() {
+    func testAnExplicitEdgePickIsRememberedForThisLaunch() {
       let preference = ReleaseChannelPreference(store: store)
       XCTAssertEqual(preference.resolve(descriptorDefault: .testing), .testing)
       preference.select(.edge)
@@ -60,13 +60,37 @@
       XCTAssertEqual(UserDefaults.standard.object(forKey: "ReleaseChannel") as? String, legacy)
     }
 
-    func testAFreshLaunchShowsAndFetchesTheBundledDefault() throws {
-      let configuration = try InstallerReleaseConfigurationLocator().load(
-        from: Self.packageRoot.appendingPathComponent("Release", isDirectory: true))
-      let preference = ReleaseChannelPreference(store: store)
+    func testQualifiedEdgeIsTheNeoDefault() throws {
+      let configuration = try Self.bundledConfiguration()
+      let preference = ReleaseChannelPreference(store: store, deviceIdentifier: "apple,j700")
 
       XCTAssertNil(preference.stored)
-      XCTAssertEqual(preference.resolve(configuration: configuration), configuration.defaultChannel)
+      XCTAssertEqual(preference.resolve(configuration: configuration), .edge)
+      preference.select(.testing)
+      XCTAssertEqual(preference.resolve(configuration: configuration), .testing)
+      preference.select(nil)
+      XCTAssertEqual(preference.resolve(configuration: configuration), .edge)
+    }
+
+    func testOtherAndUnidentifiedMacsUseNightlyByDefault() throws {
+      let configuration = try Self.bundledConfiguration()
+      let deviceIdentifiers: [String?] = ["apple,j313", nil]
+      for deviceIdentifier in deviceIdentifiers {
+        let preference = ReleaseChannelPreference(store: store, deviceIdentifier: deviceIdentifier)
+        XCTAssertEqual(preference.resolve(configuration: configuration), .testing)
+      }
+    }
+
+    func testLegacyNeoDescriptorsKeepTheTestingDefault() throws {
+      let bundled = try Self.bundledConfiguration()
+      let legacy = InstallerReleaseConfiguration(
+        channels: bundled.channels, defaultChannel: .testing, trustRoot: bundled.trustRoot,
+        helperMachServiceName: bundled.helperMachServiceName,
+        helperCodeSigningRequirement: bundled.helperCodeSigningRequirement,
+        legacyDevelopmentChannel: true)
+      let preference = ReleaseChannelPreference(store: store, deviceIdentifier: "apple,j700")
+
+      XCTAssertEqual(preference.resolve(configuration: legacy), .testing)
     }
 
     func testASavedChoiceWinsOverTheBundledDefault() throws {
@@ -108,6 +132,11 @@
       XCTAssertFalse(scene.contains("channel = ."))
       XCTAssertTrue(
         download.contains("ReleaseChannelPreference().resolve(configuration: configuration)"))
+    }
+
+    private static func bundledConfiguration() throws -> InstallerReleaseConfiguration {
+      try InstallerReleaseConfigurationLocator().load(
+        from: packageRoot.appendingPathComponent("Release", isDirectory: true))
     }
 
     private static var packageRoot: URL {

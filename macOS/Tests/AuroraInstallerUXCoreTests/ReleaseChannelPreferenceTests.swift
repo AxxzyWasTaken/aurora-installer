@@ -115,7 +115,8 @@
 
       preference.select(other)
 
-      XCTAssertEqual(preference.resolve(configuration: configuration, profileID: "fedora-kde"), other)
+      XCTAssertEqual(
+        preference.resolve(configuration: configuration, profileID: "fedora-kde"), other)
     }
 
     func testTheWindowAndTheDownloadResolveTheChannelTheSameWay() throws {

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "about": "Chip IDs whose CPUs run kernel-mode code only inside a configured execute window. On these generations (M4, A18 Pro, M5 and later) Stage 1 is enrolled as a Mach-O padded to cover that window and loads the confined Stage 2; every earlier chip enrolls it unpadded. Chip IDs rise with each generation, so each range runs from that generation's first chip to the end of its family. Read by macOS/Recovery/Sources/Account/AuraStage1.swift (through a test), scripts/assemble-distribution-payload.py and aurora-platform's aurora-secboot (through a cross-repository test).",
+  "chip_id_ranges": [
+    {"family": "T81xx", "first": "0x8130", "last": "0x8fff"},
+    {"family": "T6xxx", "first": "0x6040", "last": "0x6fff"}
+  ]
+}

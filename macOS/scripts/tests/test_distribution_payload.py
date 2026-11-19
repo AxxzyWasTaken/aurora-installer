@@ -285,6 +285,17 @@ class DistributionPayloadTests(unittest.TestCase):
         self.assertFalse(payload.uses_macho(None))
         self.assertEqual(payload.board_chip(self.bundle / 'esp/m1n1/boot-j713.bin', 'j713'), 0x8132)
 
+    def test_the_chip_rule_is_the_shared_data_file(self):
+        self.assertEqual(payload.EXECUTE_WINDOW_RANGES, ((0x8130, 0x8FFF), (0x6040, 0x6FFF)))
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / 'window.json'
+            bad.write_text('{"schema_version": 1, "chip_id_ranges": [{"first": "0x8fff", "last": "0x8130"}]}')
+            with self.assertRaises(SystemExit):
+                payload.execute_window_ranges(bad)
+            bad.write_text('{"schema_version": 2, "chip_id_ranges": []}')
+            with self.assertRaises(SystemExit):
+                payload.execute_window_ranges(bad)
+
     def test_the_chip_rule_matches_the_installer(self):
         for chip in (0x8132, 0x6040, 0x6041, 0x8140, 0x8142, 0x6050, 0x8150):
             self.assertTrue(payload.uses_macho(chip), hex(chip))

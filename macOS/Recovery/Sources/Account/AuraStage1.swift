@@ -3,17 +3,29 @@ import Foundation
 /// Which Stage 1 boot object a Mac enrolls. Every Mac enrolls aura's Mach-O
 /// boot object (aura build/aura-boot.macho); none enrolls the raw image.
 public enum AuraStage1Format {
-  /// M4-generation and later chips keep aura and the kernel's code inside an
-  /// execute window: T8132 (M4), T6040/T6041 (M4 Pro/Max), T8140 (A18 Pro),
-  /// T8142 and T605x (M5) and whatever follows them. Their object is padded for
-  /// that window, enrolled with `--compress`, and loads the confined Stage 2.
-  /// Apple numbers each generation upward, so M1 to M3 (T8103, T8112, T8122,
-  /// T600x, T602x, T603x) stay below both bounds: they enroll the object
-  /// unpadded and load the standard Stage 2. An unpadded object needs aura
-  /// 1.0.0b10-g2296392f or later (aura#134), whose Stage 1 stops its payload scan
-  /// at the object's __PRELINK_INFO.
+  /// Whether this chip's CPUs run kernel-mode code only inside a configured
+  /// execute window. That is a property of the CPU generation: M4, A18 Pro, M5
+  /// and every later chip have it (T8132, T6040/T6041, T8140, T8142, T605x...),
+  /// M1 to M3 (T8103, T8112, T8122, T600x, T602x, T603x) do not. On such a chip
+  /// aura and the kernel's code must sit inside the window, so the Stage 1
+  /// object is padded to cover it, enrolled with `--compress`, and loads the
+  /// confined Stage 2. Other chips enroll the object unpadded and load the
+  /// standard Stage 2; an unpadded object needs aura 1.0.0b10-g2296392f or
+  /// later (aura#134), whose Stage 1 stops its payload scan at the object's
+  /// __PRELINK_INFO.
+  ///
+  /// Chip IDs rise with each generation, so the rule is one range per chip
+  /// family. The ranges are the ones in scripts/stage1-execute-window.json,
+  /// the single definition the payload assembler and aurora-secboot also
+  /// follow; NativeMachOStage1Tests fails if these drift from it. They are a
+  /// constant here rather than read at run time so Recovery's boot-mode
+  /// choice cannot fail on a missing resource.
+  public static let executeWindowChipIDs: [ClosedRange<UInt64>] = [
+    0x8130...0x8FFF, 0x6040...0x6FFF,
+  ]
+
   public static func usesExecuteWindow(chipID: UInt64) -> Bool {
-    (0x8130...0x8FFF).contains(chipID) || (0x6040...0x6FFF).contains(chipID)
+    executeWindowChipIDs.contains { $0.contains(chipID) }
   }
 
   /// The ESP file an unpadded Stage 1 loads.

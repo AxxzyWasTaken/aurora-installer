@@ -56,10 +56,31 @@ CONFINED_STAGE2 = re.compile(r'boot-ctxr(?:-([jk][0-9]+[a-z]*))?\.bin')
 FDT_MAGIC = b'\xd0\x0d\xfe\xed'
 
 
+EXECUTE_WINDOW = ROOT / 'scripts/stage1-execute-window.json'
+
+
+def execute_window_ranges(path=EXECUTE_WINDOW):
+    """The chip-ID ranges whose CPUs confine kernel code to an execute window,
+    from the one data file the installer's Swift and aurora-secboot also follow."""
+    document = json.loads(path.read_text())
+    if document.get('schema_version') != 1:
+        raise SystemExit(f'{path}: unsupported schema')
+    ranges = tuple((int(entry['first'], 16), int(entry['last'], 16))
+                   for entry in document['chip_id_ranges'])
+    if not ranges or any(first > last for first, last in ranges):
+        raise SystemExit(f'{path}: invalid chip_id_ranges')
+    return ranges
+
+
+EXECUTE_WINDOW_RANGES = execute_window_ranges()
+
+
 def uses_macho(chip):
-    """The native installer's AuraStage1Format.usesMachO: M4 and later. A board
-    whose tree names no Apple silicon Mac chip (an A7 iPhone's s5l8960x) is not."""
-    return chip is not None and (0x8130 <= chip <= 0x8FFF or 0x6040 <= chip <= 0x6FFF)
+    """The native installer's AuraStage1Format.usesExecuteWindow: the chip's CPUs
+    run kernel code only inside an execute window, so Stage 1 is the padded
+    Mach-O and the board needs a confined Stage 2. A board whose tree names no
+    Apple silicon Mac chip (an A7 iPhone's s5l8960x) is not."""
+    return chip is not None and any(first <= chip <= last for first, last in EXECUTE_WINDOW_RANGES)
 
 
 def fdt_root_compatible(blob):

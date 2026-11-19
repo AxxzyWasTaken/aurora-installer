@@ -52,6 +52,32 @@
       }
     }
 
+    /// The Swift ranges are the ones in scripts/stage1-execute-window.json, the
+    /// definition the payload assembler and aurora-secboot also follow.
+    func testExecuteWindowChipsAreTheSharedDataFiles() throws {
+      let file = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("scripts/stage1-execute-window.json")
+      let document = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+      XCTAssertEqual(document["schema_version"] as? Int, 1)
+      let entries = try XCTUnwrap(document["chip_id_ranges"] as? [[String: Any]])
+      let ranges = try entries.map { entry -> ClosedRange<UInt64> in
+        func chip(_ key: String) throws -> UInt64 {
+          let text = try XCTUnwrap(entry[key] as? String)
+          XCTAssertTrue(text.hasPrefix("0x"), text)
+          return try XCTUnwrap(UInt64(text.dropFirst(2), radix: 16), text)
+        }
+        return try chip("first")...chip("last")
+      }
+      XCTAssertEqual(ranges, AuraStage1Format.executeWindowChipIDs)
+      for chip: UInt64 in 0...0xFFFF {
+        XCTAssertEqual(
+          AuraStage1Format.usesExecuteWindow(chipID: chip), ranges.contains { $0.contains(chip) },
+          String(chip, radix: 16))
+      }
+    }
+
     func testMachOStage1IsFilledFromTheEnrolledRawStage1() async throws {
       let fixture = try await NativeESPFileTests.Fixture(machO: true)
       try await fixture.prepare()

@@ -45,19 +45,23 @@ public enum FirmwarePackageBuilder {
     var manifest = ""
     for input in inputs {
       let digest = input.bytes.sha256
+      let mode = Self.mode(of: input.name)
+      // A hard link shares its target's mode, so only files with the same
+      // mode are linked.
+      let key = String(mode, radix: 8) + " " + digest
       // USTAR hardlink names have no prefix field. A long target is emitted
       // as another regular file, preserving contents without a PAX dependency.
-      let target = first[digest].flatMap { $0.utf8.count <= 100 ? $0 : nil }
+      let target = first[key].flatMap { $0.utf8.count <= 100 ? $0 : nil }
       if let target {
         manifest += "LINK \(input.name) \(target)\n"
       } else {
         manifest += "FILE \(input.name) SHA256 \(digest)\n"
-        first[digest] = input.name
+        first[key] = input.name
       }
-      try appendTar(&tar, name: input.name, bytes: input.bytes, target: target)
+      try appendTar(&tar, name: input.name, bytes: input.bytes, target: target, mode: mode)
       cpio.add(
         name: "vendorfw/" + input.name, bytes: target == nil ? input.bytes : Data(),
-        target: target.map { "vendorfw/" + $0 })
+        target: target.map { "vendorfw/" + $0 }, mode: mode)
     }
     let manifestBytes = Data(manifest.utf8)
     cpio.add(name: "vendorfw/.vendorfw.manifest", bytes: manifestBytes)
@@ -149,12 +153,22 @@ public enum FirmwarePackageBuilder {
     }
   }
 
+  /// The Touch ID sensor root key (`apple/msrk-<board>.bin`) is device-private
+  /// (`docs/sensor-root-key.md`), so it is owner-only on every board. Every
+  /// other file keeps the interchange format's 0644.
+  static func mode(of name: String) -> Int {
+    let parts = name.split(separator: "/", omittingEmptySubsequences: false)
+    return parts.count == 2 && parts[0] == "apple" && parts[1].hasPrefix("msrk-")
+      && parts[1].hasSuffix(".bin") ? 0o600 : 0o644
+  }
+
   private static func pad(_ bytes: inout Data, alignment: Int) {
     bytes.append(Data(repeating: 0, count: (alignment - bytes.count % alignment) % alignment))
   }
 
   private static func appendTar(
-    _ archive: inout Data, name: String, bytes: Data, target: String?, symbolic: Bool = false
+    _ archive: inout Data, name: String, bytes: Data, target: String?, symbolic: Bool = false,
+    mode: Int = 0o644
   )
     throws
   {
@@ -181,7 +195,7 @@ public enum FirmwarePackageBuilder {
       try field(0, 100, String(name[name.index(after: split)...]))
       try field(345, 155, String(name[..<split]))
     }
-    try octal(100, 8, 0o644)
+    try octal(100, 8, mode)
     try octal(108, 8, 0)
     try octal(116, 8, 0)
     try octal(124, 12, target == nil ? bytes.count : 0)
@@ -210,14 +224,14 @@ public enum FirmwarePackageBuilder {
     private var links: [Int: Int] = [:]
     private var nextInode = 1
 
-    mutating func add(name: String, bytes: Data, target: String? = nil) {
+    mutating func add(name: String, bytes: Data, target: String? = nil, mode: Int = 0o644) {
       let parts = name.split(separator: "/")
       var path = ""
       for part in parts.dropLast() {
         path += (path.isEmpty ? "" : "/") + String(part)
         if inodes[path] == nil { append(path, mode: 0o040755, bytes: Data()) }
       }
-      append(name, mode: 0o100644, bytes: bytes, target: target)
+      append(name, mode: 0o100000 | mode, bytes: bytes, target: target)
     }
 
     private mutating func append(_ name: String, mode: Int, bytes: Data, target: String? = nil) {

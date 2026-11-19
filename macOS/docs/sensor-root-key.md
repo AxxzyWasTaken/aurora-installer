@@ -17,3 +17,5 @@ Exactly one `seal-*` record is required. The trust bundle is the named `trustobj
 On a Touch ID-equipped Neo (macOS 26.6.2, 25G83), the rebuilt root key is byte-identical to the 12,688-byte container macOS uses, and it enrols on Linux. The resealed calibration loads where the plain image is refused, and an enrolled finger matches after a reboot without re-enrolling. Those results come from records placed by hand; a fresh native install that writes them is still to be confirmed. Sensorless machines skip this collection.
 
 Treat the root-key record as device-private: root-owned mode `0600` in staging and after installation, with private staging directories mode `0700`. Its archive writer and final installer must preserve that mode; ordinary world-readable firmware defaults are unsuitable.
+
+`FirmwarePackageBuilder` writes every `apple/msrk-*.bin` with mode `0600` and uid and gid 0 in both `firmware.tar` and `firmware.cpio`, on every board, and never hard-links it to a file with another mode. Every other vendor firmware file stays `0644`.

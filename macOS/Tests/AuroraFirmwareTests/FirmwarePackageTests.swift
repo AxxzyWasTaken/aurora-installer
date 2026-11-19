@@ -123,4 +123,83 @@ final class FirmwarePackageTests: XCTestCase {
     XCTAssertEqual(result.tar[1024 + 156], UInt8(ascii: "0"))
     XCTAssertFalse(String(decoding: result.manifest, as: UTF8.self).contains("LINK"))
   }
+
+  func testSensorRootKeysAreOwnerOnlyInBothArchives() throws {
+    // Synthetic bytes. The calibration shares the J700 key's bytes, which
+    // must not make the key a hard link to a world-readable file.
+    let shared = Data("synthetic record".utf8)
+    let result = try FirmwarePackageBuilder.build([
+      FirmwarePackageInput(name: "apple/mesacal-j700.bin", bytes: shared),
+      FirmwarePackageInput(name: "apple/msrk-j616c.bin", bytes: Data("other record".utf8)),
+      FirmwarePackageInput(name: "apple/msrk-j700.bin", bytes: shared),
+      FirmwarePackageInput(name: "brcm/msrk-j700.bin", bytes: Data("not a key".utf8)),
+    ])
+    XCTAssertFalse(String(decoding: result.manifest, as: UTF8.self).contains("LINK"))
+    XCTAssertEqual(
+      try Self.tarModes(result.tar),
+      [
+        "apple/mesacal-j700.bin": 0o644, "apple/msrk-j616c.bin": 0o600,
+        "apple/msrk-j700.bin": 0o600, "brcm/msrk-j700.bin": 0o644,
+      ])
+    XCTAssertEqual(
+      try Self.cpioModes(result.cpio),
+      [
+        "vendorfw": 0o040755, "vendorfw/apple": 0o040755, "vendorfw/brcm": 0o040755,
+        "vendorfw/apple/mesacal-j700.bin": 0o100644, "vendorfw/apple/msrk-j616c.bin": 0o100600,
+        "vendorfw/apple/msrk-j700.bin": 0o100600, "vendorfw/brcm/msrk-j700.bin": 0o100644,
+        "vendorfw/.vendorfw.manifest": 0o100644,
+      ])
+    for name in ["apple/sub/msrk-j700.bin", "apple/msrk-j700.txt", "msrk-j700.bin"] {
+      XCTAssertEqual(FirmwarePackageBuilder.mode(of: name), 0o644, name)
+    }
+  }
+
+  /// Each USTAR member's permission bits; every member must be owned by root.
+  private static func tarModes(_ archive: Data) throws -> [String: Int] {
+    var modes = [String: Int]()
+    var offset = 0
+    while offset + 512 <= archive.count {
+      let header = Data(archive[offset..<(offset + 512)])
+      if header.allSatisfy({ $0 == 0 }) { break }
+      func text(_ start: Int, _ width: Int) -> String {
+        String(decoding: header[start..<(start + width)].prefix { $0 != 0 }, as: UTF8.self)
+      }
+      func number(_ start: Int, _ width: Int) throws -> Int {
+        try XCTUnwrap(Int(text(start, width), radix: 8))
+      }
+      let prefix = text(345, 155)
+      let name = (prefix.isEmpty ? "" : prefix + "/") + text(0, 100)
+      XCTAssertEqual(try number(108, 8), 0, name)
+      XCTAssertEqual(try number(116, 8), 0, name)
+      modes[name] = try number(100, 8)
+      offset += 512 + (try number(124, 12) + 511) / 512 * 512
+    }
+    return modes
+  }
+
+  /// Each newc entry's mode; every entry must be owned by root.
+  private static func cpioModes(_ archive: Data) throws -> [String: Int] {
+    var modes = [String: Int]()
+    var offset = 0
+    while offset + 110 <= archive.count {
+      let header = Data(archive[offset..<(offset + 110)])
+      XCTAssertEqual(String(decoding: header.prefix(6), as: UTF8.self), "070701")
+      func field(_ index: Int) throws -> Int {
+        let start = 6 + 8 * index
+        return try XCTUnwrap(
+          Int(String(decoding: header[start..<(start + 8)], as: UTF8.self), radix: 16))
+      }
+      let nameBytes = try field(11)
+      let name = String(
+        decoding: archive[(offset + 110)..<(offset + 109 + nameBytes)], as: UTF8.self)
+      if name == "TRAILER!!!" { return modes }
+      XCTAssertEqual(try field(2), 0, name)
+      XCTAssertEqual(try field(3), 0, name)
+      modes[name] = try field(1)
+      let data = (offset + 110 + nameBytes + 3) & ~3
+      offset = (data + (try field(6)) + 3) & ~3
+    }
+    XCTFail("newc archive has no trailer")
+    return modes
+  }
 }

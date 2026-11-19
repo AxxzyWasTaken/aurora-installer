@@ -472,6 +472,8 @@
         InstallConfRecordPolicy.shouldRecord(operation: .updateStage1, nextAction: .enterRecovery))
     }
 
+    struct UpdateDidNotFail: Error {}
+
     struct FakeUpdate: NativeStage1UpdateExecuting {
       let result: Result<Data, NativeStage1UpdateFailure>
       func execute(
@@ -507,7 +509,8 @@
         XCTAssertFalse(report.redactedStandardErrorTail.contains("secret"))
         return report.notice
       }
-      throw XCTSkip("the update did not fail")
+      XCTFail("the update did not fail")
+      throw UpdateDidNotFail()
     }
 
     func testTheExecutorRunsOnlyTheUpdateAndSaysWhyItStopped() async throws {

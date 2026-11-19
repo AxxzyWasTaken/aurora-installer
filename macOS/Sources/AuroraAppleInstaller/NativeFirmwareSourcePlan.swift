@@ -9,6 +9,9 @@
       let member: String
     }
     let machine: String
+    /// The chip ID of the build identity the stub was planned for, which the
+    /// stub plan already matched against this Mac's own chip.
+    let chipID: UInt64
     let fud: [FUD]
     let kernel: String
 
@@ -23,11 +26,14 @@
             && info["Variant"] as? String == $0.variant
         }),
         let device = info["DeviceClass"] as? String,
+        let chip = identity["ApChipID"] as? String, chip.hasPrefix("0x"),
+        let chipID = UInt64(chip.dropFirst(2), radix: 16),
         device.range(of: #"\A[jk][0-9]+[a-z]*ap\z"#, options: .regularExpression) != nil,
         let components = identity["Manifest"] as? [String: [String: Any]],
         !components.isEmpty, components.count <= 1024
       else { throw NativeStubFileError.invalidPlan }
       machine = String(device.dropLast(2))
+      self.chipID = chipID
       var selected = [FUD]()
       var kernels = Set<String>()
       for key in components.keys.sorted() {

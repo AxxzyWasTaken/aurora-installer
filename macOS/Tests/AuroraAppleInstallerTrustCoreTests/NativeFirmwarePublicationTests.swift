@@ -11,6 +11,7 @@
           fromPropertyList: ["BuildIdentities": identities], format: .xml, options: 0)
       }
       let identity: [String: Any] = [
+        "ApChipID": "0x8140",
         "Info": ["DeviceClass": "j700ap", "RestoreBehavior": "Erase", "Variant": "macOS Customer"],
         "Manifest": [
           "KernelCache": ["Info": ["Path": "kernelcache.release.synthetic"]],
@@ -32,6 +33,7 @@
       ]
       let source = try NativeFirmwareSourcePlan(manifest: manifest([identity]))
       XCTAssertEqual(source.machine, "j700")
+      XCTAssertEqual(source.chipID, 0x8140)
       XCTAssertEqual(source.kernel, "kernelcache.release.synthetic")
       XCTAssertEqual(
         source.fud, [.init(component: "Multitouch", member: "Firmware/Multitouch.im4p")])
@@ -46,10 +48,17 @@
         "Multitouch": ["Info": ["Path": "../outside", "IsFUDFirmware": true]]
       ]
       XCTAssertThrowsError(try NativeFirmwareSourcePlan(manifest: manifest([malformed])))
+      // The chip decides chip-keyed firmware such as the ProRes rows.
+      for chip: Any? in [nil, "8140", "0xzz", 0x8140] {
+        var other = identity
+        other["ApChipID"] = chip
+        XCTAssertThrowsError(try NativeFirmwareSourcePlan(manifest: manifest([other])))
+      }
     }
 
     func testAnOLEDMacBookProSourcePlanKeepsItsTrackpadAndTouchscreenFirmware() throws {
       let identity: [String: Any] = [
+        "ApChipID": "0x6050",
         "Info": [
           "DeviceClass": "k114cap", "RestoreBehavior": "Erase", "Variant": "macOS Customer",
         ],

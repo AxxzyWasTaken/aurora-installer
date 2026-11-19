@@ -34,9 +34,12 @@ import re
 import struct
 
 NAME = "apple/prores-t6041-init.bin"
-# The M4 Pro and M4 Max Macs. Kernel caches for other Macs carry the T6041
-# tables too, so the rows are collected for these machines only.
-MACHINES = frozenset({"j614s", "j616s", "j773s", "j614c", "j616c", "j575c"})
+# The chips whose SoC carries the T6041 ProRes engine: T6040 (M4 Pro) and
+# T6041 (M4 Max) share it. Kernel caches for other chips carry the T6041
+# tables too, so the rows are collected only on these chips, keyed on this
+# Mac's chip ID, never on a board list. The native installer's
+# ProResInitFirmware.chipIDs is the same set; its tests fail if they drift.
+CHIPS = frozenset({0x6040, 0x6041})
 FILESET_ENTRY = "com.apple.driver.AppleProResHW"
 SOC = 0x6041
 MAX_FUNCTION_BYTES = 0x4000
@@ -307,11 +310,16 @@ def extract(kernel):
     return bytes(out)
 
 
-def machine():
-    """This Mac's board name (`j616s`) from the device tree, or None."""
+def chip():
+    """This Mac's chip ID (0x6041) from the device tree's root compatible
+    (`apple,t6041`), or None."""
     try:
         with open("/proc/device-tree/compatible", "rb") as fd:
-            first = fd.read(256).split(b"\0", 1)[0].decode("ascii", "replace")
+            compatible = fd.read(4096).split(b"\0")
     except OSError:
         return None
-    return first[len("apple,"):] if first.startswith("apple,") else None
+    for entry in compatible:
+        found = re.fullmatch(rb"apple,t([0-9a-f]{4})", entry)
+        if found:
+            return int(found.group(1), 16)
+    return None

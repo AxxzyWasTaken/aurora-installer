@@ -324,8 +324,24 @@ final class ProResInitFirmwareTests: XCTestCase {
     }
   }
 
-  func testMachines() {
-    XCTAssertTrue(ProResInitFirmware.machines.contains("j616s"))
-    XCTAssertFalse(ProResInitFirmware.machines.contains("j413"))
+  func testChips() throws {
+    XCTAssertTrue(ProResInitFirmware.applies(toChipID: 0x6040))
+    XCTAssertTrue(ProResInitFirmware.applies(toChipID: 0x6041))
+    for chip: UInt64 in [0x6000, 0x6020, 0x6031, 0x6050, 0x8103, 0x8132, 0x8140, 0x8142] {
+      XCTAssertFalse(ProResInitFirmware.applies(toChipID: chip), String(chip, radix: 16))
+    }
+    // asahi_firmware/prores.py keys the Linux-side collection on the same chips.
+    let python = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("asahi_firmware/prores.py"),
+      encoding: .utf8)
+    let line = try XCTUnwrap(
+      python.split(separator: "\n").first { $0.hasPrefix("CHIPS = frozenset({") })
+    let listed = try line.dropFirst("CHIPS = frozenset({".count).prefix { $0 != "}" }
+      .split(separator: ",").map {
+        try XCTUnwrap(UInt64($0.trimmingCharacters(in: .whitespaces).dropFirst(2), radix: 16))
+      }
+    XCTAssertEqual(Set(listed), ProResInitFirmware.chipIDs)
   }
 }

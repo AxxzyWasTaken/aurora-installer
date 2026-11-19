@@ -6,6 +6,8 @@
 
   @MainActor
   final class BootLoaderUpdateTests: XCTestCase {
+    private struct UnexpectedPhase: Error {}
+
     private func environment(_ layout: DiskLayoutDisplay) -> MockInstallerEnvironment {
       let environment = MockInstallerEnvironment()
       environment.host = HostDisplay(
@@ -25,7 +27,8 @@
       await session.updateBootLoader(row)
       session.continueToPlanReview()
       guard case .planReview(let plan, _) = session.phase else {
-        throw XCTSkip("Expected the update review, got \(session.phase)")
+        XCTFail("Expected the update review, got \(session.phase)")
+        throw UnexpectedPhase()
       }
       return plan
     }

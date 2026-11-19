@@ -363,6 +363,7 @@
     /// level and the refusal at error level, so a log saved with the
     /// default filter shows both.
     func testPrebootAdminListLayoutsAreDecidedAndLoggedAsTheFixtureRecords() throws {
+      struct UnknownFixtureContent: Error { let name: String }
       struct Fixture: Decodable {
         struct Layout: Decodable {
           let name: String, group: String, `var`: String, db: String, file: String
@@ -401,7 +402,8 @@
             try PropertyListSerialization.data(
               fromPropertyList: ["mina"], format: .binary, options: 0)
           case "oversize": Data(count: (1 << 20) + 1)
-          default: throw XCTSkip("unknown content \(layout.content)")
+          // A content name the test does not know is a broken fixture: fail.
+          default: throw UnknownFixtureContent(name: layout.content)
           }
         try content.write(to: fixture.admins)
         if let folder = layout.extraLink {

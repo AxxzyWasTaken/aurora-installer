@@ -1,11 +1,5 @@
 name: Native installer visual review
 on:
-  push:
-    branches: [feat/swift-native-installer, feat/native-ui-buttons]
-    paths:
-      - macOS/Sources/AuroraAppleInstallerApp/**
-      - macOS/Packaging/build-aurora-preview.sh
-      - .github/workflows/native-ui-review.yml
   workflow_dispatch:
 permissions:
   contents: read

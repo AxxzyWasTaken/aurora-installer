@@ -1,15 +1,5 @@
 name: Native Swift firmware extractor
 on:
-  push:
-    branches: [feat/swift-native-installer, feat/native-firmware-resume, feat/native-ipsw-zip]
-    paths:
-      - macOS/Sources/AuroraFirmware/**
-      - macOS/Tests/AuroraFirmwareTests/**
-      - macOS/Sources/AuroraAppleInstaller/NativeNeoPeripheralInputs.swift
-      - macOS/Tests/AuroraAppleInstallerTrustCoreTests/NativeNeoPeripheralInputTests.swift
-      - macOS/Development/NativeFirmwareCheck/**
-      - macOS/Package.swift
-      - .github/workflows/native-firmware.yml
   workflow_dispatch:
     inputs:
       live-apple-extraction:
@@ -59,7 +49,7 @@ jobs:
           xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug --filter 'AuroraFirmwareTests|NativeNeoPeripheralInputTests' 2>&1 | tee "$RUNNER_TEMP/evidence/debug.log"
           xcodebuildmcp swift-package test --package-path "$PWD" --configuration release --filter 'AuroraFirmwareTests|NativeNeoPeripheralInputTests' 2>&1 | tee "$RUNNER_TEMP/evidence/release.log"
       - name: Exercise real partial extraction and independent reuse
-        if: inputs.live-apple-extraction || github.event_name == 'push' 
+        if: inputs.live-apple-extraction
         run: |
           set -euo pipefail
           xcrun swift build --configuration release --product AuroraFirmwareCheck

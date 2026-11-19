@@ -8,9 +8,9 @@ from . import prores
 log = logging.getLogger("asahi_firmware.kernel")
 
 class KernelFWCollection(object):
-    def __init__(self, source_path, machine=None):
+    def __init__(self, source_path, chip=None):
         self.fwfiles = []
-        self.machine = prores.machine() if machine is None else machine
+        self.chip = prores.chip() if chip is None else chip
         self.load(source_path)
 
     def load(self, source_path):
@@ -33,10 +33,10 @@ class KernelFWCollection(object):
         for fwf in extract_asmedia(kernel):
             self.fwfiles.append((fwf.name, fwf))
 
-        # The ProRes engine's power-up rows (M4 Pro and M4 Max Macs), from
-        # this Mac's own kernel and never shipped. A kernel the reader does
-        # not understand leaves ProRes off.
-        if self.machine in prores.MACHINES:
+        # The ProRes engine's power-up rows (chips with the T6041 engine),
+        # from this Mac's own kernel and never shipped. A kernel the reader
+        # does not understand leaves ProRes off.
+        if self.chip in prores.CHIPS:
             try:
                 rows = prores.extract(kernel)
             except prores.ProResError as e:

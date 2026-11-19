@@ -179,9 +179,22 @@ class ProResTest(unittest.TestCase):
             P.extract(image(tables, SELECTORS))
         self.assertNotIn("12345678", str(caught.exception))
 
-    def test_machines(self):
-        self.assertIn("j616s", P.MACHINES)
-        self.assertNotIn("j413", P.MACHINES)
+    def test_chips(self):
+        self.assertEqual(P.CHIPS, {0x6040, 0x6041})
+        for chip in (0x6000, 0x6020, 0x6031, 0x6050, 0x8103, 0x8132, 0x8140, 0x8142):
+            self.assertNotIn(chip, P.CHIPS)
+
+    def test_chip_comes_from_the_root_compatible(self):
+        from unittest import mock
+        for blob, expected in [
+            (b"apple,j614s\0apple,t6040\0apple,arm-platform\0", 0x6040),
+            (b"apple,j616c\0apple,t6041\0apple,arm-platform\0", 0x6041),
+            (b"apple,j71\0apple,s5l8960x\0", None),
+        ]:
+            with mock.patch("builtins.open", mock.mock_open(read_data=blob)):
+                self.assertEqual(P.chip(), expected)
+        with mock.patch("builtins.open", side_effect=OSError):
+            self.assertIsNone(P.chip())
 
 
 if __name__ == "__main__":

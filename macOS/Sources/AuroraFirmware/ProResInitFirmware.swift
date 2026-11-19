@@ -33,10 +33,15 @@ import Foundation
 public enum ProResInitFirmware {
   /// The vendor firmware path the driver requests.
   public static let name = "apple/prores-t6041-init.bin"
-  /// The M4 Pro and M4 Max Macs: their engine is the one these rows set up.
-  /// Kernel caches for other Macs carry the T6041 tables too, so the
-  /// installer collects them for these machines only.
-  public static let machines: Set<String> = ["j614s", "j616s", "j773s", "j614c", "j616c", "j575c"]
+  /// The chips whose SoC carries the T6041 ProRes engine these rows set up:
+  /// T6040 (M4 Pro) and T6041 (M4 Max) share it. Kernel caches for other
+  /// chips carry the T6041 tables too, so the installer collects them only on
+  /// a Mac with one of these chips, from the chip ID it already reads, never
+  /// from a board list. asahi_firmware/prores.py `CHIPS` is the same set;
+  /// ProResInitFirmwareTests fails if the two drift.
+  public static let chipIDs: Set<UInt64> = [0x6040, 0x6041]
+
+  public static func applies(toChipID chipID: UInt64) -> Bool { chipIDs.contains(chipID) }
   static let filesetEntry = "com.apple.driver.AppleProResHW"
   static let soc: UInt32 = 0x6041
   static let maximumFunctionBytes = 0x4000

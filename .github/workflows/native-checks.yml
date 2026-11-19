@@ -2,9 +2,9 @@ name: Native installer checks
 
 on:
   pull_request:
-    branches: [main, feat/fedora-native-20261018]
+    branches: [main]
   push:
-    branches: [main, feat/fedora-native-20261018]
+    branches: [main]
   workflow_dispatch:
     inputs:
       test-filter:
